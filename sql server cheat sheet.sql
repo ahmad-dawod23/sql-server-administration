@@ -150,7 +150,7 @@ order by Salary
 --another way to find it:
 
 SELECT *
-FROM m_account
+FROM example_table
 ORDER BY num DESC
 OFFSET 3 rows
 fetch next 1 rows only
