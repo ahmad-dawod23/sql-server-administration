@@ -490,6 +490,11 @@ GO
 xp_readerrorlog 0, 1, N'Server is listening on'
 GO
 
+SELECT net_transport
+FROM sys.dm_exec_connections
+WHERE session_id = @@SPID;
+
+
 
 
 
@@ -502,9 +507,6 @@ WITH
         FIRSTROW=2
 )
 GO
-
-
-
 
 
 
