@@ -482,22 +482,6 @@ where TotalEmployees >= 2
 
 
 
-
----get port number:
-
-USE MASTER
-GO
-xp_readerrorlog 0, 1, N'Server is listening on'
-GO
-
-SELECT net_transport
-FROM sys.dm_exec_connections
-WHERE session_id = @@SPID;
-
-
-
-
-
 --importing data from a csv file with sql commands
 BULK INSERT dbo.Actors
 FROM 'C:\Documents\Skyvia\csv-to-mssql\actor.csv'
