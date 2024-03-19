@@ -493,8 +493,24 @@ WITH
 GO
 
 
+--- cursors:
 
+declare @userFk uniqueidentifier
 
+declare crsr cursor for 
+select objectid from AppSetting
+open crsr
+fetch next from crsr into @userFk
+
+while (@@FETCH_STATUS=0)
+begin
+
+fetch next from crsr into @userFk
+print @userFk
+
+end
+close crsr
+deallocate crsr
 
 
 
