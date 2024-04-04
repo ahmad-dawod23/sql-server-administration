@@ -129,7 +129,47 @@ DBCC CHECKDB (Kahreedo)
 
 
 
+--- enable target servers:
 
+
+
+--CHANGE ENCRYPTION
+
+DECLARE @encryptvalue int
+
+DECLARE @keyinput varchar(200)
+
+SET @keyinput = 'SOFTWARE\Microsoft\MSSQLSERVER\SQLServerAgent'
+
+EXECUTE xp_instance_regread @rootkey='HKEY_LOCAL_MACHINE',@key=@keyinput,@value_name='MsxEncryptChannelOptions',@value =@encryptvalue OUTPUT
+
+SELECT @encryptvalue
+
+IF @encryptvalue = 2
+
+BEGIN
+
+PRINT 'SQL agent encryption level set to '+CONVERT(VARCHAR(1),@encryptvalue)+'. This will be changed to 1 for multi-server administration.'
+
+EXECUTE xp_instance_regwrite @rootkey='HKEY_LOCAL_MACHINE', @key=@keyinput, @value_name='MsxEncryptChannelOptions',@type='REG_DWORD', @value=1
+
+END
+
+ELSE
+
+BEGIN
+
+PRINT 'SQL agent encryption level already set to '+CONVERT(VARCHAR(1),@encryptvalue)+'. Ready for multi-server administration.'
+
+END
+
+--ENLIST TARGET SERVER
+
+USE msdb
+
+GO
+
+sp_msx_enlist @msx_server_name = 'yourmasterinstance'
 
 
 
