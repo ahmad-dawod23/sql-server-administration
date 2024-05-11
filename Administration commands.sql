@@ -81,7 +81,7 @@ GO
 
 
 
----validating backup set is valid:
+---validating backup:
 
 declare @backupSetId as int 
 select @backupSetId = position
@@ -98,6 +98,19 @@ FROM
 DISK = N'C:\backups\adventurework2014.bak'
 WITH FILE = @backupSetid
 Go
+
+
+
+--another way to do the above:
+
+BACKUP DATABASE [CARDS] TO  DISK = N''D:\backups\CARDS_backup_2024_05_11_181534_9917052.bak'' WITH NOFORMAT, NOINIT,  NAME = N''CARDS_backup_2024_05_11_181534_9917052'', SKIP, REWIND, NOUNLOAD,  STATS = 10
+GO
+declare @backupSetId as int
+select @backupSetId = position from msdb..backupset where database_name=N''CARDS'' and backup_set_id=(select max(backup_set_id) from msdb..backupset where database_name=N''CARDS'' )
+if @backupSetId is null begin raiserror(N''Verify failed. Backup information for database ''''CARDS'''' not found.'', 16, 1) end
+RESTORE VERIFYONLY FROM  DISK = N''D:\backups\CARDS_backup_2024_05_11_181534_9917052.bak'' WITH  FILE = @backupSetId,  NOUNLOAD,  NOREWIND
+
+
 
 
 
