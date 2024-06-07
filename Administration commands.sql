@@ -1,3 +1,21 @@
+
+-- installing from docker:
+-- 1) sql server run: docker run -e 'ACCEPT_EULA=Y' -e 'MSSQL_SA_PASSWORD=ahmad@123' --name 'sql1' -p 1401:1433 -v sql1data:/var/opt/mssql -d mcr.microsoft.com/mssql/server:2022-latest
+-- 2) enable sql agent from exec menu on docker desktop: /opt/mssql/bin/mssql-conf set sqlagent.enabled true
+-- 3) copy backups into docker volumes, cd into the bak location then run this command: docker cp WideWorldImporters-Full.bak sql1:/var/opt/mssql/backup
+
+-- tranfer database logins: https://learn.microsoft.com/en-us/troubleshoot/sql/database-engine/security/transfer-logins-passwords-between-instances
+
+-- enable encryption in connection string: Column Encryption Setting=Enabled
+
+-- data masking in sql server: https://learn.microsoft.com/en-us/sql/relational-databases/security/dynamic-data-masking?view=sql-server-ver16
+
+-- row level security: https://www.sqlshack.com/introduction-to-row-level-security-in-sql-server/
+
+-- sql server audits: https://learn.microsoft.com/en-us/sql/relational-databases/security/auditing/sql-server-audit-database-engine?view=sql-server-ver16
+
+-- encrypting sql server connections: https://learn.microsoft.com/en-us/sql/database-engine/configure-windows/configure-sql-server-encryption?view=sql-server-ver16
+
 ---get port number:
 
 USE MASTER
