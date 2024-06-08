@@ -6,7 +6,9 @@
 
 -- tranfer database logins: https://learn.microsoft.com/en-us/troubleshoot/sql/database-engine/security/transfer-logins-passwords-between-instances
 
--- enable encryption in connection string: Column Encryption Setting=Enabled
+-- enable column level encryption: https://learn.microsoft.com/en-us/sql/relational-databases/security/encryption/always-encrypted-wizard?view=sql-server-ver16
+
+-- for opening encrypted column add the following in connection string: Column Encryption Setting=Enabled
 
 -- data masking in sql server: https://learn.microsoft.com/en-us/sql/relational-databases/security/dynamic-data-masking?view=sql-server-ver16
 
