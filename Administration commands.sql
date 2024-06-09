@@ -18,6 +18,14 @@
 
 -- encrypting sql server connections: https://learn.microsoft.com/en-us/sql/database-engine/configure-windows/configure-sql-server-encryption?view=sql-server-ver16
 
+--change log capture: https://learn.microsoft.com/en-us/sql/relational-databases/track-changes/about-change-data-capture-sql-server?view=sql-server-ver16
+-- enable change log capture for a table:
+ exec sys.sp_cdc_enable_db
+--check changes using change tracking:
+
+
+
+
 ---get port number:
 
 USE MASTER
@@ -91,7 +99,7 @@ NAME = N'AdventureWorks2014-Full Database Backup',
 SKIP, NOREWIND, NOUNLOAD,  STATS = 10
 GO
 
--- transaction log backup:
+-- transaction log backup (only for full recovery databases):
 
 BACKUP LOG [AdventureWorks2014] TO  DISK = N'C:\backups\adventurework2014.bak' 
 WITH 
@@ -226,3 +234,30 @@ set transaction isolation level snapshot
 --creates a snapshot of a table that is being accessed, it will display data from the snapshot before its commited 
 
 set transaction isolation level serializable
+
+
+
+---check for changes on the database:
+
+SELECT
+tbl.name
+,ius.last_user_update
+,ius.user_updates
+,ius.last_user_seek
+,ius.last_user_scan
+,ius.last_user_lookup
+,ius.user_seeks
+,ius.user_scans
+,ius.user_lookups
+FROM
+sys.dm_db_index_usage_stats ius INNER JOIN
+sys.tables tbl ON (tbl.OBJECT_ID = ius.OBJECT_ID)
+WHERE ius.database_id = DB_ID()
+
+--checking last modification date using information schema:
+
+SELECT *
+FROM sys.objects as so
+INNER JOIN INFORMATION_SCHEMA.TABLES as ist
+ON ist.TABLE_NAME=so.name 
+
