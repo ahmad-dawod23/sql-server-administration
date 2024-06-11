@@ -170,10 +170,9 @@ DBCC CHECKDB (Kahreedo)
 
 
 
-
+--------------------------------------------------------------------------
 
 --- enable target servers:
-
 
 
 --CHANGE ENCRYPTION
@@ -214,14 +213,10 @@ GO
 
 sp_msx_enlist @msx_server_name = 'yourmasterinstance'
 
-
-
-
-
+-------------------------------------------------
 
 
 --transaction isolation levels
-
 
 set transaction isolation level read committed
 --only read data that has been comitted
