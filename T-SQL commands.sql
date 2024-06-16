@@ -481,6 +481,23 @@ where TotalEmployees >= 2
  End Catch 
 
 
+--transaction isolation levels
+
+set transaction isolation level read committed
+--only read data that has been comitted
+
+set transaction isolation level read uncommitted
+--read data that has been uncomitted
+
+set transaction isolation level repeatable read
+--locks the table from writting while its being written over
+
+set transaction isolation level snapshot
+--creates a snapshot of a table that is being accessed, it will display data from the snapshot before its commited 
+
+set transaction isolation level serializable
+
+
 
 --importing data from a csv file with sql commands
 BULK INSERT dbo.Actors

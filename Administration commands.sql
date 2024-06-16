@@ -1,13 +1,16 @@
 
--- installing from docker:
--- 1) sql server run: docker run -e 'ACCEPT_EULA=Y' -e 'MSSQL_SA_PASSWORD=ahmad@123' --name 'sql1' -p 1401:1433 -v sql1data:/var/opt/mssql -d mcr.microsoft.com/mssql/server:2022-latest
--- 2) enable sql agent from exec menu on docker desktop: /opt/mssql/bin/mssql-conf set sqlagent.enabled true
--- 3) copy backups into docker volumes, cd into the bak location then run this command: docker cp WideWorldImporters-Full.bak sql1:/var/opt/mssql/backup
+/*
+installing from docker:
+
+1) sql server run: docker run -e 'ACCEPT_EULA=Y' -e 'MSSQL_SA_PASSWORD=ahmad@123' --name 'sql1' -p 1401:1433 -v sql1data:/var/opt/mssql -d mcr.microsoft.com/mssql/server:2022-latest
+2) enable sql agent from exec menu on docker desktop: /opt/mssql/bin/mssql-conf set sqlagent.enabled true
+3) copy backups into docker volumes, cd into the bak location then run this command: docker cp WideWorldImporters-Full.bak sql1:/var/opt/mssql/backup
+
+*/
 
 -- tranfer database logins: https://learn.microsoft.com/en-us/troubleshoot/sql/database-engine/security/transfer-logins-passwords-between-instances
 
 -- enable column level encryption: https://learn.microsoft.com/en-us/sql/relational-databases/security/encryption/always-encrypted-wizard?view=sql-server-ver16
-
 -- for opening encrypted column add the following in connection string: Column Encryption Setting=Enabled
 
 -- data masking in sql server: https://learn.microsoft.com/en-us/sql/relational-databases/security/dynamic-data-masking?view=sql-server-ver16
@@ -23,10 +26,19 @@
 --change log capture: https://learn.microsoft.com/en-us/sql/relational-databases/track-changes/about-change-data-capture-sql-server?view=sql-server-ver16
 -- enable change log capture for a table:
  exec sys.sp_cdc_enable_db
---check changes using change tracking:
 
 
 
+/*trouble shooting tips for sql server issues:
+
+1) use activity monitor to check for blocking queries and server utilization
+2) use performance monitor to check which part of sql server is consuming the most resources.
+3) use event viewer to check sql server service failures
+4) check error logs from within sql server.
+5) for slowness issues, check if resource governer is being used.
+6) ask the customer to run the index query below
+
+*/
 
 ---get port number:
 
@@ -145,7 +157,7 @@ RESTORE VERIFYONLY FROM  DISK = N''D:\backups\CARDS_backup_2024_05_11_181534_991
 
 
 ---validating database integerity with DBCC:
-
+-- https://learn.microsoft.com/en-us/sql/t-sql/database-console-commands/dbcc-transact-sql?view=sql-server-ver16
 
 DBCC CHECKDB
     [ ( database_name | database_id | 0
@@ -165,7 +177,88 @@ DBCC CHECKDB
     ]
 ]
 
+--check db integerty
 DBCC CHECKDB (Kahreedo)
+
+-- repair corrupted database but it will allow data lose, might be a bit too crazy in some situations.
+
+dbcc REPAIR_ALLOW_DATA_LOSS
+
+-- 
+
+dbcc REPAIR_REBUILD
+
+-- fast repair with no data lose
+
+dbcc REPAIR_FAST
+
+
+--- index physical status health query:
+
+SELECT S.name as 'Schema',
+T.name as 'Table',
+I.name as 'Index',
+DDIPS.avg_fragmentation_in_percent,
+DDIPS.page_count
+FROM sys.dm_db_index_physical_stats (DB_ID(), NULL, NULL, NULL, NULL) AS DDIPS
+INNER JOIN sys.tables T on T.object_id = DDIPS.object_id
+INNER JOIN sys.schemas S on T.schema_id = S.schema_id
+INNER JOIN sys.indexes I ON I.object_id = DDIPS.object_id
+AND DDIPS.index_id = I.index_id
+WHERE DDIPS.database_id = DB_ID()
+and I.name is not null
+AND DDIPS.avg_fragmentation_in_percent > 0
+ORDER BY DDIPS.avg_fragmentation_in_percent desc
+
+-- index REORGANIZE, less intrusive way to repair an index and can be done online under working hours
+
+USE [WideWorldImporters]
+GO
+ALTER INDEX [FK_Sales_Orders_PickedByPersonID] ON [Sales].[Orders] REORGANIZE  WITH ( LOB_COMPACTION = ON )
+GO
+
+-- index rebuild, the below is a blocking offline operation and might effect database preformance,  
+
+USE [WideWorldImporters]
+GO
+ALTER INDEX [IX_Sales_OrderLines_AllocatedStockItems] ON [Sales].[OrderLines] REBUILD PARTITION = ALL 
+WITH 
+(PAD_INDEX = OFF, STATISTICS_NORECOMPUTE = OFF, SORT_IN_TEMPDB = OFF, ONLINE = OFF, ALLOW_ROW_LOCKS = ON, ALLOW_PAGE_LOCKS = ON)
+GO
+
+-- index rebuild, online non blocking version that is less impactful on the database
+
+USE [WideWorldImporters]
+GO
+ALTER INDEX [IX_Sales_OrderLines_AllocatedStockItems] ON [Sales].[OrderLines] REBUILD PARTITION = ALL 
+WITH 
+(PAD_INDEX = OFF, STATISTICS_NORECOMPUTE = OFF, SORT_IN_TEMPDB = OFF, 
+ONLINE = ON (WAIT_AT_LOW_PRIORITY (MAX_DURATION = 0 MINUTES, ABORT_AFTER_WAIT = NONE)), ALLOW_ROW_LOCKS = ON, ALLOW_PAGE_LOCKS = ON)
+GO
+
+---check for changes on the database:
+
+SELECT
+tbl.name
+,ius.last_user_update
+,ius.user_updates
+,ius.last_user_seek
+,ius.last_user_scan
+,ius.last_user_lookup
+,ius.user_seeks
+,ius.user_scans
+,ius.user_lookups
+FROM
+sys.dm_db_index_usage_stats ius INNER JOIN
+sys.tables tbl ON (tbl.OBJECT_ID = ius.OBJECT_ID)
+WHERE ius.database_id = DB_ID()
+
+--checking last modification date using information schema:
+
+SELECT *
+FROM sys.objects as so
+INNER JOIN INFORMATION_SCHEMA.TABLES as ist
+ON ist.TABLE_NAME=so.name 
 
 
 
@@ -216,45 +309,136 @@ sp_msx_enlist @msx_server_name = 'yourmasterinstance'
 -------------------------------------------------
 
 
---transaction isolation levels
+--replication
+-- https://learn.microsoft.com/en-us/azure/azure-sql/managed-instance/replication-transactional-overview?view=azuresql
 
-set transaction isolation level read committed
---only read data that has been comitted
+/*
+ very important: You must connect to MSSMS with [server\instance] using the proper server name otherwise you will get the error: The Distributor has not been installed correctly. Could not enable database for publishing.
+important: primary key is needed for transactional replication
+important: is prone to domain user problems during initial creation for some reason. Use sql agent proccess user at first, then change it later.
+update: above domain user errors were caused by the domain users not having permissons to run services. in an isolated controled domain, it worked fine. might need to enable tcp/ip and named aliases.
+creating a publication from the gui is super easy, below script is for creating a publication using sql code.
+*/
+--==============================================================
+-- replication - create publication - complete
+-- marcelo miorelli
+-- 06-Oct-2015
+--==============================================================
 
-set transaction isolation level read uncommitted
---read data that has been uncomitted
+select @@servername
+select @@version
+select @@spid
+select @@servicename
 
-set transaction isolation level repeatable read
---locks the table from writting while its being written over
+--==============================================================
+-- step 00 --  configuring the distributor
+-- if there is already a distributor AND it is not healthy, 
+-- you can have a look at the jobs related to this distributor and
+-- MAYBE, if you need to get rid of it, run this step
+-- generally you need to run this when adding a publication it says there is a problem with the distributor
+--==============================================================
 
-set transaction isolation level snapshot
---creates a snapshot of a table that is being accessed, it will display data from the snapshot before its commited 
+use master
+go
+sp_dropdistributor 
+-- Could not drop the Distributor 'QG-V-SQL-TS\AIFS_DEVELOPMENT'. This Distributor has associated distribution databases.
 
-set transaction isolation level serializable
+EXEC sp_dropdistributor 
+     @no_checks = 1
+    ,@ignore_distributor = 1
+GO
+
+--==============================================================
+-- step 01 --  configuring the distributor
+-- tell this server who is the distributor and the admin password to connect there
+
+-- create the distributor database
+--==============================================================
+
+use master
+exec sp_adddistributor 
+ @distributor = N'the_same_server'
+,@heartbeat_interval=10
+,@password='#J4g4nn4th4_the_password#'
+
+USE master
+EXEC sp_adddistributiondb 
+    @database = 'dist1', 
+    @security_mode = 1;
+GO
+
+exec sp_adddistpublisher @publisher = N'the_same_server', 
+                         @distribution_db = N'dist1';
+GO
+
+--==============================================================
+-- check thing out before going ahead and create the publications
+--==============================================================
+
+USE master;  
+go  
+
+--Is the current server a Distributor?  
+--Is the distribution database installed?  
+--Are there other Publishers using this Distributor?  
+EXEC sp_get_distributor  
+
+--Is the current server a Distributor?  
+SELECT is_distributor FROM sys.servers WHERE name='repl_distributor' AND data_source=@@servername;  
+
+--Which databases on the Distributor are distribution databases?  
+SELECT name FROM sys.databases WHERE is_distributor = 1  
+
+--What are the Distributor and distribution database properties?  
+EXEC sp_helpdistributor;  
+EXEC sp_helpdistributiondb;  
+EXEC sp_helpdistpublisher;  
+
+--==============================================================
+-- here you need to have a distributor in place
+
+-- Enabling the replication database
+-- the name of the database we want to replicate is COLAFinance
+--==============================================================
+use master
+exec sp_get_distributor
 
 
+use master
+exec sp_replicationdboption @dbname = N'the_database_to_publish', 
+                            @optname = N'publish', 
+                            @value = N'true'
+GO
 
----check for changes on the database:
 
-SELECT
-tbl.name
-,ius.last_user_update
-,ius.user_updates
-,ius.last_user_seek
-,ius.last_user_scan
-,ius.last_user_lookup
-,ius.user_seeks
-,ius.user_scans
-,ius.user_lookups
-FROM
-sys.dm_db_index_usage_stats ius INNER JOIN
-sys.tables tbl ON (tbl.OBJECT_ID = ius.OBJECT_ID)
-WHERE ius.database_id = DB_ID()
+-- resource governer classifyer function example:
 
---checking last modification date using information schema:
+CREATE FUNCTION fnTimeClassifier()  
+RETURNS sysname  
+WITH SCHEMABINDING  
+AS  
+BEGIN  
+/* We recommend running the classifier function code under 
+snapshot isolation level OR using NOLOCK hint to avoid blocking on 
+lookup table. In this example, we are using NOLOCK hint. */
+     DECLARE @strGroup sysname  
+     DECLARE @loginTime time  
+     SET @loginTime = CONVERT(time,GETDATE())  
 
-SELECT *
-FROM sys.objects as so
-INNER JOIN INFORMATION_SCHEMA.TABLES as ist
-ON ist.TABLE_NAME=so.name 
+	 if @loginTime > '6:15am' and @loginTime < '6:30pm'
+	 begin 
+	 return 'default'
+	 end
 
+	 ELSE
+	 begin
+	 return 'afterworkhours'
+	 end
+
+     RETURN N'gOffHoursProcessing'  
+END;  
+GO
+
+ALTER RESOURCE GOVERNOR with (CLASSIFIER_FUNCTION = dbo.fnTimeClassifier);  
+ALTER RESOURCE GOVERNOR RECONFIGURE;  
+GO
