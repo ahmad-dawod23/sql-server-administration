@@ -47,6 +47,8 @@ GO
 xp_readerrorlog 0, 1, N'Server is listening on'
 GO
 
+--find network protocol currently used
+
 SELECT net_transport
 FROM sys.dm_exec_connections
 WHERE session_id = @@SPID;
@@ -178,13 +180,18 @@ DBCC CHECKDB
 ]
 
 --check db integerty
+use master
 DBCC CHECKDB (Kahreedo)
+
+--or from within the db, you dont have to specify it:
+
+DBCC CHECKDB
 
 -- repair corrupted database but it will allow data lose, might be a bit too crazy in some situations.
 
 dbcc REPAIR_ALLOW_DATA_LOSS
 
--- 
+-- repair with no data lose
 
 dbcc REPAIR_REBUILD
 
@@ -260,6 +267,18 @@ FROM sys.objects as so
 INNER JOIN INFORMATION_SCHEMA.TABLES as ist
 ON ist.TABLE_NAME=so.name 
 
+
+
+---- check availabilty group node status (run on each node):
+
+
+select r.replica_server_name, r.endpoint_url,
+       rs.connected_state_desc, rs.last_connect_error_description, 
+       rs.last_connect_error_number, rs.last_connect_error_timestamp 
+ from sys.dm_hadr_availability_replica_states rs 
+  join sys.availability_replicas r
+   on rs.replica_id=r.replica_id
+ where rs.is_local=1
 
 
 
