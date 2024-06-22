@@ -280,7 +280,9 @@ select r.replica_server_name, r.endpoint_url,
    on rs.replica_id=r.replica_id
  where rs.is_local=1
 
+--- check availabilty group resource type from powershell
 
+Get-ClusterResourceType | where name -like "SQL Server Availability Group"
 
 --------------------------------------------------------------------------
 
