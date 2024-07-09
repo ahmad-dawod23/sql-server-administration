@@ -38,7 +38,7 @@ installing from docker:
 5) for slowness issues, check if resource governer is being used.
 6) ask the customer to run the index query below
 7) use live query statistics to check the source of the slowness.
-
+7) check the query store
 */
 
 ---get port number:
@@ -124,7 +124,16 @@ NAME = N'AdventureWorks2014-Full Database Backup',
 STATS = 10
 GO
 
+--page restore from a backup:
 
+RESTORE DATABASE [LSDB] PAGE='1:100' FROM  DISK = N'\\WIN-8QTMHAQME88\logshipping\backup\LSDB.bak' WITH  FILE = 1,  NORECOVERY,  NOUNLOAD,  STATS = 5
+BACKUP LOG [LSDB] TO  DISK = N'C:\Program Files\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQL\Backup\LSDB_LogBackup_2024-07-03_09-21-09.bak' WITH NOFORMAT, NOINIT,  NAME = N'LSDB_LogBackup_2024-07-03_09-21-09', NOSKIP, NOREWIND, NOUNLOAD,  STATS = 5
+RESTORE LOG [LSDB] FROM  DISK = N'\\WIN-8QTMHAQME88\logshipping\backup\LSDB_20240617215925.trn' WITH  FILE = 1,  NORECOVERY,  NOUNLOAD,  STATS = 5
+RESTORE LOG [LSDB] FROM  DISK = N'\\WIN-8QTMHAQME88\logshipping\backup\LSDB_20240617220000.trn' WITH  FILE = 1,  NORECOVERY,  NOUNLOAD,  STATS = 5
+RESTORE LOG [LSDB] FROM  DISK = N'\\WIN-8QTMHAQME88\logshipping\backup\LSDB_20240617220959.trn' WITH  FILE = 1,  NORECOVERY,  NOUNLOAD,  STATS = 5
+RESTORE LOG [LSDB] FROM  DISK = N'C:\Program Files\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQL\Backup\LSDB_LogBackup_2024-07-03_09-21-09.bak' WITH  NOUNLOAD,  STATS = 5
+
+GO
 
 ---validating backup:
 
@@ -200,6 +209,17 @@ dbcc REPAIR_REBUILD
 
 dbcc REPAIR_FAST
 
+-- check for damaged pages in a table:
+
+dbcc checktable (tblEmployee)
+
+--check for damaged pages in a database:
+
+dbcc checkdb (testdb) with PHYSICAL_ONLY
+
+-- check which database the pages belongs to
+
+dbcc checkalloc
 
 --- index physical status health query:
 
