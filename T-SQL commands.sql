@@ -498,6 +498,41 @@ set transaction isolation level snapshot
 set transaction isolation level serializable
 
 
+--- check isolation level:
+
+SELECT transaction_sequence_num,
+       commit_sequence_num,
+       is_snapshot,
+       t.session_id,
+       first_snapshot_sequence_num,
+       max_version_chain_traversed,
+       elapsed_time_seconds,
+       host_name,
+       login_name,
+       CASE transaction_isolation_level
+           WHEN '0' THEN
+               'Unspecified'
+           WHEN '1' THEN
+               'ReadUncomitted'
+           WHEN '2' THEN
+               'ReadCommitted'
+           WHEN '3' THEN
+               'Repeatable'
+           WHEN '4' THEN
+               'Serializable'
+           WHEN '5' THEN
+               'Snapshot'
+       END AS transaction_isolation_level
+FROM sys.dm_tran_active_snapshot_database_transactions t
+    JOIN sys.dm_exec_sessions s
+        ON t.session_id = s.session_id;
+
+
+
+
+
+
+
 
 --importing data from a csv file with sql commands
 BULK INSERT dbo.Actors

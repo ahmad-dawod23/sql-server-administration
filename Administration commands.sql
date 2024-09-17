@@ -221,6 +221,10 @@ dbcc checkdb (testdb) with PHYSICAL_ONLY
 
 dbcc checkalloc
 
+--- shows the status of an indexed table statistics: 
+
+DBCC SHOW_STATISTICS('HumanResources.Department','AK_Department_Name')
+
 --- index physical status health query:
 
 SELECT S.name as 'Schema',
@@ -305,109 +309,6 @@ select r.replica_server_name, r.endpoint_url,
 
 Get-ClusterResourceType | where name -like "SQL Server Availability Group"
 
---------------------------------------------------------------------------
-
-
---replication
--- https://learn.microsoft.com/en-us/azure/azure-sql/managed-instance/replication-transactional-overview?view=azuresql
-
-/*
- very important: You must connect to MSSMS with [server\instance] using the proper server name otherwise you will get the error: The Distributor has not been installed correctly. Could not enable database for publishing.
-important: primary key is needed for transactional replication
-important: is prone to domain user problems during initial creation for some reason. Use sql agent proccess user at first, then change it later.
-update: above domain user errors were caused by the domain users not having permissons to run services. in an isolated controled domain, it worked fine. might need to enable tcp/ip and named aliases.
-creating a publication from the gui is super easy, below script is for creating a publication using sql code.
-*/
---==============================================================
--- replication - create publication - complete
--- marcelo miorelli
--- 06-Oct-2015
---==============================================================
-
-select @@servername
-select @@version
-select @@spid
-select @@servicename
-
---==============================================================
--- step 00 --  configuring the distributor
--- if there is already a distributor AND it is not healthy, 
--- you can have a look at the jobs related to this distributor and
--- MAYBE, if you need to get rid of it, run this step
--- generally you need to run this when adding a publication it says there is a problem with the distributor
---==============================================================
-
-use master
-go
-sp_dropdistributor 
--- Could not drop the Distributor 'QG-V-SQL-TS\AIFS_DEVELOPMENT'. This Distributor has associated distribution databases.
-
-EXEC sp_dropdistributor 
-     @no_checks = 1
-    ,@ignore_distributor = 1
-GO
-
---==============================================================
--- step 01 --  configuring the distributor
--- tell this server who is the distributor and the admin password to connect there
-
--- create the distributor database
---==============================================================
-
-use master
-exec sp_adddistributor 
- @distributor = N'the_same_server'
-,@heartbeat_interval=10
-,@password='#J4g4nn4th4_the_password#'
-
-USE master
-EXEC sp_adddistributiondb 
-    @database = 'dist1', 
-    @security_mode = 1;
-GO
-
-exec sp_adddistpublisher @publisher = N'the_same_server', 
-                         @distribution_db = N'dist1';
-GO
-
---==============================================================
--- check thing out before going ahead and create the publications
---==============================================================
-
-USE master;  
-go  
-
---Is the current server a Distributor?  
---Is the distribution database installed?  
---Are there other Publishers using this Distributor?  
-EXEC sp_get_distributor  
-
---Is the current server a Distributor?  
-SELECT is_distributor FROM sys.servers WHERE name='repl_distributor' AND data_source=@@servername;  
-
---Which databases on the Distributor are distribution databases?  
-SELECT name FROM sys.databases WHERE is_distributor = 1  
-
---What are the Distributor and distribution database properties?  
-EXEC sp_helpdistributor;  
-EXEC sp_helpdistributiondb;  
-EXEC sp_helpdistpublisher;  
-
---==============================================================
--- here you need to have a distributor in place
-
--- Enabling the replication database
--- the name of the database we want to replicate is COLAFinance
---==============================================================
-use master
-exec sp_get_distributor
-
-
-use master
-exec sp_replicationdboption @dbname = N'the_database_to_publish', 
-                            @optname = N'publish', 
-                            @value = N'true'
-GO
 
 
 -- resource governer classifyer function example:
@@ -441,3 +342,236 @@ GO
 ALTER RESOURCE GOVERNOR with (CLASSIFIER_FUNCTION = dbo.fnTimeClassifier);  
 ALTER RESOURCE GOVERNOR RECONFIGURE;  
 GO
+
+
+
+
+---command to check for memory usage
+
+SELECT SUBSTRING(st.text, er.statement_start_offset/2 + 1,(CASE WHEN er.statement_end_offset = -1 THEN LEN(CONVERT(nvarchar(max),st.text)) * 2 ELSE er.statement_end_offset END - er.statement_start_offset)/2) as Query_Text,tsu.session_id ,tsu.request_id, tsu.exec_context_id, (tsu.user_objects_alloc_page_count - tsu.user_objects_dealloc_page_count) as OutStanding_user_objects_page_counts,(tsu.internal_objects_alloc_page_count - tsu.internal_objects_dealloc_page_count) as OutStanding_internal_objects_page_counts,er.start_time, er.command, er.open_transaction_count, er.percent_complete, er.estimated_completion_time, er.cpu_time, er.total_elapsed_time, er.reads,er.writes, er.logical_reads, er.granted_query_memory,es.host_name , es.login_name , es.program_name FROM sys.dm_db_task_space_usage tsu INNER JOIN sys.dm_exec_requests er ON ( tsu.session_id = er.session_id AND tsu.request_id = er.request_id) INNER JOIN sys.dm_exec_sessions es ON ( tsu.session_id = es.session_id ) CROSS APPLY sys.dm_exec_sql_text(er.sql_handle) st WHERE (tsu.internal_objects_alloc_page_count+tsu.user_objects_alloc_page_count) > 0
+ORDER BY (tsu.user_objects_alloc_page_count - tsu.user_objects_dealloc_page_count)+ (tsu.internal_objects_alloc_page_count - tsu.internal_objects_dealloc_page_count) DESC
+
+
+
+--- create azure storage secret:
+
+CREATE CREDENTIAL [https://xxxx.blob.core.windows.net/xxxxx] 
+WITH IDENTITY='SHARED ACCESS SIGNATURE', 
+SECRET = 'sv=2018-03-28&ss=b&srt=sco&spxxxxxxxxxxxxxxxxxx'
+
+--- This Transact-SQL query shows replication lags and last replication time of secondary databases.
+ --Column "replication_lag_sec" indicates time difference in seconds between the last_replication value and the timestamp of that transaction's commit on the primary based on the primary database clock. This value is available on the primary database only. 
+ 
+SELECT   
+     link_guid  
+   , partner_server  
+   , last_replication  
+   , replication_lag_sec   
+FROM sys.dm_geo_replication_link_status;
+
+ sys.dm_geo_replication_link_status, sys.dm_continuous_copy_status
+ 
+ 
+---The seeding process and its speed can be monitored via DMV
+ 
+ 
+ SELECT 
+	role_desc,
+	transfer_rate_bytes_per_second,
+	transferred_size_bytes,
+	database_size_bytes,
+	start_time_utc,
+	estimate_time_complete_utc,
+	end_time_utc,
+	local_physical_seeding_id
+FROM
+	sys.dm_hadr_physical_seeding_stats;
+
+
+--- finding backup history from msdb:
+
+SELECT TOP 5000 bcks.database_name, bckMF.device_type, BackD.type_desc, BackD.physical_name, bckS.type, CASE bckS.[type] WHEN 'D' THEN 'Full'
+WHEN 'I' THEN 'Differential'
+WHEN 'L' THEN 'Transaction Log'
+END AS BackupType, bckS.backup_start_date, bckS.backup_finish_date, 
+convert(char(8),dateadd(s,datediff(s,bckS.backup_start_date, bckS.backup_finish_date),'1900-1-1'),8) AS BackupTimeFull,
+convert(decimal(19,2),(bckS.backup_size *1.0) / power(2,20)) as [Backup Size(MB)],CAST(bcks.backup_size / 1073741824.0E AS DECIMAL(10, 2)) as [Backup Size(GB)] ,Convert(decimal(19,2),(bckS.compressed_backup_size *1.0) / power(2,20)) as [Compressed Backup Size(MB)]
+, CAST(bcks.compressed_backup_size / 1073741824.0E AS DECIMAL(10, 2)) as [Compressed Backup Size(GB)],
+software_name, is_compressed, is_copy_only, is_encrypted, physical_device_name,first_lsn, last_lsn, checkpoint_lsn, database_backup_lsn, user_name, @@SERVERNAME
+FROM  msdb.dbo.backupset bckS INNER JOIN msdb.dbo.backupmediaset bckMS
+ON bckS.media_set_id = bckMS.media_set_id
+INNER JOIN msdb.dbo.backupmediafamily bckMF 
+ON bckMS.media_set_id = bckMF.media_set_id
+Left join sys.backup_devices BackD on bckMF.device_type = BackD.type
+--where database_name='DBName'
+ORDER BY bckS.backup_start_date DESC
+
+
+
+
+
+/*
+[T1] Top 10 Active CPU queries by session 
+*/
+print '--top 10 Active CPU Consuming Queries by sessions--'  
+SELECT 
+	top 10 req.session_id, 
+	req.start_time, 
+	cpu_time 'cpu_time_ms', 
+	object_name(st.objectid,st.dbid) 'ObjectName' ,  
+	substring (REPLACE (REPLACE (SUBSTRING(ST.text, (req.statement_start_offset/2) + 1,   
+	((
+		CASE statement_end_offset    
+			WHEN -1 THEN DATALENGTH(ST.text)   
+			ELSE req.statement_end_offset 
+			END - req.statement_start_offset)/2) + 1), CHAR(10), ' '), CHAR(13), ' '), 1, 512)  AS statement_text   
+ FROM sys.dm_exec_requests AS req   
+ CROSS APPLY sys.dm_exec_sql_text(req.sql_handle) as ST 
+ order by cpu_time desc 
+
+ /*
+ [T2] Top 10 Active CPU queries aggregated by query hash 
+ */
+ print '-- top 10 Active CPU Consuming Queries (aggregated)--'  
+ select 
+	top 10 getdate() runtime,  * 
+from (
+	SELECT query_stats.query_hash,    
+	SUM(query_stats.cpu_time) 'Total_Request_Cpu_Time_Ms', 
+	sum(logical_reads) 'Total_Request_Logical_Reads', 
+	min(start_time) 'Earliest_Request_start_Time', 
+	count(*) 'Number_Of_Requests', 
+	substring (REPLACE (REPLACE (MIN(query_stats.statement_text),  CHAR(10), ' '), CHAR(13), ' '), 1, 256) AS "Statement_Text"   
+ FROM (
+	SELECT req.*,  
+	SUBSTRING(ST.text, (req.statement_start_offset/2) + 1, 
+	( (
+		CASE statement_end_offset
+			WHEN -1 THEN DATALENGTH(ST.text)   
+			ELSE req.statement_end_offset 
+			END - req.statement_start_offset)/2) + 1) AS statement_text   
+	FROM sys.dm_exec_requests AS req   
+	CROSS APPLY sys.dm_exec_sql_text(req.sql_handle) as ST) as query_stats   
+	group by query_hash) t 
+	order by Total_Request_Cpu_Time_Ms desc 
+
+/*
+[T3] TOP 15 CPU consuming queries from query store 
+-- top 15 CPU consuming queries by query hash 
+-- note that a query  hash can have many query id if not parameterized or not parameterized properly 
+-- it grabs a sample query text by min  
+*/
+WITH AggregatedCPU AS (
+	SELECT q.query_hash, 
+		SUM(count_executions * avg_cpu_time / 1000.0) AS total_cpu_millisec, 
+		SUM(count_executions * avg_cpu_time / 1000.0) /SUM(count_executions) as avg_cpu_millisec, 
+		max(rs.max_cpu_time/1000.00) as max_cpu_millisec, 
+		max(max_logical_io_reads) max_logical_reads, 
+		COUNT (distinct p.plan_id) AS number_of_distinct_plans, 
+		count (distinct p.query_id) as number_of_distinct_query_ids, 
+		sum (case when rs.execution_type_desc='Aborted' then count_executions else 0 end) as Aborted_Execution_Count, 
+		sum (case when rs.execution_type_desc='Regular' then count_executions else 0 end) as Regular_Execution_Count, 
+		sum (case when rs.execution_type_desc='Exception' then count_executions else 0 end) as Exception_Execution_Count, 
+		sum (count_executions) as total_executions, 
+		min(qt.query_sql_text) as sampled_query_text 
+	FROM sys.query_store_query_text AS qt JOIN sys.query_store_query AS q  
+		ON qt.query_text_id = q.query_text_id 
+		JOIN sys.query_store_plan AS p ON q.query_id = p.query_id 
+		JOIN sys.query_store_runtime_stats AS rs ON rs.plan_id = p.plan_id 
+		JOIN sys.query_store_runtime_stats_interval AS rsi  
+		ON rsi.runtime_stats_interval_id = rs.runtime_stats_interval_id 
+	WHERE   
+		rs.execution_type_desc in( 'Regular' , 'Aborted', 'Exception') and   
+		rsi.start_time >= DATEADD(hour, -2, GETUTCDATE())  
+	GROUP BY  q.query_hash 
+) , 
+OrderedCPU AS ( 
+	SELECT query_hash, 
+		total_cpu_millisec, 
+		avg_cpu_millisec,
+		max_cpu_millisec,  
+		max_logical_reads, 
+		number_of_distinct_plans, 
+		number_of_distinct_query_ids,  
+		total_executions, 
+		Aborted_Execution_Count,
+		Regular_Execution_Count, 
+		Exception_Execution_Count, 
+		sampled_query_text, 
+		ROW_NUMBER () OVER (ORDER BY total_cpu_millisec DESC, query_hash asc) AS RN 
+	FROM AggregatedCPU 
+) 
+SELECT * from OrderedCPU OD  
+WHERE OD.RN <=15 ORDER BY total_cpu_millisec DESC 
+
+
+-----find isolation level for locking
+
+SELECT transaction_sequence_num,
+       commit_sequence_num,
+       is_snapshot,
+       t.session_id,
+       first_snapshot_sequence_num,
+       max_version_chain_traversed,
+       elapsed_time_seconds,
+       host_name,
+       login_name,
+       CASE transaction_isolation_level
+           WHEN '0' THEN
+               'Unspecified'
+           WHEN '1' THEN
+               'ReadUncomitted'
+           WHEN '2' THEN
+               'ReadCommitted'
+           WHEN '3' THEN
+               'Repeatable'
+           WHEN '4' THEN
+               'Serializable'
+           WHEN '5' THEN
+               'Snapshot'
+       END AS transaction_isolation_level
+FROM sys.dm_tran_active_snapshot_database_transactions t
+    JOIN sys.dm_exec_sessions s
+        ON t.session_id = s.session_id;
+
+
+
+---active transactions:
+
+SELECT SP.SPID,[text] as SQLCode FROM
+SYS.SYSPROCESSES SP
+CROSS APPLY
+SYS.dm_exec_sql_text(SP.[SQL_HANDLE])AS DEST WHERE OPEN_TRAN >= 1
+
+
+
+--- extended event to monitor failed logins:
+
+CREATE EVENT SESSION [LoginIssues] ON SERVER
+
+ADD EVENT sqlserver.connectivity_ring_buffer_recorded(
+
+    ACTION(sqlos.task_time,sqlserver.client_app_name,sqlserver.client_hostname,sqlserver.client_pid,sqlserver.database_id,sqlserver.database_name,sqlserver.is_system,sqlserver.nt_username,sqlserver.session_id,sqlserver.session_nt_username,sqlserver.sql_text,sqlserver.username)),
+
+ADD EVENT sqlserver.login(SET collect_options_text=(1)
+ 
+    ACTION(sqlos.task_time,sqlserver.client_app_name,sqlserver.client_hostname,sqlserver.client_pid,sqlserver.database_id,sqlserver.database_name,sqlserver.is_system,sqlserver.nt_username,sqlserver.session_id,sqlserver.session_nt_username,sqlserver.sql_text,sqlserver.username)),
+
+ADD EVENT sqlserver.logout(
+
+    ACTION(sqlos.task_time,sqlserver.client_app_name,sqlserver.client_hostname,sqlserver.client_pid,sqlserver.database_id,sqlserver.database_name,sqlserver.is_system,sqlserver.nt_username,sqlserver.session_id,sqlserver.session_nt_username,sqlserver.sql_text,sqlserver.username)),
+
+ADD EVENT sqlserver.security_error_ring_buffer_recorded(
+
+    ACTION(sqlos.task_time,sqlserver.client_app_name,sqlserver.client_hostname,sqlserver.client_pid,sqlserver.database_id,sqlserver.database_name,sqlserver.is_system,sqlserver.nt_username,sqlserver.session_id,sqlserver.session_nt_username,sqlserver.sql_text,sqlserver.username))
+
+ADD TARGET package0.ring_buffer
+
+WITH (MAX_MEMORY=4096 KB,EVENT_RETENTION_MODE=ALLOW_SINGLE_EVENT_LOSS,MAX_DISPATCH_LATENCY=30 SECONDS,MAX_EVENT_SIZE=0 KB,MEMORY_PARTITION_MODE=NONE,TRACK_CAUSALITY=OFF,STARTUP_STATE=OFF)
+
+GO
+
+
+
+
+
