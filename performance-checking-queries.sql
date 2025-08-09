@@ -1,27 +1,6 @@
 
 ---- blocking query:
 
-SELECT
-    r.session_id,
-    r.status,
-    r.command,
-    r.wait_type,
-    r.wait_time,
-    r.blocking_session_id,
-    l.resource_type,
-    l.resource_description,
-    l.request_mode,
-    l.request_status,
-    s.login_name,
-    s.host_name,
-    s.program_name
-FROM sys.dm_tran_locks l
-JOIN sys.dm_exec_requests r ON l.request_session_id = r.session_id
-JOIN sys.dm_exec_sessions s ON r.session_id = s.session_id
-WHERE l.resource_type = 'APPLICATION'
-ORDER BY r.session_id;
-
---------------------------------
 
 SELECT
 	r.session_id,r.plan_handle,r.sql_handle,r.request_id,r.start_time, r.status,r.command, r.database_id,r.user_id, r.wait_type

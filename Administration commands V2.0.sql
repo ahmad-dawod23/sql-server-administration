@@ -25,7 +25,7 @@ JOIN sys.query_store_plan AS p ON qid.query_id=p.query_id and qid.query_plan_has
    /*WHERE qt.query_sql_text LIKE '%SQLTextHere%'*/
    /*WHERE OBJECT_NAME(q.object_id) = 'SPNameHere'*/
 ORDER BY 
-   avg_cpu_time_ms DESC
+   avg_physical_io_reads_ms DESC
    /*,avg_logical_io_reads_ms*/;
 GO
 
