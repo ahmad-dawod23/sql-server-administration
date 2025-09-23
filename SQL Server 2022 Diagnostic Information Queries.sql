@@ -494,7 +494,6 @@ FROM sys.dm_os_host_info WITH (NOLOCK) OPTION (RECOMPILE);
 
 
 
-
 -- host_sku codes (only valid for Windows)
 -- 4 is Enterprise Edition
 -- 7 is Standard Server Edition

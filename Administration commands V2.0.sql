@@ -37,7 +37,7 @@ GO
 
 USE MASTER
 GO
-xp_readerrorlog 0, 1, N'Login Failed'
+EXEC xp_readerrorlog 0, 1, N'Login failed', NULL, NULL, NULL, N'desc';
 GO
 
 --find network protocol currently used
@@ -177,6 +177,13 @@ DATEADD(SECOND,estimated_completion_time/1000, GETDATE()) AS estimated_completio
 FROM sys.dm_exec_requests r
 CROSS APPLY sys.dm_exec_sql_text(r.sql_handle) a
 WHERE r.command IN ('BACKUP DATABASE','RESTORE DATABASE', 'BACKUP LOG','RESTORE LOG')
+
+
+
+
+
+
+
 
 
 
