@@ -1,0 +1,487 @@
+----------------------------------------------------------------------- Start of Report ------------------------------------------------------------------------
+
+SQL Server Connectivity Check v1.0.1487.0, run on 09/29/2025 01:11:50 PM (UTC+03:00) Kuwait, Riyadh
+by the Microsoft CSS SQL Networking Team
+
+This report contains the following sections:
+1. Computer, Domain, Disk Space, Network Adapters.
+2. Client Drivers, SQL Aliases, and Local Security for client connectivity.
+3. SQL Server Processes of Interest, Service Account Properties, Service Principal Names, SPN Issues, and Suggested SPNs.
+
+
+--------------------------------------------------------------------- Computer Information ---------------------------------------------------------------------
+
+Report run by:              REDMOND\daoudahmad
+
+NETBIOS Name:               LAPTOP-MD9QRRU0
+FQDN:                       LAPTOP-MD9QRRU0
+DNS Suffix:                 
+
+Windows Name and Edition:   Windows 10 Enterprise (25H2)
+Windows Version:            10.0.26200.6584
+Windows Build:              26200
+Windows Release ID:         2009
+64-Bit System:              True
+.NET 4.x version:           4.8.09032
+CLR 4.0 Strong Crypto:      Not set
+CLR 4.0 Strong Crypto x86:  Not set
+.NET 2.x/3.x version:       Not installed
+CLR 2.0 Strong Crypto:      Not set
+CLR 2.0 Strong Crypto x86:  Not set
+Clustered:                  False
+IIS Running:                True
+CredentialGuard enabled:    True
+
+Last System Reboot:         9/25/2025 9:16:07 AM (Uptime: 4 Days, 3 Hours, 55 Minutes)
+Reboot Recommended:         True
+
+Computer Role:              Standalone Workstation
+Domain/Workgroup:           WORKGROUP
+Joined to Domain:           False
+Connected to Domain:        False
+Expanded Domain Name:       
+
+Program Files Folder:       C:\Program Files
+Common Files Folder:        C:\Program Files\Common Files
+Program Files (x86) Folder: C:\Program Files (x86)
+Common Files (x86) Folder:  C:\Program Files (x86)\Common Files
+
+Warning: Reboot is recommended due to pending file rename operations being present.
+Warning: This computer belongs to a workgroup and not a domain. This can cause authentication and delegation issues.
+
+Disk Drives:
+
+    Drive  Type   Format         Capacity       Bytes Free  % Free  Status
+    -----  -----  ------  ---------------  ---------------  ------  ------
+    C:\    Fixed  NTFS    510,590,447,616  271,003,504,640     53%        
+
+Network Settings:
+
+TCPMaxDataRetransmissions:  <missing> Default is 5
+Initial RTO:                1000
+Max SYN Retransmissions:    4
+TCPChimney:                 
+RSS:                        enabled
+TCPA:                       
+Min Ephemeral Port:         49152
+Max Ephemeral Port:         65535
+TCP Timed Wait Delay:       
+Syn Attack Protect:         
+
+No HOSTS file entries found for this machine.
+
+The following IP addresses are associated with this machine:
+
+    Address Family  Address                                
+    --------------  ---------------------------------------
+    InterNetworkV6  fe80::68bb:65d4:4c8c:63e2%21           
+    InterNetworkV6  2a01:9700:4146:9c00:30b7:2d20:ed76:643 
+    InterNetworkV6  2a01:9700:4146:9c00:3db1:c1a7:fd5c:2804
+    InterNetwork    192.168.1.83                           
+    InterNetworkV6  fe80::c1e6:3d12:316d:636d%26           
+    InterNetwork    172.23.16.1                            
+
+FLTMC Filters: bfs | bindflt | CldFlt | FileCrypt | FileInfo | luafv | MEMEPMAgent | MsSecFlt | npsvctrig | storqosflt | UCPD | UnionFS | wcifs | WdFilter | Wof
+
+Info: The vnetflt.sys driver is not installed on this machine.
+
+Network Mini-Drivers:
+
+    Service Name  Filter Media Types                           Help Text                                            
+    ------------  -------------------------------------------  -----------------------------------------------------
+                                                               @%systemroot%\system32\srvsvc.dll,-110               
+                  vmnetextension                               @%windir%\System32\drivers\vmswitch.sys,-60004       
+                  vwifi,vchannel                               @%windir%\System32\drivers\vwififlt.sys,-106         
+    l1vhlwf       ethernet                                     @%SystemRoot%\system32\drivers\l1vhlwf.sys,-2        
+    l2bridge      ethernet,ppip                                @%SystemRoot%\System32\drivers\l2bridge.sys,-5001    
+    MsBridge      ms_implatform                                @%SystemRoot%\system32\bridgeres.dll,-2              
+    NativeWifiP   wlan                                                                                              
+    NdisCap       ethernet,wlan,ppip,vmnetextension,bluetooth  @%windir%\System32\drivers\ndiscap.sys,-5001         
+    NetBIOS                                                    @%windir%\system32\drivers\netbios.sys,-500          
+    nm3           ethernet,wan,tunnel,ppip                     Microsoft Network Monitor 3 Lightweight Filter Driver
+    Psched        cp_tunnel,ethernet,wan                       @%windir%\System32\drivers\pacer.sys,-100            
+    WfpLwfs       ethernet,wlan,ppip,wan                       @%windir%\System32\drivers\wfplwfs.sys,-6003         
+    WfpLwfs       ethernet                                     @%windir%\System32\drivers\wfplwfs.sys,-6002         
+    WfpLwfs       vmnetextension                               @%windir%\System32\drivers\wfplwfs.sys,-6001         
+
+Network Adapters:
+
+Name:                       Hyper-V Virtual Switch Extension Adapter
+Adapter Type:               Ethernet 802.3
+MAC Address:                
+Driver Date:                6-21-2006
+Speed:                      
+Speed/Duplex:               
+Flow Control:               
+RSS:                        
+Jumbo Frames:               
+NIC Teaming:                False
+
+Warning: Network driver may be out of date.
+
+Name:                       Intel(R) Wi-Fi 6 AX201 160MHz
+Adapter Type:               Ethernet 802.3
+MAC Address:                0C:9A:3C:6D:8B:02
+Driver Date:                6-12-2025
+Speed:                      823350000
+Speed/Duplex:               
+Flow Control:               
+RSS:                        
+Jumbo Frames:               
+NIC Teaming:                False
+
+Offloading: ARP offload for WoWLAN (*PMARPOffload): Enabled (1)
+Offloading: GTK rekeying for WoWLAN (*PMWiFiRekeyOffload): Enabled (1)
+Offloading: NS offload for WoWLAN (*PMNSOffload): Enabled (1)
+
+Name:                       Lenovo USB Ethernet
+Adapter Type:               Ethernet 802.3
+MAC Address:                48:2A:E3:F7:A6:5A
+Driver Date:                2-28-2025
+Speed:                      
+Speed/Duplex:               Auto Negotiation (0)
+Flow Control:               Rx & Tx Enabled (3)
+RSS:                        
+Jumbo Frames:               Disabled (1514)
+NIC Teaming:                False
+
+Offloading: ARP Offload (*PMARPOffload): Enabled (1)
+Offloading: IPv4 Checksum Offload (*IPChecksumOffloadIPv4): Rx & Tx Enabled (3)
+Offloading: Large Send Offload v2 (IPv4) (*LsoV2IPv4): Enabled (1)
+Offloading: Large Send Offload v2 (IPv6) (*LsoV2IPv6): Enabled (1)
+Offloading: NS Offload (*PMNSOffload): Enabled (1)
+Offloading: TCP Checksum Offload (IPv4) (*TCPChecksumOffloadIPv4): Rx & Tx Enabled (3)
+Offloading: TCP Checksum Offload (IPv6) (*TCPChecksumOffloadIPv6): Rx & Tx Enabled (3)
+Offloading: UDP Checksum Offload (IPv4) (*UDPChecksumOffloadIPv4): Rx & Tx Enabled (3)
+Offloading: UDP Checksum Offload (IPv6) (*UDPChecksumOffloadIPv6): Rx & Tx Enabled (3)
+
+Name:                       Microsoft Wi-Fi Direct Virtual Adapter
+Adapter Type:               Ethernet 802.3
+MAC Address:                0C:9A:3C:6D:8B:03
+Driver Date:                6-21-2006
+Speed:                      
+Speed/Duplex:               
+Flow Control:               
+RSS:                        
+Jumbo Frames:               
+NIC Teaming:                False
+
+Warning: Network driver may be out of date.
+
+Name:                       Microsoft Wi-Fi Direct Virtual Adapter
+Adapter Type:               Ethernet 802.3
+MAC Address:                0E:9A:3C:6D:8B:02
+Driver Date:                6-21-2006
+Speed:                      
+Speed/Duplex:               
+Flow Control:               
+RSS:                        
+Jumbo Frames:               
+NIC Teaming:                False
+
+Warning: Network driver may be out of date.
+
+Name:                       WAN Miniport (IP)
+Adapter Type:               Ethernet 802.3
+MAC Address:                7E:F2:20:52:41:53
+Driver Date:                6-21-2006
+Speed:                      
+Speed/Duplex:               
+Flow Control:               
+RSS:                        
+Jumbo Frames:               
+NIC Teaming:                False
+
+Warning: Network driver may be out of date.
+
+Name:                       WAN Miniport (IPv6)
+Adapter Type:               Ethernet 802.3
+MAC Address:                A6:5E:20:52:41:53
+Driver Date:                6-21-2006
+Speed:                      
+Speed/Duplex:               
+Flow Control:               
+RSS:                        
+Jumbo Frames:               
+NIC Teaming:                False
+
+Warning: Network driver may be out of date.
+
+Name:                       WAN Miniport (Network Monitor)
+Adapter Type:               Ethernet 802.3
+MAC Address:                C0:4D:20:52:41:53
+Driver Date:                6-21-2006
+Speed:                      
+Speed/Duplex:               
+Flow Control:               
+RSS:                        
+Jumbo Frames:               
+NIC Teaming:                False
+
+Warning: Network driver may be out of date.
+
+
+------------------------------------------------------------ Client Security and Driver Information ------------------------------------------------------------
+
+Security Settings:
+
+Crash on Audit Fail:        0
+Lanman Compatibility Level: Not specified - default: 5 (Send NTLMv2 response only. Refuse LM & NTLM)
+Disable Loopback Check:     0
+Back Connection Host Names: 
+Max Kerberos Token Size:    48000
+Kerberos Logging Level:     0
+Kerberos local Encryption:  Not Specified (RC4_HMAC_MD5+AES128_HMAC_SHA1+AES256_HMAC_SHA1)
+
+Warning: NTLM callbacks should fail. Neither DisableLoopbackCheck nor BackConnectionHostNames is set.
+
+    Client/Server  TLS Version  Default        Enabled in Reg  Disabled By Default  Effective Value
+    -------------  -----------  -------------  --------------  -------------------  ---------------
+    Client         SSL 2.0      Not Supported                                       Not Supported  
+    Client         SSL 3.0      Disabled                                            Disabled       
+    Client         TLS 1.0      Enabled                                             Enabled        
+    Client         TLS 1.1      Enabled                                             Enabled        
+    Client         TLS 1.2      Enabled                                             Enabled        
+    Client         TLS 1.3      Enabled                                             Enabled        
+    Server         SSL 2.0      Not Supported                                       Not Supported  
+    Server         SSL 3.0      Disabled                                            Disabled       
+    Server         TLS 1.0      Enabled                                             Enabled        
+    Server         TLS 1.1      Enabled                                             Enabled        
+    Server         TLS 1.2      Enabled                                             Enabled        
+    Server         TLS 1.3      Enabled                                             Enabled        
+
+Cipher Suite Protocol Order:
+
+    Registry List                                             Policy List
+    --------------------------------------------------------  -----------
+    TLS_AES_256_GCM_SHA384 (TLS 1.3)                                     
+    TLS_AES_128_GCM_SHA256 (TLS 1.3)                                     
+    TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384 (TLS 1.2)                    
+    TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256 (TLS 1.2)                    
+    TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384 (TLS 1.2)                      
+    TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256 (TLS 1.2)                      
+    TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA384 (TLS 1.2)                    
+    TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256 (TLS 1.2)                    
+    TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA384 (TLS 1.2)                      
+    TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256 (TLS 1.2)                      
+    TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA (TLS 1.2, 1.1, 1.0)             
+    TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA (TLS 1.2, 1.1, 1.0)             
+    TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA (TLS 1.2, 1.1, 1.0)               
+    TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA (TLS 1.2, 1.1, 1.0)               
+    TLS_RSA_WITH_AES_256_GCM_SHA384 (TLS 1.2)                            
+    TLS_RSA_WITH_AES_128_GCM_SHA256 (TLS 1.2)                            
+    TLS_RSA_WITH_AES_256_CBC_SHA256 (TLS 1.2)                            
+    TLS_RSA_WITH_AES_128_CBC_SHA256 (TLS 1.2)                            
+    TLS_RSA_WITH_AES_256_CBC_SHA (TLS 1.2, 1.1, 1.0)                     
+    TLS_RSA_WITH_AES_128_CBC_SHA (TLS 1.2, 1.1, 1.0)                     
+    TLS_RSA_WITH_NULL_SHA256 (TLS 1.2, weak)                             
+    TLS_RSA_WITH_NULL_SHA (TLS 1.2, 1.1, 1.0, SSL 3.0, weak)             
+    TLS_PSK_WITH_AES_256_GCM_SHA384 (TLS 1.2)                            
+    TLS_PSK_WITH_AES_128_GCM_SHA256 (TLS 1.2)                            
+    TLS_PSK_WITH_AES_256_CBC_SHA384 (TLS 1.2)                            
+    TLS_PSK_WITH_AES_128_CBC_SHA256 (TLS 1.2)                            
+    TLS_PSK_WITH_NULL_SHA384 (TLS 1.2, weak)                             
+    TLS_PSK_WITH_NULL_SHA256 (TLS 1.2, weak)                             
+
+Diffie-Hellman algorithm version: 2
+Diffie-Hellman cipher suites are not enabled. This avoids the risk of certain intermittent TLS failures.
+
+SQL Server OLE DB Providers and ODBC Drivers:
+
+ODBC traces are disabled.
+
+    Name                           Description                                Type    Version          Supported   TLS 1.2  TLS 1.3  MSF  CLSID                                 Path                                                      Message
+    -----------------------------  -----------------------------------------  ------  ---------------  ----------  -------  -------  ---  ------------------------------------  --------------------------------------------------------  -------
+    SQLOLEDB                       Microsoft OLE DB Provider for SQL Server   OLE DB  10.0.26100.3624  Deprecated  Yes      No       No   0C7FF16C-38E3-11d0-97AB-00C04FC2AD98  C:\Program Files\Common Files\System\Ole DB\sqloledb.dll         
+    SQLOLEDB                       Microsoft OLE DB Provider for SQL Server   OLE DB  10.0.26100.3624  Deprecated  Yes      No       No   0C7FF16C-38E3-11d0-97AB-00C04FC2AD98  C:\Program Files\Common Files\System\Ole DB\sqloledb.dll         
+    MSOLEDBSQL                     Microsoft OLE DB Driver for SQL Server     OLE DB  18.7.0004.0      Yes         Yes      No       Yes  5A23DE84-1D7B-4A16-8DED-B29C09CB648D  C:\WINDOWS\system32\msoledbsql.dll                               
+    MSOLEDBSQL                     Microsoft OLE DB Driver for SQL Server     OLE DB  18.7.0004.0      Yes         Yes      No       Yes  5A23DE84-1D7B-4A16-8DED-B29C09CB648D  C:\WINDOWS\SysWOW64\msoledbsql.dll                               
+    MSOLEDBSQL19                   Microsoft OLE DB Driver 19 for SQL Server  OLE DB  19.3.0005.0      Yes         Yes      No       Yes  EE5DE99A-4453-4C96-861C-F8832A7F59FE  C:\WINDOWS\system32\msoledbsql19.dll                             
+    MSOLEDBSQL19                   Microsoft OLE DB Driver 19 for SQL Server  OLE DB  19.3.0005.0      Yes         Yes      No       Yes  EE5DE99A-4453-4C96-861C-F8832A7F59FE  C:\WINDOWS\SysWOW64\msoledbsql19.dll                             
+    SQL Server                     SQL Server                                 ODBC    10.0.26100.3624  Deprecated  Yes      No       No                                         C:\WINDOWS\system32\SQLSRV32.dll                                 
+    ODBC Driver 17 for SQL Server  ODBC Driver 17 for SQL Server              ODBC    17.10.6.1        Yes         Yes      No       Yes                                        C:\WINDOWS\system32\msodbcsql17.dll                              
+    ODBC Driver 18 for SQL Server  ODBC Driver 18 for SQL Server              ODBC    18.5.1.1         Yes         Yes      No       Yes                                        C:\WINDOWS\system32\msodbcsql18.dll                              
+    SQL Server                     SQL Server                                 ODBC    10.0.26100.3624  Deprecated  Yes      No       No                                         C:\WINDOWS\SysWOW64\SQLSRV32.dll                                 
+    ODBC Driver 17 for SQL Server  ODBC Driver 17 for SQL Server              ODBC    17.10.6.1        Yes         Yes      No       Yes                                        C:\WINDOWS\SysWOW64\msodbcsql17.dll                              
+    ODBC Driver 18 for SQL Server  ODBC Driver 18 for SQL Server              ODBC    18.5.1.1         Yes         Yes      No       Yes                                        C:\WINDOWS\SysWOW64\msodbcsql18.dll                              
+
+Other OLE DB Providers and ODBC Drivers:
+
+    Name                                                    Description                                                   Type    Version           CLSID                                 Path                                                                                                     Message       
+    ------------------------------------------------------  ------------------------------------------------------------  ------  ----------------  ------------------------------------  -------------------------------------------------------------------------------------------------------  --------------
+    ADsDSOObject                                            OLE DB Provider for Microsoft Directory Services              OLE DB  10.0.26100.1      549365d0-ec26-11cf-8310-00aa00b505db  C:\WINDOWS\system32\activeds.dll                                                                                       
+    ADsDSOObject                                            OLE DB Provider for Microsoft Directory Services              OLE DB  10.0.26100.1      549365d0-ec26-11cf-8310-00aa00b505db  C:\WINDOWS\system32\activeds.dll                                                                                       
+    Microsoft.ACE.OLEDB.12.0                                Microsoft Office 12.0 Access Database Engine OLE DB Provider  OLE DB  16.0.19231.20138  3BE786A0-0366-4F5C-9434-25CF162E475E  C:\Program Files\Microsoft Office\root\VFS\ProgramFilesCommonX64\Microsoft Shared\Office16\ACEOLEDB.DLL                
+    Microsoft.ACE.OLEDB.16.0                                Microsoft Office 16.0 Access Database Engine OLE DB Provider  OLE DB  16.0.19231.20138  3BE786A2-0366-4F5C-9434-25CF162E475E  C:\Program Files\Microsoft Office\root\VFS\ProgramFilesCommonX64\Microsoft Shared\Office16\ACEOLEDB.DLL                
+    Microsoft.Jet.OLEDB.4.0                                 Microsoft Jet 4.0 OLE DB Provider                             OLE DB  10.0.26100.5074   dee35070-506b-11cf-b1aa-00aa00b8de95  C:\Windows\SysWOW64\msjetoledb40.dll                                                                                   
+    MSDAORA                                                 Microsoft OLE DB Provider for Oracle                          OLE DB  Unknown           e8cc4cbe-fdff-11d0-b865-00a0c9081c1d  C:\Program Files\Common Files\System\Ole DB\msdaora.dll                                                  File not found
+    MSDAOSP                                                 Microsoft OLE DB Simple Provider                              OLE DB  10.0.26100.1150   dfc8bdc0-e378-11d0-9b30-0080c7e9fe95  C:\Program Files\Common Files\System\Ole DB\msdaosp.dll                                                                
+    MSDAOSP                                                 Microsoft OLE DB Simple Provider                              OLE DB  10.0.26100.1150   dfc8bdc0-e378-11d0-9b30-0080c7e9fe95  C:\Program Files\Common Files\System\Ole DB\msdaosp.dll                                                                
+    MSDASQL                                                 Microsoft OLE DB Provider for ODBC Drivers                    OLE DB  10.0.26100.2894   c8b522cb-5cf3-11ce-ade5-00aa0044773d  C:\Program Files\Common Files\System\Ole DB\msdasql.dll                                                                
+    MSDASQL                                                 Microsoft OLE DB Provider for ODBC Drivers                    OLE DB  10.0.26100.2894   c8b522cb-5cf3-11ce-ade5-00aa0044773d  C:\Program Files\Common Files\System\Ole DB\msdasql.dll                                                                
+    MSDataShape                                             MSDataShape                                                   OLE DB  10.0.26100.5074   3449A1C8-C56C-11D0-AD72-00C04FC29863  C:\Program Files\Common Files\System\msadc\msadds.dll                                                                  
+    MSDataShape                                             MSDataShape                                                   OLE DB  10.0.26100.5074   3449A1C8-C56C-11D0-AD72-00C04FC29863  C:\Program Files\Common Files\System\msadc\msadds.dll                                                                  
+    MSOLAP.8                                                Microsoft OLE DB Provider for Analysis Services 14.0          OLE DB  16.0.70.21        DBC724B0-DD86-4772-BB5A-FCC6CAB2FC1A  C:\Program Files (x86)\Microsoft Analysis Services\AS OLEDB\140\msolap.dll                                             
+    MSOLAP.8                                                Microsoft OLE DB Provider for Analysis Services 14.0          OLE DB  16.0.70.21        DBC724B0-DD86-4772-BB5A-FCC6CAB2FC1A  C:\Program Files\Microsoft Analysis Services\AS OLEDB\140\msolap.dll                                                   
+    Search.CollatorDSO                                      Microsoft OLE DB Provider for Search                          OLE DB  7.0.26100.4946    9E175B8B-F52A-11D8-B9A5-505054503030  C:\WINDOWS\system32\tquery.dll                                                                                         
+    Search.CollatorDSO                                      Microsoft OLE DB Provider for Search                          OLE DB  7.0.26100.4946    9E175B8B-F52A-11D8-B9A5-505054503030  C:\WINDOWS\system32\tquery.dll                                                                                         
+    SSISOLEDB.7                                             OLE DB Provider for SQL Server Integration Services           OLE DB  17.0.800.3        9109E214-2547-4160-9EBA-B4AFFB3CF9A3  C:\Program Files\Microsoft SQL Server\170\DTS\Binn\SSISOLEDB.dll                                                       
+    Microsoft Access Driver (*.mdb, *.accdb)                Microsoft Access Driver (*.mdb, *.accdb)                      ODBC    16.0.19231.20044                                        C:\Program Files\Microsoft Office\root\VFS\ProgramFilesCommonX64\Microsoft Shared\Office16\ACEODBC.DLL                 
+    Microsoft Excel Driver (*.xls, *.xlsx, *.xlsm, *.xlsb)  Microsoft Excel Driver (*.xls, *.xlsx, *.xlsm, *.xlsb)        ODBC    16.0.19231.20044                                        C:\Program Files\Microsoft Office\root\VFS\ProgramFilesCommonX64\Microsoft Shared\Office16\ACEODBC.DLL                 
+    Microsoft Access Text Driver (*.txt, *.csv)             Microsoft Access Text Driver (*.txt, *.csv)                   ODBC    16.0.19231.20044                                        C:\Program Files\Microsoft Office\root\VFS\ProgramFilesCommonX64\Microsoft Shared\Office16\ACEODBC.DLL                 
+    Microsoft Access dBASE Driver (*.dbf, *.ndx, *.mdx)     Microsoft Access dBASE Driver (*.dbf, *.ndx, *.mdx)           ODBC    16.0.19231.20044                                        C:\Program Files\Microsoft Office\root\VFS\ProgramFilesCommonX64\Microsoft Shared\Office16\ACEODBC.DLL                 
+    Driver da Microsoft para arquivos texto (*.txt; *.csv)  Driver da Microsoft para arquivos texto (*.txt; *.csv)        ODBC    10.0.26100.1                                            C:\WINDOWS\SysWOW64\odbcjt32.dll                                                                                       
+    Driver do Microsoft Access (*.mdb)                      Driver do Microsoft Access (*.mdb)                            ODBC    10.0.26100.1                                            C:\WINDOWS\SysWOW64\odbcjt32.dll                                                                                       
+    Driver do Microsoft dBase (*.dbf)                       Driver do Microsoft dBase (*.dbf)                             ODBC    10.0.26100.1                                            C:\WINDOWS\SysWOW64\odbcjt32.dll                                                                                       
+    Driver do Microsoft Excel(*.xls)                        Driver do Microsoft Excel(*.xls)                              ODBC    10.0.26100.1                                            C:\WINDOWS\SysWOW64\odbcjt32.dll                                                                                       
+    Driver do Microsoft Paradox (*.db )                     Driver do Microsoft Paradox (*.db )                           ODBC    10.0.26100.1                                            C:\WINDOWS\SysWOW64\odbcjt32.dll                                                                                       
+    Microsoft Access Driver (*.mdb)                         Microsoft Access Driver (*.mdb)                               ODBC    10.0.26100.1                                            C:\WINDOWS\SysWOW64\odbcjt32.dll                                                                                       
+    Microsoft Access-Treiber (*.mdb)                        Microsoft Access-Treiber (*.mdb)                              ODBC    10.0.26100.1                                            C:\WINDOWS\SysWOW64\odbcjt32.dll                                                                                       
+    Microsoft dBase Driver (*.dbf)                          Microsoft dBase Driver (*.dbf)                                ODBC    10.0.26100.1                                            C:\WINDOWS\SysWOW64\odbcjt32.dll                                                                                       
+    Microsoft dBase-Treiber (*.dbf)                         Microsoft dBase-Treiber (*.dbf)                               ODBC    10.0.26100.1                                            C:\WINDOWS\SysWOW64\odbcjt32.dll                                                                                       
+    Microsoft Excel Driver (*.xls)                          Microsoft Excel Driver (*.xls)                                ODBC    10.0.26100.1                                            C:\WINDOWS\SysWOW64\odbcjt32.dll                                                                                       
+    Microsoft Excel-Treiber (*.xls)                         Microsoft Excel-Treiber (*.xls)                               ODBC    10.0.26100.1                                            C:\WINDOWS\SysWOW64\odbcjt32.dll                                                                                       
+    Microsoft ODBC for Oracle                               Microsoft ODBC for Oracle                                     ODBC    10.0.26100.1                                            C:\WINDOWS\SysWOW64\msorcl32.dll                                                                                       
+    Microsoft Paradox Driver (*.db )                        Microsoft Paradox Driver (*.db )                              ODBC    10.0.26100.1                                            C:\WINDOWS\SysWOW64\odbcjt32.dll                                                                                       
+    Microsoft Paradox-Treiber (*.db )                       Microsoft Paradox-Treiber (*.db )                             ODBC    10.0.26100.1                                            C:\WINDOWS\SysWOW64\odbcjt32.dll                                                                                       
+    Microsoft Text Driver (*.txt; *.csv)                    Microsoft Text Driver (*.txt; *.csv)                          ODBC    10.0.26100.1                                            C:\WINDOWS\SysWOW64\odbcjt32.dll                                                                                       
+    Microsoft Text-Treiber (*.txt; *.csv)                   Microsoft Text-Treiber (*.txt; *.csv)                         ODBC    10.0.26100.1                                            C:\WINDOWS\SysWOW64\odbcjt32.dll                                                                                       
+
+ADAL files present on this machine:
+
+    Path                             Version  Message       
+    -------------------------------  -------  --------------
+    C:\WINDOWS\system32\adal.dll     3.6.1                  
+    C:\WINDOWS\system32\msal.dll              File not found
+    C:\WINDOWS\system32\sqladal.dll           File not found
+    C:\WINDOWS\syswow64\adal.dll     3.6.1                  
+    C:\WINDOWS\syswow64\msal.dll              File not found
+    C:\WINDOWS\syswow64\sqladal.dll           File not found
+
+ADAL registry entries present on this machine:
+
+    Registry Path                                                          ADAL DLL                      Message
+    ---------------------------------------------------------------------  ----------------------------  -------
+    HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\MSADALSQL!TargetDir              C:\WINDOWS\system32\adal.dll         
+    HKEY_LOCAL_MACHINE\SOFTWARE\WOW6432Node\Microsoft\MSADALSQL!TargetDir  C:\WINDOWS\SysWOW64\adal.dll         
+
+Processes that have SQL Server (and some other) Drivers Loaded:
+
+    Process Name                Process ID  Drivers Loaded            
+    --------------------------  ----------  --------------------------
+    CcmExec.exe                      11944  activeds.dll              
+    InventoryService.exe              5596  system.data.dll           
+    OneApp.IGCC.WinService.exe        5516  system.data.dll           
+    SearchHost.exe                   13084  oledb32.dll               
+    SenseCE.exe                        452  system.data.dll           
+    SenseCE.exe                      32964  system.data.dll           
+    sqlceip.exe                      14300  system.data.dll           
+    SQLCheck.exe                     16036  system.data.dll           
+    sqlservr.exe                     17124  odbc32.dll, msoledbsql.dll
+    WmiPrvSE.exe                      8764  system.data.dll           
+    WmiPrvSE.exe                      7180  activeds.dll              
+    WmiPrvSE.exe                     31320  activeds.dll              
+
+SQL Aliases:
+
+    Alias Name                                                    Protocol  Server Name                                                   Port  32-bit
+    ------------------------------------------------------------  --------  ------------------------------------------------------------  ----  ------
+    6590406.public.21e5c7137ff2.database.windows.net,3342         TCP       6590406.public.21e5c7137ff2.database.windows.net                          
+    free-sql-mi-6590406.public.21e5c7137ff2.database.windows.net  TCP       free-sql-mi-6590406.public.21e5c7137ff2.database.windows.net  3342        
+
+SQL Client Driver SNI Settings:
+
+    Client Name        Protocol Order  Force Encryption  Trust Server Cert  TCP Default Port  Keep-Alive Interval (ms)  Keep-Alive Retry Interval (ms)  32-bit
+    -----------------  --------------  ----------------  -----------------  ----------------  ------------------------  ------------------------------  ------
+    SNI18.0            sm tcp np                                                        1433                     30000                            1000        
+    SNI19.0            sm tcp np                                                        1433                     30000                            1000        
+    SuperSocketNetLib  np                                                               1433                                                                  
+    SNI18.0            sm tcp np                                                        1433                     30000                            1000     Yes
+    SNI19.0            sm tcp np                                                        1433                     30000                            1000     Yes
+    SuperSocketNetLib  np                                                               1433                                                               Yes
+
+
+-------------------------------------------------------------------- SQL Server Information --------------------------------------------------------------------
+
+Certificates in the Local Computer MY Store:
+
+    Friendly Name                        CN                                                                                SAN                                                                                                                                                                                                 Thumbprint                                Server Cert  Key Len  Sig Type   KeySpec   Usage                                                        Private Key  Not Before             Not After             Problem   
+    -----------------------------------  --------------------------------------------------------------------------------  --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------  ----------------------------------------  -----------  -------  ---------  --------  -----------------------------------------------------------  -----------  ---------------------  --------------------  ----------
+    IIS Express Development Certificate  CN=localhost                                                                      DNS Name=localhost                                                                                                                                                                                  EF35DC4C39C346CE3C4B847AB056B862608AA39C  Yes             2048  sha256RSA  Exchange  Digital Signature, Key Encipherment, Data Encipherment (b0)  Yes          7/11/2025 1:42:24 PM   7/11/2030 3:00:00 AM            
+                                         CN=b890bc95-b8b1-4ccd-85f7-6b3ee986ab75, DC=72f988bf-86f1-41af-91ab-2d7cd011db47  DNS Name=LAPTOP-MD9QRRU0, DNS Name=LAPTOP-MD9QRRU0, DNS Name=2a01:9700:4146:9c00:30b7:2d20:ed76:643, DNS Name=2a01:9700:4146:9c00:3db1:c1a7:fd5c:2804, DNS Name=192.168.1.83, DNS Name=172.23.16.1  DEB3D42EF9B2B32164F523316DE74116AB995F7B  Yes             2048  sha256RSA  Exchange  Digital Signature, Key Encipherment (a0)                     Yes          9/28/2025 4:10:55 PM   9/29/2025 4:15:55 PM            
+                                         CN=b890bc95-b8b1-4ccd-85f7-6b3ee986ab75                                                                                                                                                                                                                                               C538BB742944FF8EAEA281837AA38BDAFE270DFD                  2048  sha256RSA  Exchange                                                               Yes          2/9/2025 11:01:04 AM   2/9/2035 11:31:04 AM  Not server
+                                         CN=55186b39-1a31-422c-9dea-6bec0bae57e8                                                                                                                                                                                                                                               83D35333E8BF906A11DB952D08538B332BC01BEA                  2048  sha256RSA  Exchange  Digital Signature, Key Encipherment (a0)                     Yes          2/9/2025 11:21:12 AM   2/7/2026 4:34:55 PM   Not server
+                                         CN=b890bc95-b8b1-4ccd-85f7-6b3ee986ab75                                                                                                                                                                                                                                               7517D304F3E4179D9077F13DDF87DA2608442870                  2048  sha256RSA  Exchange  Digital Signature, Key Encipherment (a0)                     Yes          8/9/2025 8:52:17 AM    11/7/2025 8:52:17 AM  Not server
+                                         CN=c3514095-5d11-443f-b810-21283ded5d29                                                                                                                                                                                                                                               14DD4140993307AEDC7670FE02E9923E9B7BE700                  2048  sha256RSA  Exchange  Digital Signature, Key Encipherment (a0)                     Yes          9/12/2025 10:04:12 PM  7/5/2026 10:25:57 PM  Not server
+
+Certificate Permissions:
+
+    Friendly Name  Thumbprint  UserID  Permissions
+    -------------  ----------  ------  -----------
+
+Services of Interest:
+
+Note: UPN account names (SQLSVC@Contoso.com) are converted to NT Account format (Contoso\SQLSVC) for ease of comparison and LDAP queries.
+
+    Name            Instance  Description                              PID  Service Account              Domain Account                Start Mode  Started  Status
+    --------------  --------  -------------------------------------  -----  ---------------------------  ----------------------------  ----------  -------  ------
+    MSDTC                     Distributed Transaction Coordinator        0  NT AUTHORITY\NetworkService  NT AUTHORITY\NETWORK SERVICE  Manual      False    OK    
+    MSSQLLaunchpad            SQL Server Launchpad (MSSQLSERVER)     15632  NT Service\MSSQLLaunchpad    NT SERVICE\MSSQLLaunchpad     Auto        True     OK    
+    MSSQLSERVER               SQL Server (MSSQLSERVER)               17124  NT Service\MSSQLSERVER       NT SERVICE\MSSQLSERVER        Auto        True     OK    
+    RpcSs                     Remote Procedure Call (RPC)             1780  NT AUTHORITY\NetworkService  NT AUTHORITY\NETWORK SERVICE  Auto        True     OK    
+    SQLBrowser                SQL Server Browser                         0  NT AUTHORITY\LOCALSERVICE    NT AUTHORITY\LOCAL SERVICE    Disabled    False    OK    
+    SQLSERVERAGENT            SQL Server Agent (MSSQLSERVER)             0  NT Service\SQLSERVERAGENT    NT SERVICE\SQLSERVERAGENT     Manual      False    OK    
+    SQLTELEMETRY              SQL Server CEIP service (MSSQLSERVER)  14300  NT Service\SQLTELEMETRY      NT SERVICE\SQLTELEMETRY       Auto        True     OK    
+    SQLWriter                 SQL Server VSS Writer                      0  LocalSystem                  LocalSystem                   Disabled    False    OK    
+    TermService               Remote Desktop Services                    0  NT Authority\NetworkService  NT AUTHORITY\NETWORK SERVICE  Manual      False    OK    
+    W3SVC                     World Wide Web Publishing Service       6264  localSystem                  localSystem                   Auto        True     OK    
+
+Warning: Distributed Transaction Coordinator start mode is set to Manual.
+Warning: Remote Desktop Services start mode is set to Manual.
+Warning: SQL Server Agent (MSSQLSERVER) start mode is set to Manual.
+Warning: SQL Server Browser start mode is set to Disabled.
+Warning: SQL Server VSS Writer start mode is set to Disabled.
+
+Domain Service Account Properties:
+
+    Account  Domain  Type  UAC  Sensitive  Trust for Del.  Const. Del.  Kerberos Encryption
+    -------  ------  ----  ---  ---------  --------------  -----------  -------------------
+
+Warning: Credential Guard is enabled. Unconstrained delegation will not work.
+
+No constrained delegation back-end service SPNs were found on any of the above accounts.
+
+No Service Principal Names were found on any of the above accounts.
+
+SQL Server Instances:
+Note: Only SQL 2008 and later are checked. There may be SQL 2000 instances.
+
+    Service Type  Instance Name  32-bit
+    ------------  -------------  ------
+    SQL           MSSQLSERVER    False 
+
+Details for SQL Server Instance: MSSQLSERVER (Standard Developer Edition)
+
+Version:                    17.0.800.3 SP 0 Patch Level: 17.0.800.3
+Clustered:                  False
+Always-On:                  True
+Always-On Servers:          
+Always-On Listeners:        
+Availability Groups:        
+Replication Ports:          
+Authentication Mode:        MIXED
+Certificate:                Self-generated certificate
+ForceEncryption:            False
+ForceStrict:                False
+Hidden Instance:            False
+Extended Protection:        Off
+Shared Memory Enabled:      True
+Named Pipes Enabled:        False
+TCP Enabled:                False
+Install Path:               C:\Program Files\Microsoft SQL Server\MSSQL17.MSSQLSERVER\MSSQL\Binn
+ERRORLOG Path:              C:\Program Files\Microsoft SQL Server\MSSQL17.MSSQLSERVER\MSSQL\Log\ERRORLOG
+Current Process ID:         17124
+Service Account:            NT Service\MSSQLSERVER
+SPN Account:                
+
+------------------------------------------------------------------------ End of Report -------------------------------------------------------------------------

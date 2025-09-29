@@ -37,7 +37,7 @@ GO
 
 USE MASTER
 GO
-EXEC xp_readerrorlog 0, 1, N'Login failed', NULL, NULL, NULL, N'desc';
+EXEC xp_readerrorlog 0, 1, N'encrypted', NULL, NULL, NULL, N'desc';
 GO
 
 --find network protocol currently used
@@ -312,8 +312,7 @@ FROM msdb.dbo.sysmail_faileditems
 ORDER BY last_mod_date DESC
 
 -- Clean out unsent emails
--- Usually I do this before releasing the queue again after fixing the 
-problem.
+-- Usually I do this before releasing the queue again after fixing the problem.
 -- Assuming of course that I don't want to send out potentially thousands of 
 -- emails that are who knows how old.
 -- Obviously can be used to clean out emails of any status.
