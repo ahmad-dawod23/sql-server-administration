@@ -66,7 +66,7 @@ EXEC @ReturnCode = msdb.dbo.sp_add_jobstep @job_id=@jobId, @step_name=N'test 2nd
 		@retry_attempts=0, 
 		@retry_interval=0, 
 		@os_run_priority=0, @subsystem=N'PowerShell', 
-		@command=N'tnc testsqlmiahmaddaoud.abddcf7e2b0e.database.windows.net -port 1433 | select ComputerName, RemoteAddress, TcpTestSucceeded | Format-List', 
+		@command=N'tnc test.blob.core.windows.net -port 443 | select ComputerName, RemoteAddress, TcpTestSucceeded | Format-List', 
 		@database_name=N'master', 
 		@flags=0
 IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback

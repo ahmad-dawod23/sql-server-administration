@@ -32,7 +32,6 @@ GO
 
 
 
-
 ---search the logs:
 
 USE MASTER
