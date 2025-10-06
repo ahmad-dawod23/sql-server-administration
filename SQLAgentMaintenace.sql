@@ -19,6 +19,8 @@ Send-MailMessage -From "sender@example.com" -To "recipient@example.com" -Subject
 
 tnc login.windows.net  -port 443 | select ComputerName, RemoteAddress, TcpTestSucceeded | Format-List
 
+nslookup faultyendpoint.com
+
 --4- Save and close job
 --5- Goto jobs area in SQL Agent 
 --6- Right-click on the created job and select 'Start Job at Step'
