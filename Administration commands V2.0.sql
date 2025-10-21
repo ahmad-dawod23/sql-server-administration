@@ -181,13 +181,6 @@ WHERE r.command IN ('BACKUP DATABASE','RESTORE DATABASE', 'BACKUP LOG','RESTORE 
 
 
 
-
-
-
-
-
-
-
 ------ user level errors:
 
 

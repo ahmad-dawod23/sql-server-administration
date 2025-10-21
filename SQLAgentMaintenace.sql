@@ -87,3 +87,27 @@ GO
 select [message] 
 from [msdb].[dbo].[sysjobhistory]
 where step_name like '%test'
+
+
+
+---- find running sql agent jobs
+
+SELECT
+    ja.job_id,
+    j.name AS job_name,
+    ja.start_execution_date,
+    DATEDIFF(SECOND, ja.start_execution_date, GETDATE()) AS elapsed_seconds,
+    s.session_id,
+    r.command
+FROM msdb.dbo.sysjobactivity AS ja
+INNER JOIN msdb.dbo.sysjobs AS j
+    ON ja.job_id = j.job_id
+INNER JOIN msdb.dbo.syssessions AS s
+    ON ja.session_id = s.session_id
+LEFT JOIN sys.dm_exec_requests AS r
+    ON r.session_id = s.session_id
+WHERE ja.start_execution_date IS NOT NULL
+  AND ja.stop_execution_date IS NULL;
+  
+  
+ 
