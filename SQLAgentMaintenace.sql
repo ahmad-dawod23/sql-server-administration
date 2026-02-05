@@ -2,7 +2,7 @@
 
 --sql agent email test from powershell step
 $SmtpServer = "your.smtp.server"
-$Port = 587 # or 25 or 465
+$Port = 587
 $Username = "your_username@example.com" # if auth is needed
 $Password = ConvertTo-SecureString "your_password" -AsPlainText -Force # if auth is needed
 $Credential = New-Object System.Management.Automation.PSCredential($Username, $Password) # if auth is needed

@@ -1,0 +1,59 @@
+
+
+
+# Set subscription context
+
+Set-AzContext -Subscription <SubscriptionId>
+
+# SQL Mi Manual failover
+
+Invoke-AzSqlInstanceFailover -ResourceGroupName "" -Name ""
+
+# remove SQL MI link:
+
+Remove-AzSqlInstanceLink -ResourceGroupName “ResourceGroupNameHere” -InstanceName “managedInstanceNameHere” -Name “DAGNameHere” -Force
+
+
+
+
+
+
+
+
+
+#SQL VM:
+
+
+#Note:-Copy-paste the script and save it as Powershell file in the C:\ drive (OS drive), for example as “C:\SQL-startup.ps1”.
+#If needed, modify the D:\ folder to the one you specified in Step 1.
+ 
+$SQLService="SQL Server (MSSQLSERVER)"
+$SQLAgentService="SQL Server Agent (MSSQLSERVER)"
+$TempdbData="D:\Tempdb\Data" # Location of Tempdb data folder
+$TempdbLog="D:\Tempdb\Log"   # Location of Tempdb Log folder
+if (!(test-path -path $TempdbData)) { New-Item -ItemType 
+directory -Path $TempdbData }
+if (!(test-path -path $TempdbLog)) { New-Item -ItemType 
+directory -Path $TempdbLog }
+Start-Service $SQLService
+Start-Service $SQLAgentService
+
+
+
+# Get the existing compute VM
+$vm = Get-AzVM -Name <vm_name> -ResourceGroupName 
+<resource_group_name>
+
+
+# Register SQL VM with 'Lightweight' SQL IaaS agent
+New-AzSqlVM -Name $vm.Name -ResourceGroupName 
+$vm.ResourceGroupName -Location $vm.Location `
+ -LicenseType PAYG -SqlManagementType LightWeight  
+ 
+ 
+# check availabilty group resource type from powershell
+
+Get-ClusterResourceType | where name -like "SQL Server Availability Group"
+
+
+

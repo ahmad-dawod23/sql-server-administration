@@ -29,14 +29,14 @@ ORDER BY
    /*,avg_logical_io_reads_ms*/;
 GO
 
-
+anpmidnsight01
 
 
 ---search the logs:
 
 USE MASTER
 GO
-EXEC xp_readerrorlog 0, 1, N'encrypted', NULL, NULL, NULL, N'desc';
+EXEC xp_readerrorlog 0, 1, N'permission', NULL, NULL, NULL, N'desc';
 GO
 
 --find network protocol currently used
@@ -183,6 +183,8 @@ WHERE r.command IN ('BACKUP DATABASE','RESTORE DATABASE', 'BACKUP LOG','RESTORE 
 
 ------ user level errors:
 
+--buffer log
+select * from sys.dm_os_ring_buffers where ring_buffer_type = 'RING_BUFFER_XE_LOG'
 
 -- 1. Capture the exact error state
 EXEC xp_readerrorlog 0, 1, N'Login failed', NULL, NULL, NULL, N'desc';

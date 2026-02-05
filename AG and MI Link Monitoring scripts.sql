@@ -38,7 +38,8 @@ where
 ag.name = @dagName
 
 
-
+-- View database mirroring endpoints on SQL Server
+SELECT * FROM sys.database_mirroring_endpoints WHERE type_desc = 'DATABASE_MIRRORING'
 
 --- check seeding status
 
@@ -78,11 +79,6 @@ select r.replica_server_name, r.endpoint_url,
   join sys.availability_replicas r
    on rs.replica_id=r.replica_id
  where rs.is_local=1
-
---- check availabilty group resource type from powershell
-
-Get-ClusterResourceType | where name -like "SQL Server Availability Group"
-
 
 
 
