@@ -1,3 +1,61 @@
+---- deadlocks in SQL MI
+
+
+WITH CTE AS (
+       SELECT CAST(event_data AS XML)  AS [target_data_XML] 
+       FROM sys.fn_xe_telemetry_blob_target_read_file('dl', null, null, null)
+)
+SELECT 
+    target_data_XML.value('(/event/@timestamp)[1]', 'DateTime2') AS Timestamp,
+    target_data_XML.query('/event/data[@name=''xml_report'']/value/deadlock') AS deadlock_xml,
+    target_data_XML.query('/event/data[@name=''database_name'']/value').value('(/value)[1]', 'nvarchar(100)') AS db_name
+FROM CTE
+
+---- bad query finder with query hash
+
+use [database_name]
+go
+SELECT
+qt.query_sql_text,
+cast(p.query_plan as xml) as [ExecutionPlan],
+rs.last_execution_time
+FROM sys.query_store_query_text AS qt
+JOIN sys.query_store_query AS q ON qt.query_text_id = q.query_text_id
+JOIN sys.query_store_plan AS p ON q.query_id = p.query_id
+JOIN sys.query_store_runtime_stats AS rs ON p.plan_id = rs.plan_id
+where q.query_hash in ()
+
+
+
+---- find bad queries:
+
+
+with query_ids as (
+SELECT
+q.query_hash,q.query_id,p.query_plan_hash,
+SUM(qrs.count_executions) * AVG(qrs.avg_cpu_time)/1000. as total_cpu_time_ms,
+SUM(qrs.count_executions) AS sum_executions,
+AVG(qrs.avg_cpu_time)/1000. AS avg_cpu_time_ms,
+AVG(qrs.avg_logical_io_reads)/1000. AS avg_logical_io_reads_ms,
+AVG(qrs.avg_physical_io_reads)/1000. AS avg_physical_io_reads_ms
+FROM sys.query_store_query q
+JOIN sys.query_store_plan p on q.query_id=p.query_id
+JOIN sys.query_store_runtime_stats qrs on p.plan_id = qrs.plan_id
+JOIN [sys].[query_store_runtime_stats_interval] [qrsi] ON [qrs].[runtime_stats_interval_id] = [qrsi].[runtime_stats_interval_id]
+WHERE q.query_hash in (0x8a432a31910d28f2) --update the query hash here
+GROUP BY q.query_id, q.query_hash, p.query_plan_hash
+)
+SELECT qid.*,p.count_compiles,qt.query_sql_text,TRY_CAST(p.query_plan as XML) as query_plan
+FROM query_ids as qid
+JOIN sys.query_store_query AS q ON qid.query_id=q.query_id
+JOIN sys.query_store_query_text AS qt on q.query_text_id = qt.query_text_id
+JOIN sys.query_store_plan AS p ON qid.query_id=p.query_id and qid.query_plan_hash=p.query_plan_hash
+   /*WHERE qt.query_sql_text LIKE '%SQLTextHere%'*/
+   /*WHERE OBJECT_NAME(q.object_id) = 'SPNameHere'*/
+ORDER BY 
+   avg_physical_io_reads_ms DESC
+   /*,avg_logical_io_reads_ms*/;
+GO
 
 ---- blocking query:
 

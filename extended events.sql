@@ -176,7 +176,7 @@ WITH (
 
 -- Customization Tips
 -- Adjust Thresholds: Modify `duration`, `logical_reads`, or `cpu_time` values to suit your workload.
--- Add/Remove Events: Include `rpc_completed` for remote calls or exclude events you don’t need.
+-- Add/Remove Events: Include `rpc_completed` for remote calls or exclude events you donâ€™t need.
 -- Focus on Specific DBs: Add `AND sqlserver.database_id = DB_ID('YourDBName')` to event predicates.
 -- Minimize Overhead: Avoid capturing execution plans (`query_plan`) in production unless troubleshooting specific issues.
 
@@ -188,7 +188,7 @@ WITH (
 -- Inefficient Plans: Revealed via `plan_affecting_convert` or `hash_warning`.
 -- Deadlocks: Tracked via `lock_deadlock` events.
 
---This template provides a balanced approach for proactive performance monitoring. Adjust filters and events based on your environment’s needs!
+--This template provides a balanced approach for proactive performance monitoring. Adjust filters and events based on your environmentâ€™s needs!
 
 
 
@@ -323,19 +323,6 @@ SELECT * FROM #PlanXmlTemp;
 
 
 ---========================================================================================================
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 

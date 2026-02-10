@@ -1,34 +1,14 @@
-
-
 --------------------------------------------------------------------------------
---QPI server level views (no query store views) 
+-- Azure SQL Managed Instance - Query Performance Insights
+-- Author: Jovan Popovic
 --------------------------------------------------------------------------------
-use master
 
 SET QUOTED_IDENTIFIER OFF; -- Because I use "" as a string literal
 GO
 
-IF EXISTS (SELECT name FROM sys.databases WHERE name = 'QPI_Prefmon')
-BEGIN
-    PRINT 'QPI_Prefmon already exists. dropping it to recreate.';
-    drop database QPI_Prefmon
-END
-
-GO
-
-CREATE DATABASE [QPI_Prefmon]
-GO
-USE [QPI_Prefmon]
-
-
 IF SCHEMA_ID('qpi') IS NULL
 	EXEC ('CREATE SCHEMA qpi');
 GO
-
-
-
-
-
 
 -----------------------------------------------------------------------------
 -- Generic utilities
@@ -90,6 +70,431 @@ AS RETURN (
         END AS label
 );
 GO
+-----------------------------------------------------------------------------
+-- Core Database Query Store functionalities
+-----------------------------------------------------------------------------
+CREATE OR ALTER  FUNCTION qpi.decode_options(@options int)
+RETURNS TABLE
+RETURN (
+SELECT 'DISABLE_DEF_CNST_CHK'  = (1 & @options) / 1
+	, 'IMPLICIT_TRANSACTIONS' = (2 & @options) / 2
+	, 'CURSOR_CLOSE_ON_COMMIT' = (4 & @options) / 4
+	, 'ANSI_WARNINGS' = (8 & @options) / 8
+	, 'ANSI_PADDING' = (16 & @options) / 16
+	, 'ANSI_NULLS' = (32 & @options) / 32
+	, 'ARITHABORT' = (64 & @options) / 64
+	, 'ARITHIGNORE' = (128 & @options) / 128
+	, 'QUOTED_IDENTIFIER' = (256 & @options) / 256
+	, 'NOCOUNT' = (512 & @options) / 512
+	, 'ANSI_NULL_DFLT_ON' = (1024 & @options) / 1024
+	, 'ANSI_NULL_DFLT_OFF' = (2048 & @options) / 2048
+	, 'CONCAT_NULL_YIELDS_NULL' = (4096 & @options) / 4096
+	, 'NUMERIC_ROUNDABORT' = (8192 & @options) / 8192
+	, 'XACT_ABORT' = (16384 & @options) / 16384
+)
+GO
+
+CREATE OR ALTER  FUNCTION qpi.cmp_context_settings (@ctx_id1 int, @ctx_id2 int)
+returns table
+return (
+	select a.[key], a.value value1, b.value value2
+	from
+	(select [key], value
+	from openjson(
+	(select *
+		from sys.query_context_settings
+			cross apply qpi.decode_options(set_options)
+		where context_settings_id = @ctx_id1
+		for json path, without_array_wrapper)
+	)) as a ([key], value)
+	join
+	(select [key], value
+	from openjson(
+	(select *
+		from sys.query_context_settings
+			cross apply qpi.decode_options(set_options)
+		where context_settings_id = @ctx_id2
+		for json path, without_array_wrapper)
+	)) as b ([key], value)
+	on a.[key] = b.[key]
+	where a.value <> b.value
+);
+
+
+GO
+CREATE OR ALTER  VIEW qpi.db_queries
+as
+select	q.query_text_id,
+		text = IIF(LEFT(query_sql_text,1) = '(', TRIM(')' FROM SUBSTRING( query_sql_text, (PATINDEX( '%)[^),]%', query_sql_text))+1, LEN(query_sql_text))), query_sql_text) ,
+		params = IIF(LEFT(query_sql_text,1) = '(', SUBSTRING( query_sql_text, 2, (PATINDEX( '%)[^),]%', query_sql_text+')'))-2), "") ,
+		query_id, context_settings_id, q.query_hash
+from sys.query_store_query_text t
+	join sys.query_store_query q on t.query_text_id = q.query_text_id
+GO
+
+CREATE OR ALTER  VIEW qpi.db_queries_ex
+as
+select	q.text, q.params, q.query_text_id, query_id, q.context_settings_id, q.query_hash,
+		o.*
+FROM qpi.db_queries q
+		JOIN sys.query_context_settings ctx
+			ON q.context_settings_id = ctx.context_settings_id
+			CROSS APPLY qpi.decode_options(ctx.set_options) o
+GO
+
+CREATE OR ALTER  VIEW qpi.db_query_texts
+as
+select	q.text, q.params, q.query_text_id, queries =  string_agg(concat(query_id,'(', context_settings_id,')'),',')
+from qpi.db_queries q
+group by q.text, q.params, q.query_text_id
+GO
+
+CREATE OR ALTER  VIEW qpi.db_query_plans
+as
+select	q.text, q.params, q.query_text_id, p.plan_id, p.query_id,
+		p.compatibility_level, p.query_plan_hash, p.count_compiles,
+		p.is_parallel_plan, p.is_forced_plan, p.query_plan, q.query_hash
+from sys.query_store_plan p
+	join qpi.db_queries q
+		on p.query_id = q.query_id;
+GO
+
+CREATE OR ALTER  VIEW qpi.db_query_plans_ex
+as
+select	q.text, q.params, q.query_text_id, p.*, q.query_hash
+from sys.query_store_plan p
+	join qpi.db_queries q
+		on p.query_id = q.query_id;
+GO
+
+
+
+-----------------------------------------------------------------------------
+-- Core Database Query Store wait stat functionalities
+-----------------------------------------------------------------------------
+CREATE OR ALTER
+function qpi.db_query_plan_wait_stats_as_of(@date datetime2)
+	returns table
+as return (
+select
+		text =   IIF(LEFT(t.query_sql_text,1) = '(', TRIM(')' FROM SUBSTRING( t.query_sql_text, (PATINDEX( '%)[^),]%', t.query_sql_text))+1, LEN(t.query_sql_text))), t.query_sql_text) ,
+		params =  IIF(LEFT(t.query_sql_text,1) = '(', SUBSTRING( t.query_sql_text, 2, (PATINDEX( '%)[^),]%', t.query_sql_text+')'))-2), "") ,
+		category = ws.wait_category_desc,
+		wait_time_ms = CAST(ROUND(ws.avg_query_wait_time_ms, 1) AS NUMERIC(12,1)),
+		t.query_text_id, q.query_id, ws.plan_id, ws.execution_type_desc,
+		rsi.start_time, rsi.end_time,
+		interval_mi = datediff(mi, rsi.start_time, rsi.end_time),
+		ws.runtime_stats_interval_id, ws.wait_stats_id, q.query_hash
+from sys.query_store_query_text t
+	join sys.query_store_query q on t.query_text_id = q.query_text_id
+	join sys.query_store_plan p on p.query_id = q.query_id
+	join sys.query_store_wait_stats ws on ws.plan_id = p.plan_id
+	join sys.query_store_runtime_stats_interval rsi on ws.runtime_stats_interval_id = rsi.runtime_stats_interval_id
+where @date is null or @date between rsi.start_time and rsi.end_time
+);
+go
+
+CREATE OR ALTER
+VIEW qpi.db_query_plan_wait_stats
+AS SELECT * FROM  qpi.db_query_plan_wait_stats_as_of(GETUTCDATE());
+GO
+
+CREATE OR ALTER
+function qpi.db_query_wait_stats_as_of(@date datetime2)
+	returns table
+as return (
+	select
+		text = min(text),
+		params = min(params),
+		category, wait_time_ms = sum(wait_time_ms),
+		query_text_id,
+		query_id,
+		execution_type_desc,
+		start_time = min(start_time), end_time = min(end_time),
+		interval_mi = min(interval_mi)
+from qpi.db_query_plan_wait_stats_as_of(@date)
+group by query_id, query_text_id, category, execution_type_desc
+);
+go
+
+CREATE OR ALTER
+VIEW qpi.db_query_wait_stats
+as select * from qpi.db_query_wait_stats_as_of(GETUTCDATE())
+go
+
+CREATE OR ALTER
+VIEW qpi.db_query_wait_stats_history
+as select * from qpi.db_query_wait_stats_as_of(null)
+go
+
+
+
+-----------------------------------------------------------------------------
+-- Advanced Database Query Store functionalities
+-----------------------------------------------------------------------------
+
+CREATE OR ALTER
+FUNCTION qpi.db_query_plan_exec_stats_as_of(@date datetime2)
+returns table
+as return (
+select	t.query_text_id, q.query_id,
+		text =   IIF(LEFT(t.query_sql_text,1) = '(', TRIM(')' FROM SUBSTRING( t.query_sql_text, (PATINDEX( '%)[^),]%', t.query_sql_text))+1, LEN(t.query_sql_text))), t.query_sql_text) ,
+		params =  IIF(LEFT(t.query_sql_text,1) = '(', SUBSTRING( t.query_sql_text, 2, (PATINDEX( '%)[^),]%', t.query_sql_text+')'))-2), "") ,
+		rs.plan_id,
+		rs.execution_type_desc,
+        executions = rs.count_executions,
+        duration_s = CAST(ROUND( rs.avg_duration /1000.0 /1000.0, 2) AS NUMERIC(12,2)),
+        cpu_time_ms = CAST(ROUND(rs.avg_cpu_time /1000.0, 1) AS NUMERIC(12,1)),
+        logical_io_reads_kb = CAST(ROUND(rs.avg_logical_io_reads * 8 /1000.0, 2) AS NUMERIC(12,2)),
+        logical_io_writes_kb = CAST(ROUND(rs.avg_logical_io_writes * 8 /1000.0, 2) AS NUMERIC(12,2)),
+        physical_io_reads_kb = CAST(ROUND(rs.avg_physical_io_reads * 8 /1000.0, 2) AS NUMERIC(12,2)),
+        clr_time_ms = CAST(ROUND(rs.avg_clr_time /1000.0, 1) AS NUMERIC(12,1)),
+        max_used_memory_mb = rs.avg_query_max_used_memory * 8.0 /1000,
+
+        num_physical_io_reads = rs.avg_num_physical_io_reads,
+        log_bytes_used_kb = CAST(ROUND( rs.avg_log_bytes_used /1000.0, 2) AS NUMERIC(12,2)),
+        tempdb_used_mb = CAST(ROUND(rs.avg_tempdb_space_used *8 /1000.0, 2) AS NUMERIC(12,2)),
+
+		start_time = convert(varchar(16), rsi.start_time, 20),
+		end_time = convert(varchar(16), rsi.end_time, 20),
+		interval_mi = datediff(mi, rsi.start_time, rsi.end_time),
+		q.context_settings_id, q.query_hash
+from sys.query_store_query_text t
+	join sys.query_store_query q on t.query_text_id = q.query_text_id
+	join sys.query_store_plan p on p.query_id = q.query_id
+	join sys.query_store_runtime_stats rs on rs.plan_id = p.plan_id
+	join sys.query_store_runtime_stats_interval rsi
+			on rs.runtime_stats_interval_id = rsi.runtime_stats_interval_id
+where (@date is null or @date between rsi.start_time and rsi.end_time)
+);
+GO
+
+CREATE OR ALTER
+VIEW qpi.db_query_plan_exec_stats
+AS SELECT * FROM qpi.db_query_plan_exec_stats_as_of(GETUTCDATE());
+GO
+
+CREATE OR ALTER
+VIEW qpi.db_query_plan_exec_stats_history
+AS SELECT * FROM qpi.db_query_plan_exec_stats_as_of(NULL);
+GO
+
+-- Returns all query plan statistics without currently running values.
+CREATE OR ALTER
+FUNCTION qpi.db_query_plan_exec_stats_ex_as_of(@date datetime2)
+returns table
+as return (
+select	q.query_id,
+		text =   IIF(LEFT(t.query_sql_text,1) = '(', TRIM(')' FROM SUBSTRING( t.query_sql_text, (PATINDEX( '%)[^),]%', t.query_sql_text))+1, LEN(t.query_sql_text))), t.query_sql_text) ,
+		params =  IIF(LEFT(t.query_sql_text,1) = '(', SUBSTRING( t.query_sql_text, 2, (PATINDEX( '%)[^),]%', t.query_sql_text+')'))-2), "") ,
+		t.query_text_id, rsi.start_time, rsi.end_time,
+		rs.*, q.query_hash,
+		interval_mi = datediff(mi, rsi.start_time, rsi.end_time)
+from sys.query_store_query_text t
+	join sys.query_store_query q on t.query_text_id = q.query_text_id
+	join sys.query_store_plan p on p.query_id = q.query_id
+	join sys.query_store_runtime_stats rs on rs.plan_id = p.plan_id
+	join sys.query_store_runtime_stats_interval rsi on rs.runtime_stats_interval_id = rsi.runtime_stats_interval_id
+where @date is null or @date between rsi.start_time and rsi.end_time
+);
+GO
+
+CREATE OR ALTER
+VIEW qpi.db_query_plan_exec_stats_ex
+AS SELECT * FROM qpi.db_query_plan_exec_stats_ex_as_of(GETUTCDATE());
+GO
+--------------------------------------------------------------------------------
+-- the most important view: query statistics:
+--------------------------------------------------------------------------------
+-- Returns statistics about all queries as of specified time.
+CREATE OR ALTER  FUNCTION qpi.db_query_exec_stats_as_of(@date datetime2)
+returns table
+return (
+
+WITH query_stats as (
+SELECT	qps.query_id, execution_type_desc,
+		duration_s = AVG(duration_s),
+		executions = SUM(executions),
+		cpu_time_ms = AVG(cpu_time_ms),
+		logical_io_reads_kb = AVG(logical_io_reads_kb),
+		logical_io_writes_kb = AVG(logical_io_writes_kb),
+		physical_io_reads_kb = AVG(physical_io_reads_kb),
+		clr_time_ms = AVG(clr_time_ms),
+
+		num_physical_io_reads = AVG(num_physical_io_reads),
+		log_bytes_used_kb = AVG(log_bytes_used_kb),
+		tempdb_used_mb = AVG(tempdb_used_mb),
+
+		start_time = MIN(start_time),
+		interval_mi = MIN(interval_mi)
+FROM qpi.db_query_plan_exec_stats_as_of(@date) qps
+GROUP BY query_id, execution_type_desc
+)
+SELECT  text =   IIF(LEFT(t.query_sql_text,1) = '(', TRIM(')' FROM SUBSTRING( t.query_sql_text, (PATINDEX( '%)[^),]%', t.query_sql_text))+1, LEN(t.query_sql_text))), t.query_sql_text) ,
+		qs.*,
+		t.query_text_id,
+		q.query_hash
+FROM query_stats qs
+	join sys.query_store_query q
+	on q.query_id = qs.query_id
+	join sys.query_store_query_text t
+	on q.query_text_id = t.query_text_id
+
+)
+GO
+
+CREATE OR ALTER  VIEW qpi.db_query_exec_stats
+AS SELECT * FROM  qpi.db_query_exec_stats_as_of(GETUTCDATE());
+GO
+CREATE OR ALTER  VIEW qpi.db_query_exec_stats_history
+AS SELECT * FROM  qpi.db_query_exec_stats_as_of(NULL);
+GO
+
+
+CREATE OR ALTER  VIEW qpi.db_query_stats AS
+WITH ws AS(
+	SELECT query_id, start_time, execution_type_desc,
+			wait_time_ms = SUM(wait_time_ms)
+	FROM qpi.db_query_wait_stats
+	GROUP BY query_id, start_time, execution_type_desc
+)
+
+SELECT interval_id =   DATEPART(yyyy, (qes.start_time)) * 1000000 +
+			DATEPART(mm, (qes.start_time)) * 10000 +
+			DATEPART(dd, (qes.start_time)) * 100 +
+			DATEPART(hh, (qes.start_time)),
+		text, status = qes.execution_type_desc, qes.query_id,
+		executions, duration_s, cpu_time_s = cpu_time_ms/1000.,
+		data_processed_mb = logical_io_reads_kb/1000.+physical_io_reads_kb/1000.
+
+ wait_time_ms,
+ log_bytes_used_kb,
+
+ logical_io_reads_mb = logical_io_reads_kb/1000.,
+ logical_io_writes_mb = logical_io_writes_kb/1000.,
+ physical_io_reads_mb = physical_io_reads_kb/1000.,
+ clr_time_ms, qes.start_time, qes.query_hash, qes.execution_type_desc
+FROM qpi.db_query_exec_stats qes
+
+	LEFT JOIN ws ON qes.query_id = ws.query_id
+				AND qes.start_time = ws.start_time
+				AND qes.execution_type_desc = ws.execution_type_desc
+
+
+
+GO
+
+CREATE OR ALTER  VIEW qpi.db_query_agg_stats
+AS
+WITH ws AS(
+	SELECT query_id, start_time, execution_type_desc,
+			wait_time_ms = SUM(wait_time_ms)
+	FROM qpi.db_query_wait_stats_history
+	GROUP BY query_id, start_time, execution_type_desc
+)
+
+SELECT text, status = qes.execution_type_desc, qes.query_id, executions, duration_s, cpu_time_s = cpu_time_ms/1000.,
+		data_processed_mb = logical_io_reads_kb/1000. + physical_io_reads_kb/1000.,
+
+ wait_time_ms,
+ log_bytes_used_kb,
+
+ logical_io_reads_mb = logical_io_reads_kb/1000.,
+ logical_io_writes_mb = logical_io_writes_kb/1000.,
+ physical_io_reads_mb = physical_io_reads_kb/1000.,
+ clr_time_ms, qes.start_time, qes.query_hash, qes.execution_type_desc
+FROM qpi.db_query_exec_stats_history qes
+
+	LEFT JOIN ws ON qes.query_id = ws.query_id
+				AND qes.start_time = ws.start_time
+				AND qes.execution_type_desc = ws.execution_type_desc
+
+
+GO
+--- Query comparison
+CREATE OR ALTER    function qpi.cmp_query_exec_stats (@query_id int, @date1 datetime2, @date2 datetime2)
+returns table
+return (
+	select a.[key], a.value value1, b.value value2
+	from
+	(select [key], value
+	from openjson(
+	(select *
+		from qpi.db_query_exec_stats_as_of(@date1)
+		where query_id = @query_id
+		for json path, without_array_wrapper)
+	)) as a ([key], value)
+	join
+	(select [key], value
+	from openjson(
+	(select *
+		from qpi.db_query_exec_stats_as_of(@date2)
+		where query_id = @query_id
+		for json path, without_array_wrapper)
+	)) as b ([key], value)
+	on a.[key] = b.[key]
+	where a.value <> b.value
+);
+GO
+
+CREATE OR ALTER
+FUNCTION qpi.cmp_query_plans (@plan_id1 int, @plan_id2 int)
+returns table
+return (
+	select a.[key], a.value value1, b.value value2
+	from
+	(select [key], value
+	from openjson(
+	(select *
+		from sys.query_store_plan
+		where plan_id = @plan_id1
+		for json path, without_array_wrapper)
+	)) as a ([key], value)
+	join
+	(select [key], value
+	from openjson(
+	(select *
+		from sys.query_store_plan
+		where plan_id = @plan_id2
+		for json path, without_array_wrapper)
+	)) as b ([key], value)
+	on a.[key] = b.[key]
+	where a.value <> b.value
+);
+GO
+
+
+CREATE OR ALTER
+FUNCTION qpi.db_query_plan_exec_stats_diff (@date1 datetime2, @date2 datetime2)
+returns table
+return (
+	select baseline = convert(varchar(16), rsi1.start_time, 20), interval = convert(varchar(16), rsi2.start_time, 20),
+		query_text = t.query_sql_text,
+		d_duration = rs2.avg_duration - rs1.avg_duration,
+		d_duration_perc = iif(rs2.avg_duration=0, null, ROUND(100*(1 - rs1.avg_duration/rs2.avg_duration),0)),
+		d_cpu_time = rs2.avg_cpu_time - rs1.avg_cpu_time,
+		d_cpu_time_perc = iif(rs2.avg_cpu_time=0, null, ROUND(100*(1 - rs1.avg_cpu_time/rs2.avg_cpu_time),0)),
+		d_physical_io_reads = rs2.avg_physical_io_reads - rs1.avg_physical_io_reads,
+		d_physical_io_reads_perc = iif(rs2.avg_physical_io_reads=0, null, ROUND(100*(1 - rs1.avg_physical_io_reads/rs2.avg_physical_io_reads),0)),
+
+		d_log_bytes_used = rs2.avg_log_bytes_used - rs1.avg_log_bytes_used,
+		d_log_bytes_used_perc = iif(rs2.avg_log_bytes_used=0, null, ROUND(100*(1 - rs1.avg_log_bytes_used/rs2.avg_log_bytes_used),0)),
+
+		q.query_text_id, q.query_id, p.plan_id
+from sys.query_store_query_text t
+	join sys.query_store_query q on t.query_text_id = q.query_text_id
+	join sys.query_store_plan p on p.query_id = q.query_id
+	join sys.query_store_runtime_stats rs1 on rs1.plan_id = p.plan_id
+	join sys.query_store_runtime_stats_interval rsi1 on rs1.runtime_stats_interval_id = rsi1.runtime_stats_interval_id
+	left join sys.query_store_runtime_stats rs2 on rs2.plan_id = p.plan_id
+	left join sys.query_store_runtime_stats_interval rsi2 on rs2.runtime_stats_interval_id = rsi2.runtime_stats_interval_id
+where rsi1.runtime_stats_interval_id <> rsi2.runtime_stats_interval_id
+and rsi1.start_time <= @date1 and @date1 < rsi1.end_time
+and (@date2 is null or rsi2.start_time <= @date2 and @date2 < rsi2.end_time)
+);
+GO
+
+
 
 -----------------------------------------------------------------------------
 -- Core Server-level functionalities
@@ -156,64 +561,63 @@ left join sys.dm_exec_query_memory_grants mg
 on q.session_id = mg.session_id
 and q.request_id = mg.request_id
 GO
-
-
-CREATE OR ALTER VIEW qpi.query_tempdb_details AS
-SELECT 
-SUBSTRING(st.text, er.statement_start_offset/2 + 1,(CASE WHEN er.statement_end_offset = -1 THEN LEN(CONVERT(nvarchar(max),st.text)) * 2 ELSE er.statement_end_offset END - er.statement_start_offset)/2) as Query_Text,
-tsu.session_id ,
-tsu.request_id,
-tsu.exec_context_id,
-(tsu.user_objects_alloc_page_count - tsu.user_objects_dealloc_page_count) as OutStanding_user_objects_page_counts,
-(tsu.internal_objects_alloc_page_count - tsu.internal_objects_dealloc_page_count) as OutStanding_internal_objects_page_counts,
-er.start_time,
-er.command,
-er.open_transaction_count,
-er.percent_complete,
-er.estimated_completion_time,
-er.cpu_time,
-er.total_elapsed_time,
-er.reads,
-er.writes, 
-er.logical_reads,
-er.granted_query_memory,
-es.host_name ,
-es.login_name ,
-es.program_name 
-FROM sys.dm_db_task_space_usage tsu 
-INNER JOIN sys.dm_exec_requests er ON ( tsu.session_id = er.session_id AND tsu.request_id = er.request_id) 
-INNER JOIN sys.dm_exec_sessions es ON ( tsu.session_id = es.session_id ) 
-CROSS APPLY sys.dm_exec_sql_text(er.sql_handle) st 
-WHERE (tsu.internal_objects_alloc_page_count+tsu.user_objects_alloc_page_count) > 0
-go
-
-
-
-CREATE OR ALTER  VIEW qpi.queries_history as
-SELECT TOP 1000
-    SUBSTRING(st.text, (qs.statement_start_offset/2) + 1,
-        ((CASE qs.statement_end_offset
-          WHEN -1 THEN DATALENGTH(st.text)
-          ELSE qs.statement_end_offset
-         END - qs.statement_start_offset)/2) + 1) AS statement_text,
-    qs.query_hash,
-    qs.query_plan_hash,
-    qs.execution_count,
-    qs.total_logical_reads,
-    qs.last_logical_reads,
-    qs.total_elapsed_time / 1000000.0 AS total_elapsed_time_s,
-    qs.last_elapsed_time / 1000000.0 AS last_elapsed_time_s,
-    DB_NAME(st.dbid) as database_name
-FROM sys.dm_exec_query_stats AS qs
-CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle) AS st
-CROSS APPLY sys.dm_exec_query_plan(qs.plan_handle) AS qp 
-go
+CREATE OR ALTER
+PROCEDURE qpi.clear_db_queries
+AS BEGIN
+	ALTER DATABASE current SET QUERY_STORE CLEAR;
+END
+GO
 
 
 -----------------------------------------------------------------------------
 -- Core Plan forcing functionalities
 -----------------------------------------------------------------------------
+CREATE OR ALTER
+PROCEDURE [qpi].[force] @query_id int, @plan_id int = null, @hints nvarchar(4000) = null
+AS BEGIN
+	declare @guide sysname = CONCAT('QPI-PG-', @query_id),
+			@sql nvarchar(max),
+			@param nvarchar(max),
+			@exists bit = 0;
+	select @sql = text, @param =  IIF(LEFT(params,1) = '(', SUBSTRING( params, 2, (PATINDEX( '%)[^),]%', params+')'))-2), "")
+	from qpi.db_queries
+	where query_id = @query_id;
+	select @guide = name, @exists = 1 from sys.plan_guides where query_text = @sql or name = @guide;
+	if (@exists = 1) begin
+		PRINT 'Removing existing plan guide ' + @guide;
+		EXEC sp_control_plan_guide N'DROP', @guide;
+	end;
 
+	if(@plan_id is not null)
+		EXEC sp_query_store_force_plan @query_id, @plan_id;
+	else if (@hints is not null)
+	begin
+		SET @param = IIF(@param = "", null, @param);
+		IF substring(@hints, 1,7) <> 'OPTION'
+			SET @hints = 'OPTION(' + @hints + ')';
+		PRINT 'Forcing hint ' + @hints + ' on query ' + @sql;
+		EXEC sp_create_plan_guide @name = @guide,
+			@stmt = @sql,
+			@type = N'SQL',
+			@module_or_batch = NULL,
+			@params = @param,
+			@hints = @hints;
+	end
+END
+GO
+
+CREATE OR ALTER
+VIEW qpi.db_forced_queries
+AS
+	SELECT name = CONCAT('FPQ-', query_id), query_id, text = text COLLATE  Latin1_General_100_CI_AS , forced_plan_id = plan_id, hints = null from qpi.db_query_plans where is_forced_plan = 1
+	UNION ALL
+	SELECT name, q.query_id, text = query_text COLLATE  Latin1_General_100_CI_AS , forced_plan_id = null, hints
+		FROM sys.plan_guides pg
+			LEFT JOIN qpi.db_queries q
+			ON q.text COLLATE  Latin1_General_100_CI_AS
+			= pg.query_text COLLATE  Latin1_General_100_CI_AS
+		WHERE is_disabled = 0
+GO
 
 
 CREATE OR ALTER  VIEW qpi.bre
@@ -310,66 +714,6 @@ FROM qpi.queries blocked with(nolock)
 		LEFT JOIN sys.objects obj with(nolock) ON p.object_id = obj.object_id
 WHERE w.session_id <> w.blocking_session_id
 GO
-
-
-
----deadlocks (MI only, this is a default extended event that does not exist in other Sql server products but if a similar event is created, then i don't see why this view can't be used with it wth a few modifications):
-
-
-create view qpi.deadlocks as
-WITH DeadlockEvents AS (
-    -- Read the Extended Event data from the blob target for SQL Managed Instance
-    SELECT
-        CAST(event_data AS XML) AS event_data_xml
-    FROM sys.fn_xe_telemetry_blob_target_read_file('dl', null, null, null) -- 'dl' is often the default for telemetry.
-                                                                        -- Replace 'dl' if you're using a custom XE session
-                                                                        -- writing to blob storage with a different file prefix.
-) ,DeadlockReports AS (
-    -- Extract the core deadlock report XML and basic event info
-    SELECT
-        event_data_xml.value('(/event/@timestamp)[1]', 'datetime2') AS event_timestamp,
-        event_data_xml.value('(/event/data[@name="database_name"]/value)[1]', 'sysname') AS database_name,
-        event_data_xml.query('/event/data[@name=''xml_report'']/value/deadlock') AS deadlock_graph_xml
-    FROM DeadlockEvents
-    
-),VictimInfo AS (
-    -- Identify the victim process ID from the deadlock graph
-    SELECT
-        dr.event_timestamp,
-        dr.database_name,
-        dr.deadlock_graph_xml,
-        victim_node.value('@id', 'varchar(50)') AS victim_process_id
-    FROM DeadlockReports dr
-    CROSS APPLY dr.deadlock_graph_xml.nodes('/deadlock/victim-list/victimProcess[1]') AS victims(victim_node) -- Get the first (usually only) victim
-) SELECT
-    vi.event_timestamp AS Timestamp,
-    vi.database_name AS db_name,
-    vi.deadlock_graph_xml AS deadlock_xml_report, -- The full XML of the deadlock graph
-
-    -- Victim Process Details
-    vi.deadlock_graph_xml.value('(/deadlock/process-list/process[@id=sql:column("vi.victim_process_id")]/inputbuf/text())[1]', 'NVARCHAR(MAX)') AS Victim_InputBuffer,
-    -- To get the text from the most specific frame (often the last one in the stack if nested):
-    vi.deadlock_graph_xml.value('(/deadlock/process-list/process[@id=sql:column("vi.victim_process_id")]/executionStack/frame[last()]/text())[1]', 'NVARCHAR(MAX)') AS Victim_QueryText_From_ExecutionStack,
-    vi.deadlock_graph_xml.value('(/deadlock/process-list/process[@id=sql:column("vi.victim_process_id")]/@clientapp)[1]', 'NVARCHAR(128)') AS Victim_ClientApp,
-    vi.deadlock_graph_xml.value('(/deadlock/process-list/process[@id=sql:column("vi.victim_process_id")]/@hostname)[1]', 'NVARCHAR(128)') AS Victim_Hostname,
-    vi.deadlock_graph_xml.value('(/deadlock/process-list/process[@id=sql:column("vi.victim_process_id")]/@loginname)[1]', 'NVARCHAR(128)') AS Victim_LoginName,
-    vi.victim_process_id,
-
-    -- Other Process Details (the one that was NOT the victim but was part of the deadlock)
-    -- This assumes a simple two-process deadlock. If more complex, this picks the first non-victim.
-    other_process_node.value('(inputbuf/text())[1]', 'NVARCHAR(MAX)') AS OtherProcess_InputBuffer,
-    other_process_node.value('(executionStack/frame[last()]/text())[1]', 'NVARCHAR(MAX)') AS OtherProcess_QueryText_From_ExecutionStack,
-    other_process_node.value('(@clientapp)[1]', 'NVARCHAR(128)') AS OtherProcess_ClientApp,
-    other_process_node.value('(@hostname)[1]', 'NVARCHAR(128)') AS OtherProcess_Hostname,
-    other_process_node.value('(@loginname)[1]', 'NVARCHAR(128)') AS OtherProcess_LoginName,
-    other_process_node.value('@id', 'varchar(50)') AS OtherProcess_Id
-
-FROM VictimInfo vi
-OUTER APPLY vi.deadlock_graph_xml.nodes('/deadlock/process-list/process[not(@id = sql:column("vi.victim_process_id"))][1]') AS other_processes(other_process_node)
-
-go
-
-
 
 ---------------------------------------------------------------------------------------------------
 --	Wait statistics
@@ -858,6 +1202,9 @@ CREATE OR ALTER  VIEW qpi.file_stats
 AS SELECT * from qpi.fn_file_stats(null, null, null);
 GO
 
+CREATE OR ALTER  VIEW qpi.db_file_stats
+AS SELECT * from qpi.fn_file_stats(DB_ID(), null, null);
+GO
 
 CREATE OR ALTER  FUNCTION qpi.file_stats_as_of(@when datetime2(0))
 RETURNS TABLE
@@ -910,7 +1257,6 @@ BEGIN
  RETURN (SELECT process_memory_limit_mb FROM sys.dm_os_job_object);
 END
 GO
-
 
 
 
@@ -1234,7 +1580,11 @@ SELECT
 	FROM nodes_progress_size;
 GO
 
-
+CREATE OR ALTER  VIEW
+qpi.db_nodes
+AS
+SELECT * FROM qpi.nodes WHERE database_id = DB_ID();
+GO
 
 ---------------------------------------------------------------------------------------------------
 --				Performance counters
@@ -1418,212 +1768,52 @@ SET QUOTED_IDENTIFIER ON;
 GO
 
 
----------------------------------------------------------------------------------------------------
---				tempdb specific views
----------------------------------------------------------------------------------------------------
+-----------------------------------------------------------------------------
+-- Table statistics
+-----------------------------------------------------------------------------
 
-
---  Find Queries with High TempDB Usage (Task Level)
-CREATE OR ALTER VIEW qpi.tempdb_task_usage_current
-AS
-SELECT 
-    s.session_id,
-    r.request_id,
-    t.user_objects_alloc_page_count AS total_user_obj_allocated_pages,
-    t.user_objects_dealloc_page_count AS total_user_obj_deallocated_pages,
-    (t.user_objects_alloc_page_count - t.user_objects_dealloc_page_count) AS net_user_obj_tempdb_pages,
-    t.internal_objects_alloc_page_count AS total_internal_obj_allocated_pages,
-    t.internal_objects_dealloc_page_count AS total_internal_obj_deallocated_pages,
-    (t.internal_objects_alloc_page_count - t.internal_objects_dealloc_page_count) AS net_internal_obj_tempdb_pages,
-    -- Summing them up for a total net for the task
-    (t.user_objects_alloc_page_count - t.user_objects_dealloc_page_count) +
-    (t.internal_objects_alloc_page_count - t.internal_objects_dealloc_page_count) AS net_total_task_tempdb_pages,
-    ( (t.user_objects_alloc_page_count - t.user_objects_dealloc_page_count) +
-      (t.internal_objects_alloc_page_count - t.internal_objects_dealloc_page_count)
-    ) * 8.0 / 1024 AS net_total_task_tempdb_mb,
-    r.sql_handle,
-    r.plan_handle,
-    st.text AS query_text,
-    qp.query_plan
-FROM sys.dm_db_task_space_usage AS t WITH (NOLOCK)
-JOIN sys.dm_exec_sessions AS s WITH (NOLOCK) ON t.session_id = s.session_id
-LEFT JOIN sys.dm_exec_requests AS r WITH (NOLOCK) ON t.session_id = r.session_id AND t.request_id = r.request_id
-OUTER APPLY sys.dm_exec_sql_text(r.sql_handle) AS st
-OUTER APPLY sys.dm_exec_query_plan(r.plan_handle) AS qp
-WHERE t.session_id > 50 
-  AND ( (t.user_objects_alloc_page_count - t.user_objects_dealloc_page_count) +
-        (t.internal_objects_alloc_page_count - t.internal_objects_dealloc_page_count)
-      ) > 0; -- Only show tasks with net positive tempdb usage
-GO
-
---  Aggregate TempDB Usage by Session
-
-CREATE OR ALTER VIEW qpi.tempdb_session_usage_current
-AS
-SELECT 
-    tsu.session_id,
-    s.login_name,
-    s.host_name,
-    s.program_name,
-    SUM(tsu.user_objects_alloc_page_count + tsu.internal_objects_alloc_page_count) AS total_allocated_pages,
-    SUM(tsu.user_objects_dealloc_page_count + tsu.internal_objects_dealloc_page_count) AS total_deallocated_pages,
-    SUM((tsu.user_objects_alloc_page_count + tsu.internal_objects_alloc_page_count) -
-        (tsu.user_objects_dealloc_page_count + tsu.internal_objects_dealloc_page_count)) AS net_tempdb_pages,
-    SUM((tsu.user_objects_alloc_page_count + tsu.internal_objects_alloc_page_count) -
-        (tsu.user_objects_dealloc_page_count + tsu.internal_objects_dealloc_page_count)) * 8 AS net_tempdb_kb -- Added KB
-FROM sys.dm_db_session_space_usage AS tsu WITH (NOLOCK)
-JOIN sys.dm_exec_sessions AS s WITH (NOLOCK) ON tsu.session_id = s.session_id
-WHERE tsu.session_id > 50 -- Exclude system sessions
-GROUP BY tsu.session_id, s.login_name, s.host_name, s.program_name
-HAVING SUM((tsu.user_objects_alloc_page_count + tsu.internal_objects_alloc_page_count) -
-           (tsu.user_objects_dealloc_page_count + tsu.internal_objects_dealloc_page_count)) > 0; -- Only show active consumers
-GO
-
-
----Identify Queries with Hash Match or Sort Operators (Potential TempDB Spills)
-
---*When querying this view, use order by `total_cpu_ms DESC` or `execution_count DESC`.*
-
-CREATE OR ALTER VIEW qpi.tempdb_cached_plans_with_hash_or_sort
-AS
+CREATE OR ALTER  VIEW qpi.db_table_stats AS
 SELECT
-    DB_NAME(qp.dbid) AS database_name,
-    OBJECT_NAME(qp.objectid, qp.dbid) AS object_name,
-    qs.plan_handle,
-    qs.sql_handle,
-    qt.text AS query_text,
-    qs.creation_time,
-    qs.last_execution_time,
-    qs.execution_count,
-    qs.total_worker_time / 1000 AS total_cpu_ms,
-    qs.total_elapsed_time / 1000 AS total_elapsed_ms,
-    qs.total_logical_reads,
-    qs.total_logical_writes,
-	qp.query_plan.value('count(//RelOp[@PhysicalOp="Hash Match"])', 'int') AS hash_match_operation_count,
-    qp.query_plan.value('count(//RelOp[@PhysicalOp="Sort"])', 'int') AS sort_operation_count,
-    qp.query_plan
-FROM sys.dm_exec_query_stats AS qs WITH (NOLOCK)
-CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle) AS qt
-CROSS APPLY sys.dm_exec_query_plan(qs.plan_handle) AS qp
-WHERE
-    qp.query_plan.exist('//RelOp[@PhysicalOp="Hash Match" or @PhysicalOp="Sort"]') = 1
-    AND qp.dbid > 4; -- Optional: Exclude system databases if desired for plan cache pollution check
+	s.name,
+	table_name = OBJECT_NAME(s.object_id),
+	sc.columns,
+	stats_method = s.stats_generation_method_desc,
+	auto_created,
+	auto_drop,
+	user_created,
+	is_incremental,
+	filter = IIF(has_filter=1, filter_definition, 'N/A')
+FROM sys.stats s
+	JOIN (SELECT	sc.stats_id, sc.object_id,
+					columns = STRING_AGG(cast(c.name as varchar(max)), ',')
+			FROM sys.stats_columns sc, sys.columns c
+			WHERE sc.object_id = c.object_id
+			AND sc.column_id = c.column_id
+			AND OBJECTPROPERTY(c.object_id, 'IsMSShipped') = 0
+			GROUP BY sc.stats_id, sc.object_id
+			) sc ON s.stats_id = sc.stats_id AND s.object_id = sc.object_id
+WHERE OBJECTPROPERTY(s.object_id, 'IsMSShipped') = 0
 GO
 
-
----Check Current TempDB Space Usage by Category
---Note: The `FROM tempdb.sys.dm_db_file_space_usage AS fs` is key here.*
---This view provides a live snapshot. If you want historical TempDB space usage, you'd need a separate job to snapshot this data into a table over time. An idea for another time 
-
-CREATE OR ALTER VIEW qpi.tempdb_space_usage_current
-AS
-SELECT 
-    DB_NAME(fs.database_id) AS database_name, -- Will always be 'tempdb'
-    SUM(fs.user_object_reserved_page_count) * 8.0 / 1024 AS user_objects_mb,
-    SUM(fs.internal_object_reserved_page_count) * 8.0 / 1024 AS internal_objects_mb,
-    SUM(fs.version_store_reserved_page_count) * 8.0 / 1024 AS version_store_mb,
-    SUM(fs.unallocated_extent_page_count) * 8.0 / 1024 AS free_space_mb,
-    SUM(fs.mixed_extent_page_count) * 8.0 / 1024 AS mixed_extent_mb, -- Added for completeness
-    (SUM(fs.user_object_reserved_page_count +
-         fs.internal_object_reserved_page_count +
-         fs.version_store_reserved_page_count +
-         fs.unallocated_extent_page_count +
-         fs.mixed_extent_page_count) * 8.0 / 1024) AS total_space_mb_in_files -- Approximation of total allocated space in data files
-FROM tempdb.sys.dm_db_file_space_usage AS fs -- Querying tempdb's DMV explicitly
-GROUP BY fs.database_id; -- Grouping by database_id though it will only be tempdb
-GO
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
---- unused and optional stuff
-
---- backup info, rarely useful with Mi.
-
-
---CREATE OR ALTER VIEW qpi.backups as
---SELECT TOP 5000 bcks.database_name, bckMF.device_type, BackD.type_desc, BackD.physical_name, bckS.type, 
---CASE bckS.[type] WHEN 'D' THEN 'Full'
---WHEN 'I' THEN 'Differential'
---WHEN 'L' THEN 'Transaction Log'
---END AS BackupType, bckS.backup_start_date, bckS.backup_finish_date, 
---convert(char(8),dateadd(s,datediff(s,bckS.backup_start_date, bckS.backup_finish_date),'1900-1-1'),8) AS BackupTimeFull,
---convert(decimal(19,2),(bckS.backup_size *1.0) / power(2,20)) as [Backup Size(MB)],CAST(bcks.backup_size / 1073741824.0E AS DECIMAL(10, 2)) as [Backup Size(GB)] ,Convert(decimal(19,2),(bckS.compressed_backup_size *1.0) / power(2,20)) as [Compressed Backup Size(MB)]
---, CAST(bcks.compressed_backup_size / 1073741824.0E AS DECIMAL(10, 2)) as [Compressed Backup Size(GB)],
---software_name, is_compressed, is_copy_only, is_encrypted, physical_device_name,first_lsn, last_lsn, checkpoint_lsn, database_backup_lsn, user_name, @@SERVERNAME
---FROM  msdb.dbo.backupset bckS INNER JOIN msdb.dbo.backupmediaset bckMS
---ON bckS.media_set_id = bckMS.media_set_id
---INNER JOIN msdb.dbo.backupmediafamily bckMF 
---ON bckMS.media_set_id = bckMF.media_set_id
---Left join sys.backup_devices BackD on bckMF.device_type = BackD.type
---go
-
-
-
-
---CREATE OR ALTER VIEW qpi.backup_durations as
---SELECT
---session_id as SPID,
---command,
---a.text AS Query,
---start_time,
---percent_complete,
---CAST(((DATEDIFF(s,start_time,GETDATE()))/3600) AS VARCHAR) + ' hour(s), '
---+ CAST((DATEDIFF(s,start_time,GETDATE())%3600)/60 AS VARCHAR) + 'min, '
---+ CAST((DATEDIFF(s,start_time,GETDATE())%60) AS VARCHAR) + ' sec' AS running_time,
---CAST((estimated_completion_time/3600000) AS VARCHAR) + ' hour(s), '
---+ CAST((estimated_completion_time %3600000)/60000 AS VARCHAR) + 'min, '
---+ CAST((estimated_completion_time %60000)/1000 as VARCHAR) + ' sec' AS est_time_to_go,
---DATEADD(SECOND,estimated_completion_time/1000, GETDATE()) AS estimated_completion_time
---FROM sys.dm_exec_requests r
---CROSS APPLY sys.dm_exec_sql_text(r.sql_handle) a
---WHERE r.command IN ('BACKUP DATABASE','RESTORE DATABASE', 'BACKUP LOG','RESTORE LOG')
---go
-
-
-
-
---CREATE OR ALTER  VIEW qpi.db_file_stats
---AS SELECT * from qpi.fn_file_stats(DB_ID(), null, null);
---GO
-
-
-
-
-
-
-
-
+CREATE OR ALTER  VIEW qpi.db_table_stat_columns AS
+SELECT	name = s.name,
+	table_name = OBJECT_NAME(s.object_id),
+	column_name = c.name,
+	type = CASE
+		WHEN t.name IN ('decimal', 'numeric') THEN CONCAT(t.name, '(', c.precision, ',', c.scale, ')')
+		WHEN t.name IN ('char', 'varchar', 'nchar', 'nvarchar', 'binary', 'varbinary', 'datetime2', 'time', 'datetimeoffset') THEN CONCAT(t.name, '(', IIF(c.max_length <> -1, CAST(c.max_length AS VARCHAR(100)), 'MAX'), ')')
+		ELSE t.name
+	END,
+	stats_method = s.stats_generation_method_desc,
+	auto_created,
+	auto_drop,
+	user_created,
+	is_incremental,
+	filter = IIF(has_filter=1, filter_definition, 'N/A')
+FROM sys.stats s,sys.stats_columns sc, sys.columns c, sys.types t, sys.objects o
+WHERE s.object_id = sc.object_id AND s.stats_id = sc.stats_id
+AND sc.column_id = c.column_id
+AND s.object_id = c.object_id
+AND o.object_id = c.object_id
+AND c.system_type_id = t.system_type_id
+AND OBJECTPROPERTY(s.object_id, 'IsMSShipped') = 0
