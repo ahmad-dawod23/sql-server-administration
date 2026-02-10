@@ -1,197 +1,162 @@
----search the logs:
+-----------------------------------------------------------------------
+-- GENERAL ADMINISTRATION UTILITIES
+-- Purpose : Miscellaneous admin queries that don't fit into specialized
+--           categories — error logs, network protocol checks, restore
+--           progress, transaction monitoring, Database Mail diagnostics.
+-- Note    : For specialized topics (security, backups, TDE, etc.),
+--           see the dedicated script files.
+-----------------------------------------------------------------------
 
-USE MASTER
+-----------------------------------------------------------------------
+-- 1. ERROR LOG SEARCH
+--    Search SQL Server error log for specific patterns.
+-----------------------------------------------------------------------
+USE MASTER;
 GO
+-- Search for permission errors
 EXEC xp_readerrorlog 0, 1, N'permission', NULL, NULL, NULL, N'desc';
 GO
 
---find network protocol currently used
+-- Search for login failures (also see security-and-permissions-audit.sql)
+-- EXEC xp_readerrorlog 0, 1, N'Login failed', NULL, NULL, NULL, N'desc';
 
-SELECT net_transport
+-----------------------------------------------------------------------
+-- 2. CURRENT SESSION NETWORK PROTOCOL
+--    Identify the transport protocol for your current connection.
+-----------------------------------------------------------------------
+SELECT
+    session_id,
+    net_transport,
+    protocol_type,
+    auth_scheme,
+    encrypt_option
 FROM sys.dm_exec_connections
 WHERE session_id = @@SPID;
 
---- find out if TDS is enabled or not
+-----------------------------------------------------------------------
+-- 3. NON-ENCRYPTED TDS CONNECTIONS (Azure SQL MI)
+--    Find unencrypted connections that aren't using Shared Memory
+--    and aren't internal AG/MI Link traffic.
+-----------------------------------------------------------------------
+SELECT DISTINCT
+    net_transport                AS [Transport Protocol],
+    protocol_type                AS [Protocol Type],
+    endpoint_id                  AS [Endpoint Id],
+    auth_scheme                  AS [Authentication Scheme],
+    COUNT(*)                     AS ConnectionCount
+FROM sys.dm_exec_connections
+WHERE encrypt_option != 'TRUE'
+  AND net_transport != 'Shared memory'
+  AND (
+        client_net_address COLLATE database_default
+            NOT IN (SELECT ip_address_or_FQDN COLLATE database_default
+                    FROM sys.dm_hadr_fabric_nodes)
+        OR protocol_type != 'Database Mirroring'
+  )
+GROUP BY net_transport, protocol_type, endpoint_id, auth_scheme
+ORDER BY ConnectionCount DESC;
 
-SELECT DISTINCT net_transport AS [Transport Protocol],
-               protocol_type AS [Protocol Type],
-               endpoint_id   AS [Endpoint Id],
-               auth_scheme   AS [Authentication Scheme]
-FROM   sys.dm_exec_connections
-WHERE  encrypt_option != 'TRUE'
-      AND net_transport != 'Shared memory'
-      AND (
-           client_net_address COLLATE database_default not in (select ip_address_or_FQDN COLLATE database_default from sys.dm_hadr_fabric_nodes)
-           AND protocol_type = 'Database Mirroring'
-       )
-
-
-
-
---- shows the status of an indexed table statistics: 
-
-DBCC SHOW_STATISTICS('HumanResources.Department','AK_Department_Name')
-
---- index physical status health query:
-
-
-SELECT 
-    dbschemas.name AS 'Schema',
-    dbtables.name AS 'Table',
-    dbindexes.name AS 'Index',
-    indexstats.index_type_desc AS 'Index Type',
-    indexstats.avg_fragmentation_in_percent AS 'Fragmentation (%)',
-    indexstats.page_count AS 'Page Count'
-	indexstats.alloc_unit_type_desc
-FROM 
-    sys.dm_db_index_physical_stats(DB_ID(), NULL, NULL, NULL, 'DETAILED') AS indexstats
-    INNER JOIN sys.tables AS dbtables ON indexstats.object_id = dbtables.object_id
-    INNER JOIN sys.schemas AS dbschemas ON dbtables.schema_id = dbschemas.schema_id
-    INNER JOIN sys.indexes AS dbindexes ON dbtables.object_id = dbindexes.object_id 
-        AND indexstats.index_id = dbindexes.index_id
-WHERE 
-    indexstats.database_id = DB_ID()
-ORDER BY 
-    indexstats.avg_fragmentation_in_percent DESC;
-
-
-
-
---- finding backup history from msdb:
-
-SELECT TOP 5000 bcks.database_name, bckMF.device_type, BackD.type_desc, BackD.physical_name, bckS.type, CASE bckS.[type] WHEN 'D' THEN 'Full'
-WHEN 'I' THEN 'Differential'
-WHEN 'L' THEN 'Transaction Log'
-END AS BackupType, bckS.backup_start_date, bckS.backup_finish_date, 
-convert(char(8),dateadd(s,datediff(s,bckS.backup_start_date, bckS.backup_finish_date),'1900-1-1'),8) AS BackupTimeFull,
-convert(decimal(19,2),(bckS.backup_size *1.0) / power(2,20)) as [Backup Size(MB)],CAST(bcks.backup_size / 1073741824.0E AS DECIMAL(10, 2)) as [Backup Size(GB)] ,Convert(decimal(19,2),(bckS.compressed_backup_size *1.0) / power(2,20)) as [Compressed Backup Size(MB)]
-, CAST(bcks.compressed_backup_size / 1073741824.0E AS DECIMAL(10, 2)) as [Compressed Backup Size(GB)],
-software_name, is_compressed, is_copy_only, is_encrypted, physical_device_name,first_lsn, last_lsn, checkpoint_lsn, database_backup_lsn, user_name, @@SERVERNAME
-FROM  msdb.dbo.backupset bckS INNER JOIN msdb.dbo.backupmediaset bckMS
-ON bckS.media_set_id = bckMS.media_set_id
-INNER JOIN msdb.dbo.backupmediafamily bckMF 
-ON bckMS.media_set_id = bckMF.media_set_id
-Left join sys.backup_devices BackD on bckMF.device_type = BackD.type
---where database_name='DBName'
-ORDER BY bckS.backup_start_date DESC
-
-
-
-
------find isolation level for locking
-
-SELECT transaction_sequence_num,
-       commit_sequence_num,
-       is_snapshot,
-       t.session_id,
-       first_snapshot_sequence_num,
-       max_version_chain_traversed,
-       elapsed_time_seconds,
-       host_name,
-       login_name,
-       CASE transaction_isolation_level
-           WHEN '0' THEN
-               'Unspecified'
-           WHEN '1' THEN
-               'ReadUncomitted'
-           WHEN '2' THEN
-               'ReadCommitted'
-           WHEN '3' THEN
-               'Repeatable'
-           WHEN '4' THEN
-               'Serializable'
-           WHEN '5' THEN
-               'Snapshot'
-       END AS transaction_isolation_level
+-----------------------------------------------------------------------
+-- 4. SNAPSHOT ISOLATION LEVEL — ACTIVE TRANSACTIONS
+--    Shows which sessions are using snapshot isolation and their
+--    version chain traversal.
+-----------------------------------------------------------------------
+SELECT
+    transaction_sequence_num,
+    commit_sequence_num,
+    is_snapshot,
+    t.session_id,
+    first_snapshot_sequence_num,
+    max_version_chain_traversed,
+    elapsed_time_seconds,
+    host_name,
+    login_name,
+    CASE transaction_isolation_level
+        WHEN '0' THEN 'Unspecified'
+        WHEN '1' THEN 'ReadUncommitted'
+        WHEN '2' THEN 'ReadCommitted'
+        WHEN '3' THEN 'Repeatable'
+        WHEN '4' THEN 'Serializable'
+        WHEN '5' THEN 'Snapshot'
+    END                          AS transaction_isolation_level
 FROM sys.dm_tran_active_snapshot_database_transactions t
     JOIN sys.dm_exec_sessions s
-        ON t.session_id = s.session_id;
+        ON t.session_id = s.session_id
+ORDER BY elapsed_time_seconds DESC;
 
-
-
----active transactions:
-
-SELECT SP.SPID,[text] as SQLCode FROM
-SYS.SYSPROCESSES SP
-CROSS APPLY
-SYS.dm_exec_sql_text(SP.[SQL_HANDLE])AS DEST WHERE OPEN_TRAN >= 1
-
-
-
-
-
----------- restores wait times
-
-
-
-use master
-
+-----------------------------------------------------------------------
+-- 5. ACTIVE OPEN TRANSACTIONS
+--    Find sessions with uncommitted transactions (potential blocking).
+-----------------------------------------------------------------------
 SELECT
-session_id as SPID,
-command,
-a.text AS Query,
-start_time,
-percent_complete,
-CAST(((DATEDIFF(s,start_time,GETDATE()))/3600) AS VARCHAR) + ' hour(s), '
-+ CAST((DATEDIFF(s,start_time,GETDATE())%3600)/60 AS VARCHAR) + 'min, '
-+ CAST((DATEDIFF(s,start_time,GETDATE())%60) AS VARCHAR) + ' sec' AS running_time,
-CAST((estimated_completion_time/3600000) AS VARCHAR) + ' hour(s), '
-+ CAST((estimated_completion_time %3600000)/60000 AS VARCHAR) + 'min, '
-+ CAST((estimated_completion_time %60000)/1000 as VARCHAR) + ' sec' AS est_time_to_go,
-DATEADD(SECOND,estimated_completion_time/1000, GETDATE()) AS estimated_completion_time
+    SP.SPID,
+    SP.open_tran                 AS OpenTransactions,
+    SP.status,
+    SP.cmd,
+    SP.waittype,
+    SP.waittime,
+    SP.blocked,
+    DEST.[text]                  AS SQLCode
+FROM sys.sysprocesses SP
+    CROSS APPLY sys.dm_exec_sql_text(SP.[SQL_HANDLE]) AS DEST
+WHERE SP.open_tran >= 1
+ORDER BY SP.open_tran DESC, SP.waittime DESC;
+
+-----------------------------------------------------------------------
+-- 6. BACKUP / RESTORE PROGRESS
+--    Monitor running backup or restore operations.
+-----------------------------------------------------------------------
+USE master;
+GO
+SELECT
+    session_id                   AS SPID,
+    command,
+    a.[text]                     AS Query,
+    start_time,
+    percent_complete,
+    CAST(((DATEDIFF(s, start_time, GETDATE())) / 3600) AS VARCHAR) + ' hour(s), '
+        + CAST((DATEDIFF(s, start_time, GETDATE()) % 3600) / 60 AS VARCHAR) + ' min, '
+        + CAST((DATEDIFF(s, start_time, GETDATE()) % 60) AS VARCHAR) + ' sec'
+                                 AS running_time,
+    CAST((estimated_completion_time / 3600000) AS VARCHAR) + ' hour(s), '
+        + CAST((estimated_completion_time % 3600000) / 60000 AS VARCHAR) + ' min, '
+        + CAST((estimated_completion_time % 60000) / 1000 AS VARCHAR) + ' sec'
+                                 AS est_time_to_go,
+    DATEADD(SECOND,
+        estimated_completion_time / 1000,
+        GETDATE())               AS estimated_completion_time
 FROM sys.dm_exec_requests r
-CROSS APPLY sys.dm_exec_sql_text(r.sql_handle) a
-WHERE r.command IN ('BACKUP DATABASE','RESTORE DATABASE', 'BACKUP LOG','RESTORE LOG')
+    CROSS APPLY sys.dm_exec_sql_text(r.sql_handle) a
+WHERE r.command IN (
+    'BACKUP DATABASE',
+    'RESTORE DATABASE',
+    'BACKUP LOG',
+    'RESTORE LOG'
+)
+ORDER BY start_time;
 
-
-
-
-
------- user level errors:
-
---buffer log
-select * from sys.dm_os_ring_buffers where ring_buffer_type = 'RING_BUFFER_XE_LOG'
-
--- 1. Capture the exact error state
-EXEC xp_readerrorlog 0, 1, N'Login failed', NULL, NULL, NULL, N'desc';
-
--- 2. Look for default-DB or lock-out issues
-SELECT name,
-       LOGINPROPERTY(name,'IsLocked')            AS IsLocked,
-       LOGINPROPERTY(name,'BadPasswordCount')    AS BadPwdCnt,
-       default_database_name
-FROM sys.sql_logins
-WHERE name = N'report_user';
-
--- 3. Does the default DB exist & is ONLINE?
-SELECT name, state_desc
-FROM sys.databases
-WHERE name = (SELECT default_database_name FROM sys.sql_logins WHERE name=N'report_user');
-
--- 4. Any hidden DENY?
-SELECT perm.state_desc
-FROM sys.server_permissions AS perm
-JOIN sys.server_principals  AS p ON p.principal_id = perm.grantee_principal_id
-WHERE p.name = N'report_user' AND perm.permission_name = 'CONNECT SQL';
-
-
-
-
---- db encryption state
-
-SELECT 	d.name,
- d.is_encrypted,
- dek.encryption_state,
- dek.percent_complete,
- dek.key_algorithm,
- dek.key_length
- FROM sys.databases as d 
- INNER JOIN sys.dm_database_encryption_keys AS dek 	ON d.database_id = dek.database_id
+-----------------------------------------------------------------------
+-- 7. RING BUFFER — XE LOG ERRORS
+--    Recent Extended Event errors from the ring buffer.
+-----------------------------------------------------------------------
+SELECT
+    record_id,
+    DATEADD(ms,
+        (-1 * (SELECT ms_ticks FROM sys.dm_os_sys_info) - [timestamp]),
+        GETDATE())               AS event_time,
+    [timestamp],
+    record
+FROM sys.dm_os_ring_buffers
+WHERE ring_buffer_type = 'RING_BUFFER_XE_LOG'
+ORDER BY [timestamp] DESC;
  
  
  
  
- --- email issues:
+-----------------------------------------------------------------------
+-- 8. Database Mail Diagnostics
+--   Check Database Mail configuration, queues, and logs for issues.
+-----------------------------------------------------------------------
  
  
   USE msdb

@@ -1,6 +1,6 @@
 ﻿SQL Server DBA Essential Queries
 
-A practical collection of SQL Server / Azure SQL MI scripts for day-to-day operations: incident triage, performance troubleshooting, HA/DR monitoring, replication, backups, tempdb, and Extended Events.
+A practical collection of SQL Server / Azure SQL MI scripts for day-to-day operations: incident triage, performance troubleshooting, HA/DR monitoring, replication, backups, security, maintenance, and more.
 
 ## Quick start
 
@@ -16,20 +16,49 @@ A practical collection of SQL Server / Azure SQL MI scripts for day-to-day opera
 ### Performance and Query Store
 
 - performance-checking-queries.sql
-- sp_WhoIsActive.sql / who_is_active.sql
+- sp_WhoIsActive.sql
+- plan-cache-analysis.sql (cache bloat, single-use plans, parameter sniffing, recompiles)
 - SQL Server 2022 Diagnostic Information Queries.sql
 - SQL Managed Instance Diagnostic Information Queries.sql
-- qpi-master/ (Query Performance Insights)
+- qpi/ (Query Performance Insights)
 
 ### Blocking and deadlocks
 
 - performance-checking-queries.sql (blocking + head blocker)
 - extended events.sql (deadlock + performance monitoring templates)
 
+### Index and statistics maintenance
+
+- index-and-statistics-maintenance.sql (fragmentation, missing/unused indexes, stale stats, lock contention)
+
+### Database integrity
+
+- database-integrity-checks.sql (DBCC CHECKDB, CHECKTABLE, suspect pages, page verify audit)
+
 ### Backups, restores, recovery
 
 - Administration commands V2.0.sql (backup history, restore progress)
-- MaintenanceSolution.sql
+- backup-verification.sql (RESTORE VERIFYONLY, backup chain integrity, checksum audit)
+
+### Security and permissions
+
+- security-and-permissions-audit.sql (sysadmin, roles, permissions, orphaned users, linked servers)
+
+### Encryption (TDE / Always Encrypted)
+
+- tde-and-encryption-status.sql (TDE status, certificate expiry, Always Encrypted keys, backup encryption)
+
+### Memory and buffer pool
+
+- buffer-pool-and-memory-analysis.sql (per-DB/object buffer usage, memory clerks, grants, PLE)
+
+### Disk space, files, and transaction log
+
+- disk-space-and-file-management.sql (volume free space, file sizes, autogrowth events, VLFs, log health)
+
+### Configuration audit
+
+- configuration-best-practice-audit.sql (sys.configurations review, DB settings, tempdb, deprecated features)
 
 ### HA/DR (AG and MI link)
 
@@ -38,8 +67,7 @@ A practical collection of SQL Server / Azure SQL MI scripts for day-to-day opera
 ### Replication
 
 - replication-troubleshooting-queries.sql
-- Replication Topology (1).sql
-- replication.txt
+- Replication Topology.sql
 
 ### tempdb, storage, I/O
 
@@ -53,7 +81,7 @@ A practical collection of SQL Server / Azure SQL MI scripts for day-to-day opera
 ### Agent and PowerShell
 
 - SQLAgentMaintenace.sql
-- powershell scripts.txt
+- powershell scripts.ps1
 
 ### Misc utilities
 
@@ -63,5 +91,6 @@ A practical collection of SQL Server / Azure SQL MI scripts for day-to-day opera
 ## Conventions / safety notes
 
 - Most scripts are intended to be read-only, but some include DDL (e.g., CREATE EVENT SESSION, job scripts) and DBCC commands. Scan before running.
+- Maintenance scripts (index rebuilds, stats updates, CHECKDB) should be run in maintenance windows.
 - Some queries require elevated permissions (e.g., xp_readerrorlog, certain DMVs, msdb job history).
 - Azure SQL MI has a slightly different DMV surface area than boxed SQL Server; if a section errors, skip it and continue.

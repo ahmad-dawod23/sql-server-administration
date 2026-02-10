@@ -25,6 +25,36 @@ JOIN sys.query_store_plan AS p ON q.query_id = p.query_id
 JOIN sys.query_store_runtime_stats AS rs ON p.plan_id = rs.plan_id
 where q.query_hash in ()
 
+---- index and satistics checks:
+
+
+
+--- shows the status of an indexed table statistics: 
+
+DBCC SHOW_STATISTICS('HumanResources.Department','AK_Department_Name')
+
+--- index physical status health query:
+
+
+SELECT 
+    dbschemas.name AS 'Schema',
+    dbtables.name AS 'Table',
+    dbindexes.name AS 'Index',
+    indexstats.index_type_desc AS 'Index Type',
+    indexstats.avg_fragmentation_in_percent AS 'Fragmentation (%)',
+    indexstats.page_count AS 'Page Count',
+	indexstats.alloc_unit_type_desc AS 'Alloc Unit Type'
+FROM 
+    sys.dm_db_index_physical_stats(DB_ID(), NULL, NULL, NULL, 'DETAILED') AS indexstats
+    INNER JOIN sys.tables AS dbtables ON indexstats.object_id = dbtables.object_id
+    INNER JOIN sys.schemas AS dbschemas ON dbtables.schema_id = dbschemas.schema_id
+    INNER JOIN sys.indexes AS dbindexes ON dbtables.object_id = dbindexes.object_id 
+        AND indexstats.index_id = dbindexes.index_id
+WHERE 
+    indexstats.database_id = DB_ID()
+ORDER BY 
+    indexstats.avg_fragmentation_in_percent DESC;
+
 
 
 ---- find bad queries:
