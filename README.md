@@ -33,8 +33,11 @@ Start here
 ```
 
 **"I have a security/login issue"** → `logins.sql`
+
 **"Replication is broken"** → `replication-troubleshooting-queries.sql`
+
 **"Is my backup OK?"** → `backups.sql`
+
 **"Is my config correct?"** → `configuration-best-practice-audit.sql`
 
 ## Repository contents
