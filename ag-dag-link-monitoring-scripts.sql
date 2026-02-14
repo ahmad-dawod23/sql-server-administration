@@ -1,5 +1,19 @@
--- Validate link status:
-declare @dagName nvarchar(max)= 'SanjaM_DAG'
+-----------------------------------------------------------------------
+-- AG / DAG / LINK MONITORING SCRIPTS
+-- Purpose : Monitor Availability Group, Distributed AG, and Managed
+--           Instance Link health — replica status, seeding progress,
+--           failover events, and geo-replication lag.
+-- Safety  : All queries are read-only.
+-- Applies to : On-prem (AG/DAG) / Azure SQL MI (Link feature)
+-----------------------------------------------------------------------
+
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+-----------------------------------------------------------------------
+-- 1. VALIDATE DAG/LINK STATUS
+--    Change @dagName to your Distributed AG name.
+-----------------------------------------------------------------------
+DECLARE @dagName NVARCHAR(MAX) = N'<YourDAGNameHere>'
 SELECT 
    ag.[name] AS [DAG Name], 
    ag.is_distributed, 
@@ -24,8 +38,11 @@ GO
 
 
 
--- Retrieve the database status
-declare @dagName nvarchar(max)= 'SanjaM_AG'
+-----------------------------------------------------------------------
+-- 2. RETRIEVE DATABASE REPLICA STATUS
+--    Change @agName to your AG name.
+-----------------------------------------------------------------------
+DECLARE @agName NVARCHAR(MAX) = N'<YourAGNameHere>'
 select 
 	d.name, hdrs.*
 from 
@@ -35,15 +52,17 @@ from
 	join sys.availability_groups ag
 	on ag.group_id = hdrs.group_id
 where
-ag.name = @dagName
+ag.name = @agName
 
 
 -- View database mirroring endpoints on SQL Server
 SELECT * FROM sys.database_mirroring_endpoints WHERE type_desc = 'DATABASE_MIRRORING'
 
---- check seeding status
-
-declare @agName nvarchar(max)= 'SanjaM_AG'
+-----------------------------------------------------------------------
+-- 3. CHECK SEEDING STATUS
+--    Change @seedAgName to your AG name.
+-----------------------------------------------------------------------
+DECLARE @seedAgName NVARCHAR(MAX) = N'<YourAGNameHere>'
 SELECT
 	ag.local_database_name AS 'Local database name',
 	ar.current_state AS 'Current state',
@@ -66,7 +85,7 @@ FROM sys.dm_hadr_physical_seeding_stats AS ag
 	ON local_physical_seeding_id = operation_id
 	INNER JOIN sys.availability_groups groups
 	ON groups.group_id = ar.ag_id
-WHERE groups.name = @agName
+WHERE groups.name = @seedAgName
 
 
 ---- check availabilty group node status (run on each node):
@@ -140,3 +159,56 @@ WHERE
   event_data.value('(/event/data[@name="current_state"]/value)[1]', 'int') = 1
 ORDER BY 
     FailoverTime DESC;
+
+
+-- Get information about any AlwaysOn AG cluster this instance is a part of (Query 16) (AlwaysOn AG Cluster)
+
+SELECT cluster_name, quorum_type_desc, quorum_state_desc
+
+FROM sys.dm_hadr_cluster WITH (NOLOCK) OPTION (RECOMPILE);
+
+------
+
+
+
+
+
+
+
+
+
+-- Good overview of AG health and status (Query 17) (AG Status)
+
+SELECT ag.name AS [AG Name], ar.replica_server_name, ar.availability_mode_desc, adc.[database_name], 
+
+       drs.is_local, drs.is_primary_replica, drs.synchronization_state_desc, drs.is_commit_participant, 
+
+	   drs.synchronization_health_desc, drs.recovery_lsn, drs.truncation_lsn, drs.last_sent_lsn, 
+
+	   drs.last_sent_time, drs.last_received_lsn, drs.last_received_time, drs.last_hardened_lsn, 
+
+	   drs.last_hardened_time, drs.last_redone_lsn, drs.last_redone_time, drs.log_send_queue_size, 
+
+	   drs.log_send_rate, drs.redo_queue_size, drs.redo_rate, drs.filestream_send_rate, 
+
+	   drs.end_of_log_lsn, drs.last_commit_lsn, drs.last_commit_time, drs.database_state_desc 
+
+FROM sys.dm_hadr_database_replica_states AS drs WITH (NOLOCK)
+
+INNER JOIN sys.availability_databases_cluster AS adc WITH (NOLOCK)
+
+ON drs.group_id = adc.group_id 
+
+AND drs.group_database_id = adc.group_database_id
+
+INNER JOIN sys.availability_groups AS ag WITH (NOLOCK)
+
+ON ag.group_id = drs.group_id
+
+INNER JOIN sys.availability_replicas AS ar WITH (NOLOCK)
+
+ON drs.group_id = ar.group_id 
+
+AND drs.replica_id = ar.replica_id
+
+ORDER BY ag.name, ar.replica_server_name, adc.[database_name] OPTION (RECOMPILE);

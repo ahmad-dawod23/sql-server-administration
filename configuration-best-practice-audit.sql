@@ -282,3 +282,273 @@ FROM sys.dm_os_performance_counters
 WHERE [object_name] LIKE '%Deprecated Features%'
   AND cntr_value > 0
 ORDER BY cntr_value DESC;
+
+-- SQL and OS Version information for current instance  (Query 1) (Version Info)
+SELECT @@SERVERNAME AS [Server Name], @@VERSION AS [SQL Server and OS Version Info];
+------
+
+
+
+
+-- Get selected server properties (Query 3) (Server Properties)
+SELECT SERVERPROPERTY('MachineName') AS [MachineName], 
+SERVERPROPERTY('ServerName') AS [ServerName],  
+SERVERPROPERTY('InstanceName') AS [Instance], 
+SERVERPROPERTY('IsClustered') AS [IsClustered], 
+SERVERPROPERTY('ComputerNamePhysicalNetBIOS') AS [ComputerNamePhysicalNetBIOS], 
+SERVERPROPERTY('Edition') AS [Edition], 
+SERVERPROPERTY('ProductLevel') AS [ProductLevel],				-- What servicing branch (RTM/SP/CU)
+SERVERPROPERTY('ProductUpdateLevel') AS [ProductUpdateLevel],	-- Within a servicing branch, what CU# is applied
+SERVERPROPERTY('ProductVersion') AS [ProductVersion],
+SERVERPROPERTY('ProductMajorVersion') AS [ProductMajorVersion], 
+SERVERPROPERTY('ProductMinorVersion') AS [ProductMinorVersion], 
+SERVERPROPERTY('ProductBuild') AS [ProductBuild], 
+SERVERPROPERTY('ProductBuildType') AS [ProductBuildType],			  -- Is this a GDR or OD hotfix (NULL if on a CU build)
+SERVERPROPERTY('ProductUpdateReference') AS [ProductUpdateReference], -- KB article number that is applicable for this build
+SERVERPROPERTY('ProcessID') AS [ProcessID],
+SERVERPROPERTY('Collation') AS [Collation], 
+SERVERPROPERTY('IsFullTextInstalled') AS [IsFullTextInstalled], 
+SERVERPROPERTY('IsIntegratedSecurityOnly') AS [IsIntegratedSecurityOnly],
+SERVERPROPERTY('FilestreamConfiguredLevel') AS [FilestreamConfiguredLevel],
+SERVERPROPERTY('IsHadrEnabled') AS [IsHadrEnabled], 
+SERVERPROPERTY('HadrManagerStatus') AS [HadrManagerStatus],
+SERVERPROPERTY('InstanceDefaultDataPath') AS [InstanceDefaultDataPath],
+SERVERPROPERTY('InstanceDefaultLogPath') AS [InstanceDefaultLogPath],
+SERVERPROPERTY('InstanceDefaultBackupPath') AS [InstanceDefaultBackupPath],
+SERVERPROPERTY('ErrorLogFileName') AS [ErrorLogFileName],
+SERVERPROPERTY('BuildClrVersion') AS [Build CLR Version],
+SERVERPROPERTY('IsXTPSupported') AS [IsXTPSupported],
+SERVERPROPERTY('IsPolybaseInstalled') AS [IsPolybaseInstalled],				
+SERVERPROPERTY('IsAdvancedAnalyticsInstalled') AS [IsRServicesInstalled],
+SERVERPROPERTY('IsTempdbMetadataMemoryOptimized') AS [IsTempdbMetadataMemoryOptimized],
+SERVERPROPERTY('IsServerSuspendedForSnapshotBackup') AS [IsServerSuspendedForSnapshotBackup],
+SERVERPROPERTY('SuspendedDatabaseCount') AS [SuspendedDatabaseCount];
+------
+
+
+-- This gives you a lot of useful information about your instance of SQL Server,
+-- such as the ProcessID for SQL Server and your collation
+
+
+-- Get instance-level configuration values for instance  (Query 4) (Configuration Values)
+SELECT name, value, value_in_use, minimum, maximum, [description], is_dynamic, is_advanced
+FROM sys.configurations WITH (NOLOCK)
+ORDER BY name OPTION (RECOMPILE);
+------
+
+
+-- Focus on these settings:
+
+
+-- Returns a list of all global trace flags that are enabled (Query 5) (Global Trace Flags)
+DBCC TRACESTATUS (-1);
+------
+
+
+
+
+-- SQL Server Services information (Query 7) (SQL Server Services Info)
+SELECT servicename, process_id, startup_type_desc, status_desc, 
+last_startup_time, service_account, is_clustered, cluster_nodename, [filename], 
+instant_file_initialization_enabled
+FROM sys.dm_server_services WITH (NOLOCK) OPTION (RECOMPILE);
+------
+
+
+
+
+-- Get detailed accelerator status information (Query 9) (Accelerator Status)
+SELECT accelerator, accelerator_desc, config, config_in_use , mode, mode_desc, 
+       mode_reason, mode_reason_desc, accelerator_hardware_detected, 
+	   accelerator_library_version, accelerator_driver_version
+FROM sys.dm_server_accelerator_status WITH (NOLOCK) OPTION (RECOMPILE);
+------
+
+
+-- Host information (Query 12) (Host Info)
+SELECT host_platform, host_distribution, host_release, 
+       host_service_pack_level, host_sku, os_language_version,
+	   host_architecture
+FROM sys.dm_os_host_info WITH (NOLOCK) OPTION (RECOMPILE); 
+------
+
+
+
+-- Get information about your cluster nodes and their status  (Query 15) (Cluster Node Properties)
+-- (if your database server is in a failover cluster)
+SELECT NodeName, status_description, is_current_owner
+FROM sys.dm_os_cluster_nodes WITH (NOLOCK) OPTION (RECOMPILE);
+------
+
+
+
+-- Hardware information from SQL Server 2022  (Query 18) (Hardware Info)
+SELECT cpu_count AS [Logical CPU Count], scheduler_count, 
+       (socket_count * cores_per_socket) AS [Physical Core Count], 
+       socket_count AS [Socket Count], cores_per_socket, numa_node_count,
+       physical_memory_kb/1024 AS [Physical Memory (MB)], 
+       max_workers_count AS [Max Workers Count], 
+	   affinity_type_desc AS [Affinity Type], 
+       sqlserver_start_time AS [SQL Server Start Time],
+	   DATEDIFF(hour, sqlserver_start_time, GETDATE()) AS [SQL Server Up Time (hrs)],
+	   virtual_machine_type_desc AS [Virtual Machine Type], 
+       softnuma_configuration_desc AS [Soft NUMA Configuration], 
+	   sql_memory_model_desc, 
+	   container_type_desc
+FROM sys.dm_os_sys_info WITH (NOLOCK) OPTION (RECOMPILE);
+------
+
+
+
+-- Get System Manufacturer and model number from SQL Server Error log (Query 19) (System Manufacturer)
+EXEC sys.xp_readerrorlog 0, 1, N'Manufacturer';
+------ 
+
+
+
+
+-- Get BIOS date from Windows Registry (Query 20) (BIOS Date)
+EXEC sys.xp_instance_regread N'HKEY_LOCAL_MACHINE', N'HARDWARE\DESCRIPTION\System\BIOS', N'BiosReleaseDate';
+------
+
+
+
+		DROP TABLE IF EXISTS #ProcessorDesc;
+		DROP TABLE IF EXISTS #CPUVectorizationLevel;
+		DROP TABLE IF EXISTS #TraceFlagStatus;
+	END
+------ 
+
+
+-- Note: TF 15097 enables AVX-512 support for SQL Server 2022 (16.x) Preview and later (if your CPU supports it)
+-- If you see AVX-512 in the CPU vectorization level results, you should consider enabling TF 15097
+
+-- Look at Suspect Pages table (Query 24) (Suspect Pages)
+SELECT DB_NAME(sp.database_id) AS [Database Name], 
+       sp.[file_id], sp.page_id, sp.event_type, 
+	   sp.error_count, sp.last_update_date,
+	   mf.name AS [Logical Name], mf.physical_name AS [File Path]
+FROM msdb.dbo.suspect_pages AS sp WITH (NOLOCK)
+INNER JOIN sys.master_files AS mf WITH (NOLOCK)
+ON mf.database_id = sp.database_id 
+AND mf.file_id = sp.file_id
+ORDER BY sp.database_id OPTION (RECOMPILE);
+------
+
+
+-- event_type value descriptions
+-- 1 = 823 error caused by an operating system CRC error
+--     or 824 error other than a bad checksum or a torn page (for example, a bad page ID)
+-- 2 = Bad checksum
+-- 3 = Torn page
+-- 4 = Restored (The page was restored after it was marked bad)
+-- 5 = Repaired (DBCC repaired the page)
+-- 7 = Deallocated by DBCC
+
+
+-- Ideally, this query returns no results. The table is limited to 1000 rows.
+-- If you do get results here, you should do further investigation to determine the root cause
+
+
+-- Manage the suspect_pages Table
+-- https://bit.ly/2Fvr1c9
+
+
+
+
+-- Read most recent entries from all SQL Server Error Logs (Query 25) (Error Log Entries)
+DROP TABLE IF EXISTS #ErrorLogFiles;
+	CREATE TABLE #ErrorLogFiles
+	([Archive #] INT,[Date] NVARCHAR(25),[Log File Size (Byte)]INT)
+
+
+
+	INSERT INTO #IOWarningResults 
+	EXEC xp_readerrorlog 2, 1, N'taking longer than 15 seconds';
+
+
+	INSERT INTO #IOWarningResults 
+	EXEC xp_readerrorlog 3, 1, N'taking longer than 15 seconds';
+
+
+	INSERT INTO #IOWarningResults 
+	EXEC xp_readerrorlog 4, 1, N'taking longer than 15 seconds';
+
+
+	INSERT INTO #IOWarningResults 
+	EXEC xp_readerrorlog 5, 1, N'taking longer than 15 seconds';
+
+
+SELECT LogDate, ProcessInfo, LogText
+FROM #IOWarningResults
+ORDER BY LogDate DESC;
+
+
+DROP TABLE IF EXISTS #IOWarningResults;
+------  
+
+
+-- Finding 15 second I/O warnings in the SQL Server Error Log is useful evidence of
+-- poor I/O performance (which might have many different causes)
+-- Look to see if you see any patterns in the results (same files, same drives, same time of day, etc.)
+
+
+
+-- Get tempdb version store space usage by database (Query 41) (Version Store Space Usage)
+SELECT DB_NAME(database_id) AS [Database Name],
+       reserved_page_count AS [Version Store Reserved Page Count], 
+	   reserved_space_kb/1024 AS [Version Store Reserved Space (MB)] 
+FROM sys.dm_tran_version_store_space_usage WITH (NOLOCK) 
+ORDER BY reserved_space_kb/1024 DESC OPTION (RECOMPILE);
+------  
+
+
+-- sys.dm_tran_version_store_space_usage (Transact-SQL)
+-- https://bit.ly/2vh3Bmk
+
+
+
+-- Get top average elapsed time queries for entire instance (Query 54) (Top Avg Elapsed Time Queries)
+SELECT TOP(50) DB_NAME(t.[dbid]) AS [Database Name], 
+REPLACE(REPLACE(LEFT(t.[text], 255), CHAR(10),''), CHAR(13),'') AS [Short Query Text],  
+qs.total_elapsed_time/qs.execution_count AS [Avg Elapsed Time],
+qs.min_elapsed_time, qs.max_elapsed_time, qs.last_elapsed_time,
+qs.execution_count AS [Execution Count],  
+qs.total_logical_reads/qs.execution_count AS [Avg Logical Reads], 
+qs.total_physical_reads/qs.execution_count AS [Avg Physical Reads], 
+qs.total_worker_time/qs.execution_count AS [Avg Worker Time],
+CASE WHEN CONVERT(nvarchar(max), qp.query_plan) COLLATE Latin1_General_BIN2 LIKE N'%<MissingIndexes>%' THEN 1 ELSE 0 END AS [Has Missing Index],
+qs.creation_time AS [Creation Time]
+--,t.[text] AS [Complete Query Text], qp.query_plan AS [Query Plan] -- uncomment out these columns if not copying results to Excel
+
+-- Lists the top statements by average input/output usage for the current database  (Query 70) (Top IO Statements)
+SELECT TOP(50) OBJECT_NAME(qt.objectid, dbid) AS [SP Name],
+(qs.total_logical_reads + qs.total_logical_writes) /qs.execution_count AS [Avg IO], qs.execution_count AS [Execution Count],
+SUBSTRING(qt.[text],qs.statement_start_offset/2, 
+	(CASE 
+		WHEN qs.statement_end_offset = -1 
+	 THEN LEN(CONVERT(nvarchar(max), qt.[text])) * 2 
+		ELSE qs.statement_end_offset 
+	 END - qs.statement_start_offset)/2) AS [Query Text]	
+FROM sys.dm_exec_query_stats AS qs WITH (NOLOCK)
+CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle) AS qt
+WHERE qt.[dbid] = DB_ID()
+
+
+
+
+
+
+
+
+
+--- Index Read/Write stats (all tables in current DB) ordered by Reads  (Query 80) (Overall Index Usage - Reads)
+SELECT SCHEMA_NAME(t.[schema_id]) AS [SchemaName], OBJECT_NAME(i.[object_id]) AS [ObjectName], 
+       i.[name] AS [IndexName], i.index_id, i.[type_desc] AS [Index Type],
+       s.user_seeks, s.user_scans, s.user_lookups,
+	   s.user_seeks + s.user_scans + s.user_lookups AS [Total Reads], 
+	   s.user_updates AS [Writes],  
+	   i.fill_factor AS [Fill Factor], i.has_filter, i.filter_definition, 
+	   s.last_user_scan, s.last_user_lookup, s.last_user_seek, i.[allow_page_locks]
+FROM sys.indexes AS i WITH (NOLOCK)
+LEFT OUTER JOIN sys.dm_db_index_usage_stats AS s WITH (NOLOCK)

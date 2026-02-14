@@ -210,3 +210,136 @@ SELECT
 FROM sys.master_files
 GROUP BY database_id
 ORDER BY TotalSizeMB DESC;
+
+
+
+
+
+-- Get number of data files in tempdb database (Query 26) (TempDB Data Files)
+EXEC sys.xp_readerrorlog 0, 1, N'The tempdb database has';
+------
+
+
+-- Get the number of data files in the tempdb database
+-- 4-8 data files that are all the same size is a good starting point
+
+-- You want this query to return no results
+-- All of your tempdb data files should have the same initial size and autogrowth settings 
+-- This query will also return no results if your error log has been recycled since the instance was last started
+-- KB3170020 - Informational messages added for tempdb configuration in the SQL Server error log in SQL Server 2012 and 2014
+-- https://bit.ly/3IsR8jh
+
+
+
+
+-- File names and paths for all user and system databases on instance  (Query 28) (Database Filenames and Paths)
+SELECT DB_NAME([database_id]) AS [Database Name], 
+       [file_id], [name], physical_name, [type_desc], state_desc,
+	   is_percent_growth, growth, 
+	   CONVERT(bigint, growth/128.0) AS [Growth in MB], 
+       CONVERT(bigint, size/128.0) AS [Total Size in MB], max_size
+FROM sys.master_files WITH (NOLOCK)
+ORDER BY DB_NAME([database_id]), [file_id] OPTION (RECOMPILE);
+------
+
+
+-- Things to look at:
+-- Are data files and log files on different drives?
+-- Is everything on the C: drive?
+-- Is tempdb on dedicated drives?
+-- Is there only one tempdb data file?
+-- Are all of the tempdb data files the same size?
+-- Are there multiple data files for user databases?
+-- Is percent growth enabled for any files (which is bad)?
+
+
+
+-- sys.dm_os_performance_counters (Transact-SQL)
+-- https://bit.ly/3kEO2JR
+
+
+-- sys.dm_database_encryption_keys (Transact-SQL)
+-- https://bit.ly/3mE7kkx
+
+
+
+
+
+-- sys.dm_os_memory_clerks (Transact-SQL)
+-- https://bit.ly/2H31xDR
+
+
+
+
+
+
+-- Find single-use, ad-hoc and prepared queries that are bloating the plan cache  (Query 52) (Ad hoc Queries)
+SELECT TOP(50) DB_NAME(t.[dbid]) AS [Database Name],
+REPLACE(REPLACE(LEFT(t.[text], 255), CHAR(10),''), CHAR(13),'') AS [Short Query Text], 
+cp.objtype AS [Object Type], cp.cacheobjtype AS [Cache Object Type],  
+cp.size_in_bytes/1024 AS [Plan Size in KB],
+CASE WHEN CONVERT(nvarchar(max), qp.query_plan) COLLATE Latin1_General_BIN2 LIKE N'%<MissingIndexes>%' THEN 1 ELSE 0 END AS [Has Missing Index]
+--,t.[text] AS [Query Text], qp.query_plan AS [Query Plan] -- uncomment out these columns if not copying results to Excel
+FROM sys.dm_exec_cached_plans AS cp WITH (NOLOCK)
+
+-- Plan cache, adhoc workloads and clearing the single-use plan cache bloat
+-- https://bit.ly/2EfYOkl
+
+
+
+
+-- Get top total logical reads queries for entire instance (Query 53) (Top Logical Reads Queries)
+SELECT TOP(50) DB_NAME(t.[dbid]) AS [Database Name],
+REPLACE(REPLACE(LEFT(t.[text], 255), CHAR(10),''), CHAR(13),'') AS [Short Query Text], 
+qs.total_logical_reads AS [Total Logical Reads],
+qs.min_logical_reads AS [Min Logical Reads],
+qs.total_logical_reads/qs.execution_count AS [Avg Logical Reads],
+qs.max_logical_reads AS [Max Logical Reads],   
+qs.min_worker_time AS [Min Worker Time],
+qs.total_worker_time/qs.execution_count AS [Avg Worker Time], 
+
+-- Get top total logical reads queries for entire instance (Query 53) (Top Logical Reads Queries)
+SELECT TOP(50) DB_NAME(t.[dbid]) AS [Database Name],
+REPLACE(REPLACE(LEFT(t.[text], 255), CHAR(10),''), CHAR(13),'') AS [Short Query Text], 
+qs.total_logical_reads AS [Total Logical Reads],
+qs.min_logical_reads AS [Min Logical Reads],
+qs.total_logical_reads/qs.execution_count AS [Avg Logical Reads],
+qs.max_logical_reads AS [Max Logical Reads],   
+qs.min_worker_time AS [Min Worker Time],
+qs.total_worker_time/qs.execution_count AS [Avg Worker Time], 
+qs.max_worker_time AS [Max Worker Time], 
+qs.min_elapsed_time AS [Min Elapsed Time], 
+qs.total_elapsed_time/qs.execution_count AS [Avg Elapsed Time], 
+qs.max_elapsed_time AS [Max Elapsed Time],
+qs.execution_count AS [Execution Count], 
+CASE WHEN CONVERT(nvarchar(max), qp.query_plan) COLLATE Latin1_General_BIN2 LIKE N'%<MissingIndexes>%' THEN 1 ELSE 0 END AS [Has Missing Index],
+qs.creation_time AS [Creation Time]
+--,t.[text] AS [Complete Query Text], qp.query_plan AS [Query Plan] -- uncomment out these columns if not copying results to Excel
+FROM sys.dm_exec_query_stats AS qs WITH (NOLOCK)
+CROSS APPLY sys.dm_exec_sql_text(plan_handle) AS t 
+CROSS APPLY sys.dm_exec_query_plan(plan_handle) AS qp 
+ORDER BY qs.total_logical_reads DESC OPTION (RECOMPILE);
+------
+
+
+
+
+
+-- Cached SPs Missing Indexes by Execution Count (Query 69) (SP Missing Index)
+SELECT TOP(25) CONCAT(SCHEMA_NAME(p.schema_id), '.', p.name) AS [SP Name], qs.execution_count AS [Execution Count],
+ISNULL(qs.execution_count/DATEDIFF(Minute, qs.cached_time, GETDATE()), 0) AS [Calls/Minute],
+qs.total_elapsed_time/qs.execution_count AS [Avg Elapsed Time],
+qs.total_worker_time/qs.execution_count AS [Avg Worker Time],    
+qs.total_logical_reads/qs.execution_count AS [Avg Logical Reads],
+CONVERT(nvarchar(25), qs.last_execution_time, 20) AS [Last Execution Time],
+CONVERT(nvarchar(25), qs.cached_time, 20) AS [Plan Cached Time]
+-- ,qp.query_plan AS [Query Plan] -- Uncomment if you want the Query Plan
+FROM sys.procedures AS p WITH (NOLOCK)
+INNER JOIN sys.dm_exec_procedure_stats AS qs WITH (NOLOCK)
+ON p.[object_id] = qs.[object_id]
+CROSS APPLY sys.dm_exec_query_plan(qs.plan_handle) AS qp
+WHERE qs.database_id = DB_ID()
+AND DATEDIFF(Minute, qs.cached_time, GETDATE()) > 0
+AND CONVERT(nvarchar(max), qp.query_plan) COLLATE Latin1_General_BIN2 LIKE N'%<MissingIndexes>%'
+ORDER BY qs.execution_count DESC OPTION (RECOMPILE);
+------

@@ -1,10 +1,17 @@
---Extended events In Prod SQL Servers
+-----------------------------------------------------------------------
+-- EXTENDED EVENTS — SESSION TEMPLATES
+-- Purpose : Reusable XE session definitions for monitoring restores,
+--           login failures, long-running queries, and performance.
+-- Safety  : *** THIS SCRIPT CONTAINS DDL — REVIEW BEFORE EXECUTING ***
+--           CREATE EVENT SESSION commands create server-level objects.
+--           Review each session before running. Use ALTER EVENT SESSION
+--           to start/stop sessions as needed.
+-- Applies to : On-prem / Azure SQL MI / Both
+-----------------------------------------------------------------------
 
---Extended Events is a powerful event-handling framework that was introduced in SQL Server 2008 to provide a more scalable and flexible alternative to SQL Server Profiler. It allows you to capture a wide --range of events that occur within the SQL Server database engine. Extended Events can be used for performance monitoring, troubleshooting, and auditing purposes. Here's a brief overview of how to work --with Extended Events in SQL Server:
-
-
-
----- check restores state:
+-----------------------------------------------------------------------
+-- 1. MONITOR RESTORE OPERATIONS
+-----------------------------------------------------------------------
 
 
 CREATE EVENT SESSION [restores] ON SERVER
@@ -15,10 +22,7 @@ WITH (STARTUP_STATE=OFF)
 GO
 
 
-
-
-
---- extended event to monitor failed logins:
+-- Monitor failed logins:
 
 CREATE EVENT SESSION [LoginIssues] ON SERVER
 
@@ -47,7 +51,7 @@ GO
 
 
 
---=== extended event to capture specific sql queries like the below edge case where a customer might need to capture certifcate creations, god knows why???
+-- Capture specific SQL queries (e.g., certificate-related operations):
 
 CREATE EVENT SESSION [CaptureQuery] ON SERVER
 ADD EVENT sqlserver.sql_statement_completed(
@@ -76,17 +80,15 @@ WITH (MAX_MEMORY=4096 KB,EVENT_RETENTION_MODE=ALLOW_SINGLE_EVENT_LOSS,MAX_DISPAT
 
 GO
 
--- Start the session
--- ALTER EVENT SESSION [CaptureCertificateBackups] ON SERVER STATE = START;
--- Stop the session
--- ALTER EVENT SESSION [CaptureCertificateBackups] ON SERVER STATE = STOP;
+-- Start: ALTER EVENT SESSION [CaptureCertificateBackups] ON SERVER STATE = START;
+-- Stop: ALTER EVENT SESSION [CaptureCertificateBackups] ON SERVER STATE = STOP;
 
 
 
 -------------------------------------------------
 
 
---Here's a comprehensive SQL Server Extended Events (XEvents) session to monitor performance issues like long-running queries, missing indexes, and inefficient operations:
+-- Monitor performance issues (long-running queries, missing indexes, inefficient operations):
 
 
 CREATE EVENT SESSION [PerformanceMonitoring] ON SERVER 
@@ -134,31 +136,14 @@ WITH (
 );
 
 
----
-
--- Key Features
---| Component       | Purpose                                                                 |
---|-----------------|-------------------------------------------------------------------------|
---| Events Captured | Monitors long-running queries, missing indexes, memory warnings, deadlocks, and critical errors. 
---| Actions         | Captures SQL text, execution plans, session details, and client context. 
---| Filters         | Focuses on resource-intensive queries (duration, reads, CPU). 
---| Targets         | Stores data in a file for later analysis. 
-
----
-
--- How to Use
---1. Deploy: Run the script in SSMS (adjust file path and filters as needed).
---2. Start Session:
+-- START SESSION:
 
    ALTER EVENT SESSION PerformanceMonitoring ON SERVER STATE = START;
- 
---3. Stop Session:
- 
+
+-- STOP SESSION:
    ALTER EVENT SESSION PerformanceMonitoring ON SERVER STATE = STOP;
-   
---4. Analyze Data:
---   - In SSMS: Right-click the `.xel` file > View Event Files.
---   - Query directly:
+
+-- ANALYZE DATA (query .xel file):
     
      SELECT 
          event_data.value('(@name)[1]', 'varchar(50)') AS event_name,
@@ -170,34 +155,15 @@ WITH (
          sys.fn_xe_file_target_read_file('C:\XEvents\PerformanceMonitoring.xel', NULL, NULL, NULL)
      CROSS APPLY 
          eventdata.nodes('//event') AS ed(event_data);
-     
 
----
-
--- Customization Tips
--- Adjust Thresholds: Modify `duration`, `logical_reads`, or `cpu_time` values to suit your workload.
--- Add/Remove Events: Include `rpc_completed` for remote calls or exclude events you donâ€™t need.
--- Focus on Specific DBs: Add `AND sqlserver.database_id = DB_ID('YourDBName')` to event predicates.
--- Minimize Overhead: Avoid capturing execution plans (`query_plan`) in production unless troubleshooting specific issues.
-
----
-
---Common Issues Detected
--- Long Inserts/Queries: Identified by high `duration` or `cpu_time`.
--- Bad Indexes: Highlighted by `missing_index_found` events.
--- Inefficient Plans: Revealed via `plan_affecting_convert` or `hash_warning`.
--- Deadlocks: Tracked via `lock_deadlock` events.
-
---This template provides a balanced approach for proactive performance monitoring. Adjust filters and events based on your environmentâ€™s needs!
+-- CUSTOMIZATION: Adjust duration/cpu_time thresholds, add rpc_completed event, filter by database_id
+-- DETECTS: Long queries (duration/cpu_time), missing indexes, inefficient plans, deadlocks
 
 
 
 
 
--- ====================================================================================
--- Segment 1: Create or Recreate the Extended Event Session
--- ====================================================================================
--- Drop the session if it already exists
+-- Create/recreate session (drop if exists):
 IF EXISTS (SELECT 1 FROM sys.server_event_sessions WHERE name = 'CaptureActualPlans')
 BEGIN
     DROP EVENT SESSION CaptureActualPlans ON SERVER;
@@ -205,10 +171,9 @@ BEGIN
 END
 GO
 
--- Create the Extended Event session
+-- Create session to capture actual execution plans:
 CREATE EVENT SESSION CaptureActualPlans ON SERVER
 ADD EVENT sqlserver.query_post_execution_showplan (
-    -- Collect additional useful actions (columns)
     ACTION (
         sqlserver.sql_text,         -- The text of the SQL batch
         sqlserver.tsql_stack,       -- T-SQL call stack (if in a proc/func)
@@ -221,33 +186,21 @@ ADD EVENT sqlserver.query_post_execution_showplan (
         sqlserver.query_hash,       -- Hash of the query text (normalized)
         sqlserver.query_plan_hash,  -- Hash of the execution plan
         sqlserver.context_info,     -- Context info set by SET CONTEXT_INFO
-        sqlserver.attach_activity_id -- For correlating with other events
+        sqlserver.attach_activity_id
     )
-    -- ====================================================================================
-    -- !!! CRITICAL: ADD FILTERS TO REDUCE OVERHEAD AND CAPTURE ONLY WHAT YOU NEED !!!
-    -- ====================================================================================
+    -- CRITICAL: Add filters to reduce overhead:
     WHERE (
-        -- Example: Filter by database name (adjust as needed)
-        sqlserver.database_name = N'YourDatabaseName' -- Or use database_id if preferred
-        -- Example: Filter out your own session
+        sqlserver.database_name = N'YourDatabaseName'
         AND sqlserver.session_id <> @@SPID
-        -- Example: Filter by duration (e.g., only queries running longer than 1 second = 1,000,000 microseconds)
-        AND [duration] > 1000000 -- Duration is in microseconds
+        AND [duration] > 1000000 -- >1 sec (microseconds)
 		and sqlserver.
-        -- Example: Filter by CPU time (e.g., only queries consuming more than 500ms CPU = 500,000 microseconds)
-        -- AND [cpu_time] > 500000
-        -- Example: Filter by a specific application name
-        -- AND sqlserver.client_app_name = N'YourApplicationName'
-        -- Example: Filter by a specific query hash (if you know it from Query Store or other DMVs)
-        -- AND sqlserver.query_hash = 0xYOUR_QUERY_HASH
-        -- Example: Only capture plans if there's a certain number of reads
-        -- AND [logical_reads] > 1000
+        -- Optional filters: cpu_time, client_app_name, query_hash, logical_reads
     )
 )
 ADD TARGET package0.event_file (
-    SET filename = N'C:\XE_Traces\CaptureActualPlans.xel', -- !!! CHANGE THIS PATH !!! For SQL MI, use blob storage URI
-    max_file_size = (100),      -- MB
-    max_rollover_files = (5)    -- Number of rollover files
+    SET filename = N'C:\XE_Traces\CaptureActualPlans.xel', -- Change path (SQL MI: use blob storage)
+    max_file_size = (100),
+    max_rollover_files = (5)
 )
 WITH (
     MAX_MEMORY = 4096 KB,
@@ -255,8 +208,8 @@ WITH (
     MAX_DISPATCH_LATENCY = 30 SECONDS,
     MAX_EVENT_SIZE = 0 KB,
     MEMORY_PARTITION_MODE = NONE,
-    TRACK_CAUSALITY = ON,       -- Useful for correlating events
-    STARTUP_STATE = OFF         -- Do not start automatically on server restart
+    TRACK_CAUSALITY = ON,
+    STARTUP_STATE = OFF
 );
 GO
 
@@ -267,9 +220,7 @@ GO
 
 
 
----=======================================================================================================
-
---- actual query plan finder
+-- Capture actual plans by query hash:
 
 CREATE EVENT SESSION [Capture_Actual_Plans_By_Hash] ON SERVER 
 ADD EVENT sqlserver.query_post_execution_showplan(
@@ -283,7 +234,7 @@ ADD EVENT sqlserver.query_post_execution_showplan(
         sqlserver.session_id
     )
     WHERE (
-        sqlserver.query_hash = 0x1234567890ABCDEF -- Replace with your actual query_hash
+        sqlserver.query_hash = 0x1234567890ABCDEF -- Replace with target query_hash
     )
 )
 ADD TARGET package0.ring_buffer
@@ -296,15 +247,10 @@ WITH (
 );
 GO
 
--- Start the session
+-- Start session:
 ALTER EVENT SESSION [Capture_Actual_Plans_By_Hash] ON SERVER STATE = START;
 
-
-
-
-
-
--- Pull XML actual execution plan from ring buffer and format for saving
+-- Extract XML execution plan from ring buffer:
 SELECT 
     event_data.value('(event/data[@name="query_plan"]/value)[1]', 'nvarchar(max)') AS [ActualExecutionPlanXml]
 INTO #PlanXmlTemp
@@ -318,15 +264,10 @@ FROM (
 ) AS Data
 CROSS APPLY TargetData.nodes('RingBufferTarget/event') AS XEvent(event_data);
 
--- View or copy/paste the result into a .sqlplan file
+-- View results (save as .sqlplan file):
 SELECT * FROM #PlanXmlTemp;
 
-
----========================================================================================================
-
-
-
---To capture the errors in the server
+-- Capture SQL errors (severity >=14, exclude logon errors):
 
 CREATE EVENT SESSION [Capture_SQL_Errors] ON SERVER 
 ADD EVENT sqlserver.error_reported(
@@ -340,7 +281,7 @@ ADD TARGET package0.event_file(SET filename=N'Capture_SQL_Errors.xel',max_file_s
 WITH (MAX_MEMORY=4096 KB,EVENT_RETENTION_MODE=ALLOW_MULTIPLE_EVENT_LOSS,MAX_DISPATCH_LATENCY=30 SECONDS,MAX_EVENT_SIZE=0 KB,MEMORY_PARTITION_MODE=NONE,TRACK_CAUSALITY=OFF,STARTUP_STATE=ON)
 GO
 
---To capture DeadLocks information in the server (not needed for sql mi, there is one already deployed for each sql mi server)
+-- Capture deadlock information (SQL MI has default session):
 
 CREATE EVENT SESSION [Deadlock_Info] ON SERVER 
 ADD EVENT sqlserver.xml_deadlock_report(
@@ -349,7 +290,7 @@ ADD TARGET package0.event_file(SET filename=N'Deadlock_Info',max_file_size=(100)
 WITH (MAX_MEMORY=4096 KB,EVENT_RETENTION_MODE=ALLOW_SINGLE_EVENT_LOSS,MAX_DISPATCH_LATENCY=30 SECONDS,MAX_EVENT_SIZE=0 KB,MEMORY_PARTITION_MODE=NONE,TRACK_CAUSALITY=OFF,STARTUP_STATE=OFF)
 GO
 
---To capture DeadLocks only in the server
+-- Capture deadlocks only:
 
 CREATE EVENT SESSION [Deadlocks_only] ON SERVER 
 ADD EVENT sqlserver.xml_deadlock_report(
@@ -358,7 +299,7 @@ ADD TARGET package0.event_file(SET filename=N'Deadlocks_only',max_file_size=(100
 WITH (MAX_MEMORY=4096 KB,EVENT_RETENTION_MODE=ALLOW_SINGLE_EVENT_LOSS,MAX_DISPATCH_LATENCY=30 SECONDS,MAX_EVENT_SIZE=0 KB,MEMORY_PARTITION_MODE=NONE,TRACK_CAUSALITY=OFF,STARTUP_STATE=ON)
 GO
 
---For email notification, create a sql agent job using below 
+-- Email notification via SQL Agent job: 
 
 CREATE TABLE errorlog (
             LogDate DATETIME 
@@ -380,11 +321,7 @@ SELECT
 FROM sys.fn_xe_file_target_read_file(@path + '\deadlocks.xel', NULL, NULL, NULL)
 WHERE OBJECT_NAME like 'xml_deadlock_report';
 
-
-
- 
-
---Always on health
+-- AlwaysOn health monitoring:
 
 CREATE EVENT SESSION [AlwaysOn_health] ON SERVER 
 ADD EVENT sqlserver.alwayson_ddl_executed,
@@ -405,7 +342,7 @@ ADD TARGET package0.event_file(SET filename=N'AlwaysOn_health.xel',max_file_size
 WITH (MAX_MEMORY=4096 KB,EVENT_RETENTION_MODE=ALLOW_SINGLE_EVENT_LOSS,MAX_DISPATCH_LATENCY=30 SECONDS,MAX_EVENT_SIZE=0 KB,MEMORY_PARTITION_MODE=NONE,TRACK_CAUSALITY=OFF,STARTUP_STATE=OFF)
 GO
 
---EE_DBA_LONGRUNNING_3SEC
+-- Capture long-running queries (>3 seconds):
 
 CREATE EVENT SESSION [EE_DBA_LONGRUNNING_3SEC] ON SERVER 
 ADD EVENT sqlserver.rpc_completed(
@@ -418,10 +355,9 @@ ADD TARGET package0.event_file(SET filename=N'EE_DBA_LONGRUNNING_3SEC',max_file_
 WITH (MAX_MEMORY=4096 KB,EVENT_RETENTION_MODE=ALLOW_SINGLE_EVENT_LOSS,MAX_DISPATCH_LATENCY=30 SECONDS,MAX_EVENT_SIZE=0 KB,MEMORY_PARTITION_MODE=NONE,TRACK_CAUSALITY=OFF,STARTUP_STATE=ON)
 GO
 
---Schedule the job every 30 mins
+-- Schedule job every 30 minutes
 
- 
---BlockedProcesses
+-- Capture blocked processes (>10 seconds):
 
 CREATE EVENT SESSION [DBA_BlockedProcesses] ON SERVER 
 ADD EVENT sqlserver.blocked_process_report(
@@ -429,3 +365,138 @@ ADD EVENT sqlserver.blocked_process_report(
 ADD TARGET package0.event_file(SET filename=N'DBA_BlockedProcesses')
 WITH (MAX_MEMORY=8192 KB,EVENT_RETENTION_MODE=ALLOW_SINGLE_EVENT_LOSS,MAX_DISPATCH_LATENCY=30 SECONDS,MAX_EVENT_SIZE=0 KB,MEMORY_PARTITION_MODE=NONE,TRACK_CAUSALITY=OFF,STARTUP_STATE=OFF)
 GO
+
+-- Blocked process and deadlock monitoring:
+
+
+CREATE EVENT SESSION [blocked_process] ON SERVER 
+ADD EVENT sqlserver.blocked_process_report(
+    ACTION(sqlserver.client_app_name,sqlserver.client_hostname,sqlserver.database_name,sqlserver.execution_plan_guid,sqlserver.query_hash,sqlserver.query_plan_hash,sqlserver.session_id,sqlserver.sql_text,sqlserver.username)),
+ADD EVENT sqlserver.xml_deadlock_report(
+    ACTION(sqlserver.client_app_name,sqlserver.client_hostname,sqlserver.database_name))
+ADD TARGET package0.event_file(SET filename=N'c:\temp\XEventSessions\blocked_process.xel',max_file_size=(65536),max_rollover_files=(5),metadatafile=N'c:\temp\XEventSessions\blocked_process.xem')
+WITH (MAX_MEMORY=4096 KB,EVENT_RETENTION_MODE=ALLOW_SINGLE_EVENT_LOSS,MAX_DISPATCH_LATENCY=5 SECONDS,MAX_EVENT_SIZE=0 KB,MEMORY_PARTITION_MODE=NONE,TRACK_CAUSALITY=OFF,STARTUP_STATE=OFF)
+GO
+
+-- Ensure path exists before starting trace
+
+
+EXEC sp_configure 'show advanced options', 1 ;
+GO
+RECONFIGURE ;
+GO
+-- Enable blocked process report (5 sec threshold):
+EXEC sp_configure 'blocked process threshold', '5';
+RECONFIGURE
+GO
+-- Start session:
+ALTER EVENT SESSION [blocked_process] ON SERVER
+STATE = START;
+
+-- Query blocked process events:
+
+WITH events_cte AS (
+  SELECT
+    xevents.event_data,
+    DATEADD(mi,
+    DATEDIFF(mi, GETUTCDATE(), CURRENT_TIMESTAMP),
+    xevents.event_data.value(
+      '(event/@timestamp)[1]', 'datetime2')) AS [event time] ,
+    xevents.event_data.value(
+      '(event/action[@name="client_app_name"]/value)[1]', 'nvarchar(128)')
+      AS [client app name],
+    xevents.event_data.value(
+      '(event/action[@name="client_hostname"]/value)[1]', 'nvarchar(max)')
+      AS [client host name],
+    xevents.event_data.value(
+      '(event[@name="blocked_process_report"]/data[@name="database_name"]/value)[1]', 'nvarchar(max)')
+      AS [database name],
+    xevents.event_data.value(
+      '(event[@name="blocked_process_report"]/data[@name="database_id"]/value)[1]', 'int')
+      AS [database_id],
+    xevents.event_data.value(
+      '(event[@name="blocked_process_report"]/data[@name="object_id"]/value)[1]', 'int')
+      AS [object_id],
+    xevents.event_data.value(
+      '(event[@name="blocked_process_report"]/data[@name="index_id"]/value)[1]', 'int')
+      AS [index_id],
+    xevents.event_data.value(
+      '(event[@name="blocked_process_report"]/data[@name="duration"]/value)[1]', 'bigint') / 1000
+      AS [duration (ms)],
+    xevents.event_data.value(
+      '(event[@name="blocked_process_report"]/data[@name="lock_mode"]/text)[1]', 'varchar')
+      AS [lock_mode],
+    xevents.event_data.value(
+      '(event[@name="blocked_process_report"]/data[@name="login_sid"]/value)[1]', 'int')
+      AS [login_sid],
+    xevents.event_data.query(
+      '(event[@name="blocked_process_report"]/data[@name="blocked_process"]/value/blocked-process-report)[1]')
+      AS blocked_process_report,
+    xevents.event_data.query(
+      '(event/data[@name="xml_report"]/value/deadlock)[1]')
+      AS deadlock_graph
+  FROM    sys.fn_xe_file_target_read_file
+    ('C:\temp\XEventSessions\blocked_process*.xel',
+     'C:\temp\XEventSessions\blocked_process*.xem',
+     null, null)
+    CROSS APPLY (SELECT CAST(event_data AS XML) AS event_data) as xevents
+)
+SELECT
+  CASE WHEN blocked_process_report.value('(blocked-process-report[@monitorLoop])[1]', 'nvarchar(max)') IS NULL
+       THEN 'Deadlock'
+       ELSE 'Blocked Process'
+       END AS ReportType,
+  [event time],
+  CASE [client app name] WHEN '' THEN ' -- N/A -- '
+                         ELSE [client app name]
+                         END AS [client app _name],
+  CASE [client host name] WHEN '' THEN ' -- N/A -- '
+                          ELSE [client host name]
+                          END AS [client host name],
+  [database name],
+  COALESCE(OBJECT_SCHEMA_NAME(object_id, database_id), ' -- N/A -- ') AS [schema],
+  COALESCE(OBJECT_NAME(object_id, database_id), ' -- N/A -- ') AS [table],
+  index_id,
+  [duration (ms)],
+  lock_mode,
+  COALESCE(SUSER_NAME(login_sid), ' -- N/A -- ') AS username,
+  CASE WHEN blocked_process_report.value('(blocked-process-report[@monitorLoop])[1]', 'nvarchar(max)') IS NULL
+       THEN deadlock_graph
+       ELSE blocked_process_report
+       END AS Report
+FROM events_cte
+ORDER BY [event time] DESC ;
+
+-- Insert events into table for analysis:
+
+CREATE TABLE bpr (
+    EndTime DATETIME,
+    TextData XML,
+    EventClass INT DEFAULT(137)
+);
+GO
+
+WITH events_cte AS (
+    SELECT
+        DATEADD(mi,
+        DATEDIFF(mi, GETUTCDATE(), CURRENT_TIMESTAMP),
+        xevents.event_data.value('(event/@timestamp)[1]',
+           'datetime2')) AS [event_time] ,
+        xevents.event_data.query('(event[@name="blocked_process_report"]/data[@name="blocked_process"]/value/blocked-process-report)[1]')
+            AS blocked_process_report
+    FROM    sys.fn_xe_file_target_read_file
+        ('C:\temp\XEventSessions\blocked_process*.xel',
+         'C:\temp\XEventSessions\blocked_process*.xem',
+         null, null)
+        CROSS APPLY (SELECT CAST(event_data AS XML) AS event_data) as xevents
+)
+INSERT INTO bpr (EndTime, TextData)
+SELECT
+    [event_time],
+    blocked_process_report
+FROM events_cte
+WHERE blocked_process_report.value('(blocked-process-report[@monitorLoop])[1]', 'nvarchar(max)') IS NOT NULL
+ORDER BY [event_time] DESC ;
+
+EXEC sp_blocked_process_report_viewer @Trace='bpr', @Type='TABLE';
+

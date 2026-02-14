@@ -1,96 +1,96 @@
-﻿SQL Server DBA Essential Queries
+﻿SQL Server Administration Scripts
 
-A practical collection of SQL Server / Azure SQL MI scripts for day-to-day operations: incident triage, performance troubleshooting, HA/DR monitoring, replication, backups, security, maintenance, and more.
+This repository contains SQL Server and Azure SQL Managed Instance administration scripts for triage, performance, replication, security, maintenance, and troubleshooting.
 
-## Quick start
+## Quick-start decision tree
 
-- Start with 00 - Triage.sql for a fast, read-only snapshot.
-- Then jump to the topic scripts below for deeper dives.
+**"My server is slow"** — follow this path:
 
-## Table of contents (by topic)
+```
+Start here
+  │
+  ├─► Run 00-triage.sql (other scripts/)
+  │     Quick snapshot: instance info, running requests, blocking, waits, disk
+  │
+  ├─► Check top waits
+  │     └─► performance-wait-stats.sql
+  │           │
+  │           ├── CXPACKET/SOS_SCHEDULER_YIELD ──► performance-cpu.sql
+  │           ├── PAGEIOLATCH_* / WRITELOG ──────► performance-io-latency.sql
+  │           ├── LCK_M_* ──────────────────────► performance-blocking.sql
+  │           ├── PAGELATCH_* ──────────────────► performance-tempdb.sql
+  │           ├── RESOURCE_SEMAPHORE ───────────► performance-buffer-pool-and-memory-analysis.sql
+  │           └── Plan cache bloat ─────────────► performance-plan-cache-analysis.sql
+  │
+  ├─► Investigate specific queries
+  │     └─► performance-checking-queries.sql (Query Store, deadlocks)
+  │
+  ├─► Check index/statistics health
+  │     └─► performance-index-and-statistics-maintenance.sql
+  │
+  └─► Check storage (Azure MI)
+        └─► performance-iops-and-storage-measuring-script.sql
+```
 
-### Incident triage
+**"I have a security/login issue"** → `logins.sql`
+**"Replication is broken"** → `replication-troubleshooting-queries.sql`
+**"Is my backup OK?"** → `backups.sql`
+**"Is my config correct?"** → `configuration-best-practice-audit.sql`
 
-- 00 - Triage.sql
+## Repository contents
 
-### Performance and Query Store
+### Root folder
 
-- performance-checking-queries.sql
-- sp_WhoIsActive.sql
-- plan-cache-analysis.sql (cache bloat, single-use plans, parameter sniffing, recompiles)
-- SQL Server 2022 Diagnostic Information Queries.sql
-- SQL Managed Instance Diagnostic Information Queries.sql
-- qpi/ (Query Performance Insights)
+| Script | Purpose | Safety |
+|--------|---------|--------|
+| ag-dag-link-monitoring-scripts.sql | AG/DAG/Link health, seeding, failover events | Read-only |
+| backups.sql | Backup/restore progress, history, missing backups | Read-only |
+| configuration-best-practice-audit.sql | Instance config audit vs. best practices | Read-only |
+| database-integrity-checks.sql | DBCC CHECKDB/CHECKTABLE/CHECKALLOC, suspect pages | Read-only (CPU-intensive) |
+| database-mail.sql | Database Mail queue, logs, profiles, diagnostics | Read-only |
+| disk-space-and-file-management.sql | Volume free space, file sizes, autogrowth, VLFs | Read-only |
+| extended-events.sql | XE session templates for monitoring | **Contains DDL** |
+| logins.sql | Login troubleshooting, permissions audit, orphaned users | Read-only |
+| performance-blocking.sql | Head blocker detection, blocking chains, wait stats | Read-only |
+| performance-buffer-pool-and-memory-analysis.sql | Buffer pool by DB/object, memory clerks, PLE, grants | Read-only |
+| performance-checking-queries.sql | Deadlock analysis, Query Store investigation | Read-only |
+| performance-cpu.sql | Top CPU queries (active + Query Store), CPU timeline | Read-only |
+| performance-index-and-statistics-maintenance.sql | Fragmentation, rebuild/reorganize, stale stats | **Maintenance window** |
+| performance-io-latency.sql | Read/write latency per file, pending I/O | Read-only |
+| performance-iops-and-storage-measuring-script.sql | Azure MI IOPS/throughput vs. storage limits | Read-only |
+| performance-plan-cache-analysis.sql | Plan cache composition, single-use bloat | Read-only |
+| performance-tempdb.sql | TempDB session space, file config, contention | Read-only |
+| performance-wait-stats.sql | Top waits (filtered), signal ratio, latch stats | Read-only |
+| replication-configuration.sql | Distributor setup, publication creation | **Contains DDL** |
+| replication-topology.sql | Automated topology discovery | Read-only |
+| replication-troubleshooting-queries.sql | Agent history, tracer tokens, latency | Read-only |
+| sql-agent-jobs-troubleshooting.sql | Running jobs, schedules, history, failures | Read-only |
+| tde-and-encryption-status.sql | TDE status, certificates, Always Encrypted | Read-only |
 
-### Blocking and deadlocks
+### other scripts/
 
-- performance-checking-queries.sql (blocking + head blocker)
-- extended events.sql (deadlock + performance monitoring templates)
-
-### Index and statistics maintenance
-
-- index-and-statistics-maintenance.sql (fragmentation, missing/unused indexes, stale stats, lock contention)
-
-### Database integrity
-
-- database-integrity-checks.sql (DBCC CHECKDB, CHECKTABLE, suspect pages, page verify audit)
-
-### Backups, restores, recovery
-
-- Administration commands V2.0.sql (backup history, restore progress)
-- backup-verification.sql (RESTORE VERIFYONLY, backup chain integrity, checksum audit)
-
-### Security and permissions
-
-- security-and-permissions-audit.sql (sysadmin, roles, permissions, orphaned users, linked servers)
-
-### Encryption (TDE / Always Encrypted)
-
-- tde-and-encryption-status.sql (TDE status, certificate expiry, Always Encrypted keys, backup encryption)
-
-### Memory and buffer pool
-
-- buffer-pool-and-memory-analysis.sql (per-DB/object buffer usage, memory clerks, grants, PLE)
-
-### Disk space, files, and transaction log
-
-- disk-space-and-file-management.sql (volume free space, file sizes, autogrowth events, VLFs, log health)
-
-### Configuration audit
-
-- configuration-best-practice-audit.sql (sys.configurations review, DB settings, tempdb, deprecated features)
-
-### HA/DR (AG and MI link)
-
-- AG and MI Link Monitoring scripts.sql
-
-### Replication
-
-- replication-troubleshooting-queries.sql
-- Replication Topology.sql
-
-### tempdb, storage, I/O
-
-- tempdb.sql
-- IOPs and storage measuring script.sql
-
-### Extended Events
-
-- extended events.sql
-
-### Agent and PowerShell
-
-- SQLAgentMaintenace.sql
-- powershell scripts.ps1
-
-### Misc utilities
-
-- T-SQL commands.sql
+- 00-triage.sql — **Start here for incidents** (first-response triage)
 - Administration commands V2.0.sql
+- gemini administration tests.sql
+- PerfMonitor-tables-sql-agent-scripts.sql
+- PerfMonitor-tables-views.sql
+- PMC-SQLPerfMonitor-Capture and Analysis Script.sql
+- powershell scripts.ps1
+- sp_WhoIsActive.sql
+- SQL Managed Instance Diagnostic Information Queries.sql
+- T-SQL commands.sql
 
-## Conventions / safety notes
+### SQL_UTILITIES/
 
-- Most scripts are intended to be read-only, but some include DDL (e.g., CREATE EVENT SESSION, job scripts) and DBCC commands. Scan before running.
-- Maintenance scripts (index rebuilds, stats updates, CHECKDB) should be run in maintenance windows.
-- Some queries require elevated permissions (e.g., xp_readerrorlog, certain DMVs, msdb job history).
-- Azure SQL MI has a slightly different DMV surface area than boxed SQL Server; if a section errors, skip it and continue.
+- SQLCheck.exe
+- SQLNA.exe
+- SQLNAUI.exe
+- SSPIClient.exe
+
+## Usage notes
+
+- **Review each script before execution** — some contain DDL or maintenance operations.
+- Scripts marked **Contains DDL** create or modify server-level objects. Read the safety header.
+- Scripts marked **Maintenance window** perform ALTER INDEX / UPDATE STATISTICS operations.
+- All diagnostic scripts use `SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED` for consistency.
+- Some scripts require elevated permissions and access to system views/DMVs.
