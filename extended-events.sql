@@ -12,47 +12,63 @@
 -----------------------------------------------------------------------
 -- 1. MONITOR RESTORE OPERATIONS
 -----------------------------------------------------------------------
-
-
 CREATE EVENT SESSION [restores] ON SERVER
 ADD EVENT sqlserver.backup_restore_progress_trace
-   (WHERE [operation_type] = 1 )   -- Filter for restore operation
+    (WHERE [operation_type] = 1) -- Filter for restore operation
 ADD TARGET package0.ring_buffer
-WITH (STARTUP_STATE=OFF)
+WITH (STARTUP_STATE = OFF);
 GO
-
-
--- Monitor failed logins:
-
+-----------------------------------------------------------------------
+-- 2. MONITOR FAILED LOGINS
+-----------------------------------------------------------------------
 CREATE EVENT SESSION [LoginIssues] ON SERVER
-
 ADD EVENT sqlserver.connectivity_ring_buffer_recorded(
-
-    ACTION(sqlos.task_time,sqlserver.client_app_name,sqlserver.client_hostname,sqlserver.client_pid,sqlserver.database_id,sqlserver.database_name,sqlserver.is_system,sqlserver.nt_username,sqlserver.session_id,sqlserver.session_nt_username,sqlserver.sql_text,sqlserver.username)),
-
-ADD EVENT sqlserver.login(SET collect_options_text=(1)
- 
-    ACTION(sqlos.task_time,sqlserver.client_app_name,sqlserver.client_hostname,sqlserver.client_pid,sqlserver.database_id,sqlserver.database_name,sqlserver.is_system,sqlserver.nt_username,sqlserver.session_id,sqlserver.session_nt_username,sqlserver.sql_text,sqlserver.username)),
-
+    ACTION(
+        sqlos.task_time, sqlserver.client_app_name, sqlserver.client_hostname,
+        sqlserver.client_pid, sqlserver.database_id, sqlserver.database_name,
+        sqlserver.is_system, sqlserver.nt_username, sqlserver.session_id,
+        sqlserver.session_nt_username, sqlserver.sql_text, sqlserver.username
+    )
+),
+ADD EVENT sqlserver.login(SET collect_options_text = (1)
+    ACTION(
+        sqlos.task_time, sqlserver.client_app_name, sqlserver.client_hostname,
+        sqlserver.client_pid, sqlserver.database_id, sqlserver.database_name,
+        sqlserver.is_system, sqlserver.nt_username, sqlserver.session_id,
+        sqlserver.session_nt_username, sqlserver.sql_text, sqlserver.username
+    )
+),
 ADD EVENT sqlserver.logout(
-
-    ACTION(sqlos.task_time,sqlserver.client_app_name,sqlserver.client_hostname,sqlserver.client_pid,sqlserver.database_id,sqlserver.database_name,sqlserver.is_system,sqlserver.nt_username,sqlserver.session_id,sqlserver.session_nt_username,sqlserver.sql_text,sqlserver.username)),
-
+    ACTION(
+        sqlos.task_time, sqlserver.client_app_name, sqlserver.client_hostname,
+        sqlserver.client_pid, sqlserver.database_id, sqlserver.database_name,
+        sqlserver.is_system, sqlserver.nt_username, sqlserver.session_id,
+        sqlserver.session_nt_username, sqlserver.sql_text, sqlserver.username
+    )
+),
 ADD EVENT sqlserver.security_error_ring_buffer_recorded(
-
-    ACTION(sqlos.task_time,sqlserver.client_app_name,sqlserver.client_hostname,sqlserver.client_pid,sqlserver.database_id,sqlserver.database_name,sqlserver.is_system,sqlserver.nt_username,sqlserver.session_id,sqlserver.session_nt_username,sqlserver.sql_text,sqlserver.username))
-
+    ACTION(
+        sqlos.task_time, sqlserver.client_app_name, sqlserver.client_hostname,
+        sqlserver.client_pid, sqlserver.database_id, sqlserver.database_name,
+        sqlserver.is_system, sqlserver.nt_username, sqlserver.session_id,
+        sqlserver.session_nt_username, sqlserver.sql_text, sqlserver.username
+    )
+)
 ADD TARGET package0.ring_buffer
-
-WITH (MAX_MEMORY=4096 KB,EVENT_RETENTION_MODE=ALLOW_SINGLE_EVENT_LOSS,MAX_DISPATCH_LATENCY=30 SECONDS,MAX_EVENT_SIZE=0 KB,MEMORY_PARTITION_MODE=NONE,TRACK_CAUSALITY=OFF,STARTUP_STATE=OFF)
-
+WITH (
+    MAX_MEMORY = 4096 KB,
+    EVENT_RETENTION_MODE = ALLOW_SINGLE_EVENT_LOSS,
+    MAX_DISPATCH_LATENCY = 30 SECONDS,
+    MAX_EVENT_SIZE = 0 KB,
+    MEMORY_PARTITION_MODE = NONE,
+    TRACK_CAUSALITY = OFF,
+    STARTUP_STATE = OFF
+);
 GO
-
-
-
-
--- Capture specific SQL queries (e.g., certificate-related operations):
-
+-----------------------------------------------------------------------
+-- 3. CAPTURE SPECIFIC SQL QUERIES
+--    Example: Capture certificate-related operations.
+-----------------------------------------------------------------------
 CREATE EVENT SESSION [CaptureQuery] ON SERVER
 ADD EVENT sqlserver.sql_statement_completed(
     ACTION(
@@ -72,16 +88,20 @@ ADD EVENT sqlserver.sql_statement_completed(
 --     ACTION(sqlserver.client_hostname,sqlserver.database_name,sqlserver.username,sqlserver.sql_text)
 --     WHERE (sqlserver.sql_text LIKE N'%BACKUP CERTIFICATE%')
 -- )
-
 ADD TARGET package0.ring_buffer
-
-WITH (MAX_MEMORY=4096 KB,EVENT_RETENTION_MODE=ALLOW_SINGLE_EVENT_LOSS,MAX_DISPATCH_LATENCY=30 SECONDS,MAX_EVENT_SIZE=0 KB,MEMORY_PARTITION_MODE=NONE,TRACK_CAUSALITY=OFF,STARTUP_STATE=OFF);
-
-
+WITH (
+    MAX_MEMORY = 4096 KB,
+    EVENT_RETENTION_MODE = ALLOW_SINGLE_EVENT_LOSS,
+    MAX_DISPATCH_LATENCY = 30 SECONDS,
+    MAX_EVENT_SIZE = 0 KB,
+    MEMORY_PARTITION_MODE = NONE,
+    TRACK_CAUSALITY = OFF,
+    STARTUP_STATE = OFF
+);
 GO
 
--- Start: ALTER EVENT SESSION [CaptureCertificateBackups] ON SERVER STATE = START;
--- Stop: ALTER EVENT SESSION [CaptureCertificateBackups] ON SERVER STATE = STOP;
+-- Start: ALTER EVENT SESSION [CaptureQuery] ON SERVER STATE = START;
+-- Stop: ALTER EVENT SESSION [CaptureQuery] ON SERVER STATE = STOP;
 
 
 

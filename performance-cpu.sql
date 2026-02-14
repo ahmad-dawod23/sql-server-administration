@@ -12,47 +12,58 @@ SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
 -- 1. TOP 10 ACTIVE CPU QUERIES BY SESSION
 --    Shows currently executing queries ordered by CPU time.
 -----------------------------------------------------------------------
-print '--top 10 Active CPU Consuming Queries by sessions--'  
-SELECT 
-	top 10 req.session_id, 
-	req.start_time, 
-	cpu_time 'cpu_time_ms', 
-	object_name(st.objectid,st.dbid) 'ObjectName' ,  
-	substring (REPLACE (REPLACE (SUBSTRING(ST.text, (req.statement_start_offset/2) + 1,   
-	((
-		CASE statement_end_offset    
-			WHEN -1 THEN DATALENGTH(ST.text)   
-			ELSE req.statement_end_offset 
-			END - req.statement_start_offset)/2) + 1), CHAR(10), ' '), CHAR(13), ' '), 1, 512)  AS statement_text   
- FROM sys.dm_exec_requests AS req   
- CROSS APPLY sys.dm_exec_sql_text(req.sql_handle) as ST 
- order by cpu_time desc 
+SELECT TOP 10
+    req.session_id, 
+    req.start_time, 
+    req.cpu_time AS cpu_time_ms, 
+    OBJECT_NAME(st.objectid, st.dbid) AS ObjectName,  
+    SUBSTRING(
+        REPLACE(REPLACE(
+            SUBSTRING(ST.text, (req.statement_start_offset/2) + 1,   
+                ((CASE statement_end_offset
+                    WHEN -1 THEN DATALENGTH(ST.text)   
+                    ELSE req.statement_end_offset 
+                END - req.statement_start_offset)/2) + 1), 
+            CHAR(10), ' '), 
+        CHAR(13), ' '), 
+    1, 512) AS statement_text   
+FROM sys.dm_exec_requests AS req   
+    CROSS APPLY sys.dm_exec_sql_text(req.sql_handle) AS ST 
+ORDER BY cpu_time DESC;
+GO 
 
- /*
- [T2] Top 10 Active CPU queries aggregated by query hash 
- */
- print '-- top 10 Active CPU Consuming Queries (aggregated)--'  
- select 
-	top 10 getdate() runtime,  * 
-from (
-	SELECT query_stats.query_hash,    
-	SUM(query_stats.cpu_time) 'Total_Request_Cpu_Time_Ms', 
-	sum(logical_reads) 'Total_Request_Logical_Reads', 
-	min(start_time) 'Earliest_Request_start_Time', 
-	count(*) 'Number_Of_Requests', 
-	substring (REPLACE (REPLACE (MIN(query_stats.statement_text),  CHAR(10), ' '), CHAR(13), ' '), 1, 256) AS "Statement_Text"   
- FROM (
-	SELECT req.*,  
-	SUBSTRING(ST.text, (req.statement_start_offset/2) + 1, 
-	( (
-		CASE statement_end_offset
-			WHEN -1 THEN DATALENGTH(ST.text)   
-			ELSE req.statement_end_offset 
-			END - req.statement_start_offset)/2) + 1) AS statement_text   
-	FROM sys.dm_exec_requests AS req   
-	CROSS APPLY sys.dm_exec_sql_text(req.sql_handle) as ST) as query_stats   
-	group by query_hash) t 
-	order by Total_Request_Cpu_Time_Ms desc 
+-----------------------------------------------------------------------
+-- 2. TOP 10 ACTIVE CPU QUERIES AGGREGATED BY QUERY HASH
+--    Aggregates CPU consumption for identical queries.
+-----------------------------------------------------------------------
+SELECT TOP 10 
+    GETDATE() AS runtime,  
+    *
+FROM (
+    SELECT 
+        query_stats.query_hash,    
+        SUM(query_stats.cpu_time) AS Total_Request_Cpu_Time_Ms, 
+        SUM(logical_reads) AS Total_Request_Logical_Reads, 
+        MIN(start_time) AS Earliest_Request_start_Time, 
+        COUNT(*) AS Number_Of_Requests, 
+        SUBSTRING(
+            REPLACE(REPLACE(MIN(query_stats.statement_text), CHAR(10), ' '), CHAR(13), ' '), 
+        1, 256) AS Statement_Text   
+    FROM (
+        SELECT 
+            req.*,  
+            SUBSTRING(ST.text, (req.statement_start_offset/2) + 1, 
+                ((CASE statement_end_offset
+                    WHEN -1 THEN DATALENGTH(ST.text)   
+                    ELSE req.statement_end_offset 
+                END - req.statement_start_offset)/2) + 1) AS statement_text   
+        FROM sys.dm_exec_requests AS req   
+            CROSS APPLY sys.dm_exec_sql_text(req.sql_handle) AS ST
+    ) AS query_stats   
+    GROUP BY query_hash
+) t 
+ORDER BY Total_Request_Cpu_Time_Ms DESC;
+GO 
 
 /*
 [T3] TOP 15 CPU consuming queries from query store 
@@ -83,72 +94,95 @@ WITH AggregatedCPU AS (
 		rs.execution_type_desc in( 'Regular' , 'Aborted', 'Exception') and   
 		rsi.start_time >= DATEADD(hour, -2, GETUTCDATE())  
 	GROUP BY  q.query_hash 
-) , 
-OrderedCPU AS ( 
-	SELECT query_hash, 
-		total_cpu_millisec, 
-		avg_cpu_millisec,
-		max_cpu_millisec,  
-		max_logical_reads, 
-		number_of_distinct_plans, 
-		number_of_distinct_query_ids,  
-		total_executions, 
-		Aborted_Execution_Count,
-		Regular_Execution_Count, 
-		Exception_Execution_Count, 
-		sampled_query_text, 
-		ROW_NUMBER () OVER (ORDER BY total_cpu_millisec DESC, query_hash asc) AS RN 
-	FROM AggregatedCPU 
+) ,OrderedCPU AS ( 
+    SELECT 
+        query_hash, 
+        total_cpu_millisec, 
+        avg_cpu_millisec,
+        max_cpu_millisec,  
+        max_logical_reads, 
+        number_of_distinct_plans, 
+        number_of_distinct_query_ids,  
+        total_executions, 
+        Aborted_Execution_Count,
+        Regular_Execution_Count, 
+        Exception_Execution_Count, 
+        sampled_query_text, 
+        ROW_NUMBER() OVER (ORDER BY total_cpu_millisec DESC, query_hash ASC) AS RN 
+    FROM AggregatedCPU 
 ) 
-SELECT * from OrderedCPU OD  
-WHERE OD.RN <=15 ORDER BY total_cpu_millisec DESC 
-
-
--- run in affected user database
-
-SELECT 
-    req.session_id, 
+SELECT * 
+FROM OrderedCPU OD  
+WHERE OD.RN <= 15 
+ORDER BY total_cpu_millisec DESC;
+GO 
+-----------------------------------------------------------------------
+-- 4. DETAILED CPU QUERY ANALYSIS WITH EXECUTION PLANS
+--    Run in affected user database.
+-----------------------------------------------------------------------
+SELECT    req.session_id, 
     req.status, 
     req.start_time, 
-    req.cpu_time AS 'cpu_time_ms', 
+    req.cpu_time AS cpu_time_ms, 
     req.query_hash,
     req.logical_reads,
-    req.dop,s.login_name,
+    req.dop,
+    s.login_name,
     s.host_name,
     s.program_name,
-    object_name(st.objectid, st.dbid) as 'object_name',
-    REPLACE (REPLACE (
-        SUBSTRING (st.text, (req.statement_start_offset/2) + 1, 
+    OBJECT_NAME(st.objectid, st.dbid) AS object_name,
+    REPLACE(REPLACE(
+        SUBSTRING(st.text, (req.statement_start_offset/2) + 1, 
             ((CASE req.statement_end_offset
-             WHEN -1 THEN DATALENGTH(st.text) 
-            ELSE req.statement_end_offset END - req.statement_start_offset)/2) + 1), 
-        CHAR(10), ' '), CHAR(13), ' ') AS statement_text,
+                WHEN -1 THEN DATALENGTH(st.text) 
+                ELSE req.statement_end_offset 
+            END - req.statement_start_offset)/2) + 1), 
+        CHAR(10), ' '), 
+    CHAR(13), ' ') AS statement_text,
     qp.query_plan,
-    qsx.query_plan as query_plan_with_in_flight_statistics
-FROM sys.dm_exec_requests as req
-INNER JOIN sys.dm_exec_sessions as s on req.session_id=s.session_id
-CROSS APPLY sys.dm_exec_sql_text(req.sql_handle) as st
-OUTER APPLY sys.dm_exec_query_plan(req.plan_handle) as qp
-OUTER APPLY sys.dm_exec_query_statistics_xml(req.session_id) as qsx
+    qsx.query_plan AS query_plan_with_in_flight_statistics
+FROM sys.dm_exec_requests AS req
+    INNER JOIN sys.dm_exec_sessions AS s 
+        ON req.session_id = s.session_id
+    CROSS APPLY sys.dm_exec_sql_text(req.sql_handle) AS st
+    OUTER APPLY sys.dm_exec_query_plan(req.plan_handle) AS qp
+    OUTER APPLY sys.dm_exec_query_statistics_xml(req.session_id) AS qsx
 WHERE req.session_id <> @@SPID
-ORDER BY req.cpu_time desc;
+ORDER BY req.cpu_time DESC;
+GO
 
-
-
-
---Many individual queries that cumulatively consume high CPU:
-
-PRINT '-- top 10 Active CPU Consuming Queries (aggregated)--';
-SELECT TOP 10 GETDATE() runtime, *
-FROM (SELECT query_stats.query_hash, SUM(query_stats.cpu_time) 'Total_Request_Cpu_Time_Ms', SUM(logical_reads) 'Total_Request_Logical_Reads', MIN(start_time) 'Earliest_Request_start_Time', COUNT(*) 'Number_Of_Requests', SUBSTRING(REPLACE(REPLACE(MIN(query_stats.statement_text), CHAR(10), ' '), CHAR(13), ' '), 1, 256) AS "Statement_Text"
-    FROM (SELECT req.*, SUBSTRING(ST.text, (req.statement_start_offset / 2)+1, ((CASE statement_end_offset WHEN -1 THEN DATALENGTH(ST.text)ELSE req.statement_end_offset END-req.statement_start_offset)/ 2)+1) AS statement_text
-          FROM sys.dm_exec_requests AS req
-                CROSS APPLY sys.dm_exec_sql_text(req.sql_handle) AS ST ) AS query_stats
-    GROUP BY query_hash) AS t
+-----------------------------------------------------------------------
+-- 5. MANY INDIVIDUAL QUERIES CONSUMING HIGH CPU (Aggregated)
+--    Alternative aggregated view for cumulative CPU consumption.
+-----------------------------------------------------------------------
+SELECT TOP 10 
+    GETDATE() AS runtime, 
+    *
+FROM (
+    SELECT 
+        query_stats.query_hash, 
+        SUM(query_stats.cpu_time) AS Total_Request_Cpu_Time_Ms, 
+        SUM(logical_reads) AS Total_Request_Logical_Reads, 
+        MIN(start_time) AS Earliest_Request_start_Time, 
+        COUNT(*) AS Number_Of_Requests, 
+        SUBSTRING(
+            REPLACE(REPLACE(MIN(query_stats.statement_text), CHAR(10), ' '), CHAR(13), ' '), 
+        1, 256) AS Statement_Text
+    FROM (
+        SELECT 
+            req.*, 
+            SUBSTRING(ST.text, (req.statement_start_offset / 2) + 1, 
+                ((CASE statement_end_offset 
+                    WHEN -1 THEN DATALENGTH(ST.text)
+                    ELSE req.statement_end_offset 
+                END - req.statement_start_offset) / 2) + 1) AS statement_text
+        FROM sys.dm_exec_requests AS req
+            CROSS APPLY sys.dm_exec_sql_text(req.sql_handle) AS ST
+    ) AS query_stats
+    GROUP BY query_hash
+) AS t
 ORDER BY Total_Request_Cpu_Time_Ms DESC;
-
-
---Long running queries that consume CPU are still running:
+GO
 
 PRINT '--top 10 Active CPU Consuming Queries by sessions--';
 SELECT TOP 10 req.session_id, req.start_time, cpu_time 'cpu_time_ms', OBJECT_NAME(ST.objectid, ST.dbid) 'ObjectName', SUBSTRING(REPLACE(REPLACE(SUBSTRING(ST.text, (req.statement_start_offset / 2)+1, ((CASE statement_end_offset WHEN -1 THEN DATALENGTH(ST.text)ELSE req.statement_end_offset END-req.statement_start_offset)/ 2)+1), CHAR(10), ' '), CHAR(13), ' '), 1, 512) AS statement_text

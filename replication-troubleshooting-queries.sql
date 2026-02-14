@@ -14,89 +14,166 @@ SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
 --    Check the "command" column to confirm configuration.
 -----------------------------------------------------------------------
 SELECT
-    sjv.job_id, sjv.name AS 'job_name', sjv.enabled, sjv.category_id, sjv.originating_server,
-    sjs.subsystem, sjs.step_id, sjs.step_name, sjs.step_uid, sjs.server, sjs.database_name, sjs.retry_attempts, sjs.output_file_name, sjs.command, sjs.additional_parameters
+    sjv.job_id, 
+    sjv.name AS job_name, 
+    sjv.enabled, 
+    sjv.category_id, 
+    sjv.originating_server,
+    sjs.subsystem, 
+    sjs.step_id, 
+    sjs.step_name, 
+    sjs.step_uid, 
+    sjs.server, 
+    sjs.database_name, 
+    sjs.retry_attempts, 
+    sjs.output_file_name, 
+    sjs.command, 
+    sjs.additional_parameters
 FROM msdb.dbo.sysjobsteps sjs 
-INNER JOIN msdb.dbo.sysjobs_view sjv ON sjv.job_id = sjs.job_id  
-WHERE subsystem IN ('Distribution','LogReader','Snapshot')  
+    INNER JOIN msdb.dbo.sysjobs_view sjv 
+        ON sjv.job_id = sjs.job_id  
+WHERE subsystem IN ('Distribution', 'LogReader', 'Snapshot');
+GO
 
--- then feed that job ID to the stored procedure:  
-exec msdb.dbo.sp_help_jobhistory @job_id = 'D55F576C-91B7-48D4-9F77-0C4F11105AD6', @mode='FULL'   
+-- Then feed that job ID to the stored procedure:  
+EXEC msdb.dbo.sp_help_jobhistory 
+    @job_id = 'D55F576C-91B7-48D4-9F77-0C4F11105AD6', 
+    @mode = 'FULL';
+GO   
+-----------------------------------------------------------------------
+-- 2. CHECK CONFIGURED AGENTS
+-----------------------------------------------------------------------
+SELECT * FROM MSlogreader_agents;
+GO
 
+SELECT * FROM MSsnapshot_agents;
+GO
 
--- check what agents have been configured  
-select * from MSlogreader_agents;
-select * from MSsnapshot_agents;
-select * from MSdistribution_agents;
+SELECT * FROM MSdistribution_agents;
+GO
 
+-----------------------------------------------------------------------
+-- 3. REPLICATION ERRORS
+-----------------------------------------------------------------------
+SELECT TOP 1000 * 
+FROM MSrepl_errors 
+ORDER BY time DESC;
+GO
 
+-----------------------------------------------------------------------
+-- 4. AGENT HISTORY (Recent Output by Start Time)
+-----------------------------------------------------------------------
+SELECT TOP 1000 * 
+FROM MSlogreader_history 
+ORDER BY start_time DESC, time DESC;
+GO
 
--- replication errors
-select top 1000 * from MSrepl_errors order by time desc;
+SELECT TOP 1000 * 
+FROM MSsnapshot_history 
+ORDER BY start_time DESC, time DESC;
+GO
 
+SELECT TOP 1000 * 
+FROM MSdistribution_history 
+ORDER BY start_time DESC, time DESC;
+GO
 
+-----------------------------------------------------------------------
+-- 5. AGENT HISTORY (Recent Output by Event Time)
+-----------------------------------------------------------------------
+SELECT TOP 1000 * 
+FROM MSlogreader_history 
+ORDER BY time DESC;
+GO
 
--- get the recent output, sorted by start_date of the agent:
-select top 1000 * from MSlogreader_history order by start_time desc, time desc;
-select top 1000 * from MSsnapshot_history order by start_time desc, time desc;
-select top 1000 * from MSdistribution_history order by start_time desc, time desc;
+SELECT TOP 1000 * 
+FROM MSsnapshot_history 
+ORDER BY time DESC;
+GO
 
--- get the most recent output, sorted by event datetime:
-select top 1000 * from MSlogreader_history order by time desc;
-select top 1000 * from MSsnapshot_history order by time desc;
-select top 1000 * from MSdistribution_history order by time desc;
+SELECT TOP 1000 * 
+FROM MSdistribution_history 
+ORDER BY time DESC;
+GO
 
--- get the output filtered on agent id:
--- agent id available from job name or from MSxxxx_agents table - see above
-select * from Distribution..MSlogreader_history where agent_id = 1 order by start_time desc, time desc;
-select * from Distribution..MSsnapshot_history where agent_id = 1 order by start_time desc, time desc;
-select * from Distribution..MSdistribution_history where agent_id = 3 order by start_time desc, time desc;
+-----------------------------------------------------------------------
+-- 6. AGENT HISTORY FILTERED BY AGENT ID
+--    Agent ID available from job name or from MSxxxx_agents table.
+-----------------------------------------------------------------------
+SELECT * 
+FROM Distribution..MSlogreader_history 
+WHERE agent_id = 1 
+ORDER BY start_time DESC, time DESC;
+GO
 
+SELECT * 
+FROM Distribution..MSsnapshot_history 
+WHERE agent_id = 1 
+ORDER BY start_time DESC, time DESC;
+GO
 
-/**********************************************************************************************/
-USE [distribution]
+SELECT * 
+FROM Distribution..MSdistribution_history 
+WHERE agent_id = 3 
+ORDER BY start_time DESC, time DESC;
+GO
+-----------------------------------------------------------------------
+-- 7. FIND PUBLICATION
+-----------------------------------------------------------------------
+USE [distribution];
+GO
 
-/**********************************************************************************************/
--- Find publication
-SELECT DISTINCT pb.publisher_db, da.subscriber_db, pb.publication, pd.id as pub_db_id,   da.id as agent_id,
-                CASE ps.status
-                    WHEN 0 THEN 'Inactive'
-                    WHEN 1 THEN 'Subscribed'
-                    WHEN 2 THEN 'Active'
-                    END as subs_status
-        , pb.description
+SELECT DISTINCT 
+    pb.publisher_db, 
+    da.subscriber_db, 
+    pb.publication, 
+    pd.id AS pub_db_id, 
+    da.id AS agent_id,
+    CASE ps.status
+        WHEN 0 THEN 'Inactive'
+        WHEN 1 THEN 'Subscribed'
+        WHEN 2 THEN 'Active'
+    END AS subs_status,
+    pb.description
 FROM dbo.MSpublications pb
-         LEFT JOIN dbo.MSdistribution_agents da on da.publication = pb.publication
-    AND da.subscriber_db <> 'virtual'
-         LEFT JOIN dbo.MSsubscriptions ps on ps.publisher_db = pb.publisher_db and ps.subscriber_db = da.subscriber_db
-         JOIN dbo.MSpublisher_databases pd on pb.publisher_db = pd.publisher_db --just in case there is no record in agents table
+    LEFT JOIN dbo.MSdistribution_agents da 
+        ON da.publication = pb.publication
+        AND da.subscriber_db <> 'virtual'
+    LEFT JOIN dbo.MSsubscriptions ps 
+        ON ps.publisher_db = pb.publisher_db 
+        AND ps.subscriber_db = da.subscriber_db
+    JOIN dbo.MSpublisher_databases pd 
+        ON pb.publisher_db = pd.publisher_db; -- just in case there is no record in agents table
+GO
 
-/**********************************************************************************************/
--- Post tracer token
-exec sp_posttracertoken 'publication_name'
+-----------------------------------------------------------------------
+-- 8. POST TRACER TOKEN
+-----------------------------------------------------------------------
+EXEC sp_posttracertoken 'publication_name';
+GO
 
-/**********************************************************************************************/
--- Check the lag
+-----------------------------------------------------------------------
+-- 9. CHECK REPLICATION LAG
+-----------------------------------------------------------------------
 SELECT
-    ps.name						AS [publisher],
-	p.publisher_db,
-	p.publication,
-	ss.name						AS [subscriber],
-	da.subscriber_db,
-	t.publisher_commit,
-	t.distributor_commit,
-	h.subscriber_commit,
-	DATEDIFF(Second, t.publisher_commit, t.distributor_commit)	AS [pub to dist (s)],
-	DATEDIFF(Second, t.distributor_commit ,h.subscriber_commit)	AS [dist to sub (s)],
-	DATEDIFF(Second, t.publisher_commit, h.subscriber_commit)	AS [total latency (s)]
-FROM
-    [dbo].[MStracer_tokens] t
-    INNER JOIN
-    [dbo].[MStracer_history] h ON h.parent_tracer_id = t.tracer_id
-    INNER JOIN
-    [dbo].[MSpublications] p ON p.publication_id = t.publication_id
-    INNER JOIN
-    [dbo].[MSdistribution_agents] da ON da.id = h.agent_id
+    ps.name AS [publisher],
+    p.publisher_db,
+    p.publication,
+    ss.name AS [subscriber],
+    da.subscriber_db,
+    t.publisher_commit,
+    t.distributor_commit,
+    h.subscriber_commit,
+    DATEDIFF(SECOND, t.publisher_commit, t.distributor_commit) AS [pub to dist (s)],
+    DATEDIFF(SECOND, t.distributor_commit, h.subscriber_commit) AS [dist to sub (s)],
+    DATEDIFF(SECOND, t.publisher_commit, h.subscriber_commit) AS [total latency (s)]
+FROM [dbo].[MStracer_tokens] t
+    INNER JOIN [dbo].[MStracer_history] h 
+        ON h.parent_tracer_id = t.tracer_id
+    INNER JOIN [dbo].[MSpublications] p 
+        ON p.publication_id = t.publication_id
+    INNER JOIN [dbo].[MSdistribution_agents] da 
+        ON da.id = h.agent_id
     INNER JOIN
     sys.servers ps ON ps.server_id = p.publisher_id
     INNER JOIN
