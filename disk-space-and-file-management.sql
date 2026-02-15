@@ -10,6 +10,7 @@
   ==================
   SECTION A: DISK & VOLUME SPACE MONITORING
     A1. Volume Free Space (All Database Files)
+    A2. LUN Names Used by Instance
   
   SECTION B: DATABASE FILE MANAGEMENT
     B1. Database File Sizes - Current Database
@@ -19,18 +20,28 @@
     B5. Database Size Summary (All Databases)
     B6. Percent-Growth File Audit
     B7. Autogrowth Events (from Default Trace)
+    B8. Database File Locations (Simple)
+    B9. File Growth Settings Check
+    B10. Largest Databases on Specific Drive
+    B11. Logical File Names (Ordered by Type)
+    B12. Database Sizes (User Databases Only)
+    B13. Space Used by Files (Detailed)
+    B14. Space Used by All Databases and Files
+    B15. LUN Space Monitoring (All Databases)
+    B16. LUN Space Monitoring (Specific LUNs)
+    B17. Table Storage Analysis
+    B18. Allocation Units by File and Partition
   
   SECTION C: TEMPDB FILE MANAGEMENT
     C1. TempDB Data Files Count (from Error Log)
+    C2. TempDB Space Usage by Object Type
   
   SECTION D: TRANSACTION LOG MANAGEMENT
-    D1. Transaction Log Space Usage
-    D2. Transaction Log Space Usage (DMV Alternative)
+    D1. Transaction Log Space Usage (DBCC Method)
+    D2. Transaction Log Space Usage (DMV Method)
     D3. Log Reuse Wait Reason (All Databases)
-    D4. VLF Count Per Database
-    D5. VLF Count All Databases
-  
-  SECTION E: UNRELATED QUERIES (Move to appropriate files)
+    D4. VLF Count (Current Database)
+    D5. VLF Count (All Databases)
 ==============================================================================*/
 
 
@@ -58,6 +69,15 @@ SELECT DISTINCT
 FROM sys.master_files mf
     CROSS APPLY sys.dm_os_volume_stats(mf.database_id, mf.[file_id]) vs
 ORDER BY FreePct ASC;
+
+-----------------------------------------------------------------------
+-- A2. LUN NAMES USED BY INSTANCE
+--     Shows all unique drive/LUN paths used by the SQL Server instance
+-----------------------------------------------------------------------
+SELECT DISTINCT 
+    SUBSTRING(physical_name, 0, CHARINDEX('\', physical_name, 6)) AS LUNPath
+FROM sys.master_files
+ORDER BY LUNPath;
 
 
 /*==============================================================================
@@ -226,6 +246,244 @@ WHERE te.[name] IN (
 )
 ORDER BY t.StartTime DESC;
 
+-----------------------------------------------------------------------
+-- B8. DATABASE FILE LOCATIONS (Simple)
+--     Quick view of file locations for a specific database
+-----------------------------------------------------------------------
+SELECT 
+    DB_NAME(database_id)                          AS DatabaseName,
+    [file_id]                                     AS FileID,
+    type_desc                                     AS FileType,
+    [name]                                        AS LogicalName,
+    physical_name                                 AS PhysicalPath
+FROM sys.master_files
+WHERE database_id = DB_ID()  -- Change database name as needed
+ORDER BY type_desc, [file_id];
+
+-----------------------------------------------------------------------
+-- B9. FILE GROWTH SETTINGS CHECK
+--     Comprehensive view of growth settings with max size details
+-----------------------------------------------------------------------
+SELECT
+    DB_NAME(database_id)                          AS DatabaseName,
+    type_desc                                     AS FileType,
+    CASE
+        WHEN is_percent_growth = 1 
+            THEN CAST(growth AS VARCHAR(10)) + '%'
+        ELSE CAST(CAST(growth AS BIGINT) * 8 / 1024 AS VARCHAR(20)) + ' MB'
+    END                                           AS GrowthSetting,
+    CASE
+        WHEN max_size = -1 THEN 'Unlimited'
+        WHEN max_size = 0 THEN 'No growth'
+        WHEN type_desc = 'LOG' 
+            THEN CAST(CAST(max_size AS BIGINT) * 8 / 1024 / 1024 / 1024 AS VARCHAR(20)) + ' TB'
+        ELSE CAST(CAST(max_size AS BIGINT) * 8 / 1024 / 1024 AS VARCHAR(20)) + ' GB'
+    END                                           AS MaxSize,
+    is_percent_growth                             AS IsPercentGrowth
+FROM sys.master_files
+ORDER BY
+    CASE
+        WHEN database_id IN (1,2,3,4) THEN 0
+        ELSE 1
+    END,
+    DB_NAME(database_id),
+    type_desc;
+
+-----------------------------------------------------------------------
+-- B10. LARGEST DATABASES ON SPECIFIC DRIVE
+--      Shows databases on a specific drive sorted by size
+--      Useful for capacity planning and migration
+-----------------------------------------------------------------------
+SELECT 
+    DB_NAME(database_id)                          AS DatabaseName,
+    ROUND(SUM(size) * 8 / 1024, 0)               AS SizeMB
+FROM sys.master_files
+WHERE physical_name LIKE 'H:%'  -- Change drive letter as needed
+  AND DB_NAME(database_id) NOT IN ('master','model','msdb')
+GROUP BY DB_NAME(database_id) 
+ORDER BY SizeMB DESC;
+
+-----------------------------------------------------------------------
+-- B11. LOGICAL FILE NAMES (Ordered by Type)
+--      Lists files in the same order as SSMS GUI
+--      Useful for scripting file operations
+-----------------------------------------------------------------------
+SELECT 
+    DB_NAME(database_id)                          AS DatabaseName,
+    file_id                                       AS FileID,
+    type_desc                                     AS FileType,
+    data_space_id                                 AS DataSpaceID,
+    [name]                                        AS LogicalName,
+    physical_name                                 AS PhysicalPath
+FROM sys.master_files
+WHERE database_id = DB_ID()  -- Change 'my_database_name' as needed
+ORDER BY type_desc, 
+         (CASE WHEN file_id = 1 THEN 0 ELSE 1 END), 
+         [name];
+
+-----------------------------------------------------------------------
+-- B12. DATABASE SIZES (User Databases Only)
+--      Shows total size of user databases excluding system databases
+-----------------------------------------------------------------------
+SELECT  
+    d.[name]                                      AS DatabaseName,
+    ROUND(SUM(mf.size) * 8 / 1024, 0)            AS SizeMB
+FROM sys.master_files mf
+    INNER JOIN sys.databases d ON d.database_id = mf.database_id
+WHERE d.database_id > 4  -- Skip system databases
+GROUP BY d.[name]
+ORDER BY SizeMB DESC;
+
+-----------------------------------------------------------------------
+-- B13. SPACE USED BY FILES (Detailed)
+--      Shows file utilization with free space and percentage used
+--      Note: Uses legacy sysfiles view - works in current database only
+-----------------------------------------------------------------------
+SELECT
+    FILEID                                        AS FileID,
+    [NAME]                                        AS LogicalName,
+    FILENAME                                      AS PhysicalPath,
+    FILE_SIZE_MB,
+    SPACE_USED_MB,
+    CONVERT(INT, (SPACE_USED_MB / FILE_SIZE_MB) * 100) AS PercentUsed,
+    FREE_SPACE_MB
+FROM (
+    SELECT
+        a.FILEID,
+        [FILE_SIZE_MB] = CONVERT(DECIMAL(15,2), ROUND(a.size/128.000, 2)),
+        [SPACE_USED_MB] = CONVERT(DECIMAL(15,2), ROUND(FILEPROPERTY(a.[name],'SpaceUsed')/128.000, 2)),
+        [FREE_SPACE_MB] = CONVERT(DECIMAL(15,2), ROUND((a.size - FILEPROPERTY(a.[name],'SpaceUsed'))/128.000, 2)),
+        [NAME] = a.[NAME],
+        FILENAME = a.FILENAME
+    FROM dbo.sysfiles a
+) x   
+ORDER BY LogicalName;
+
+-----------------------------------------------------------------------
+-- B14. SPACE USED BY ALL DATABASES AND FILES
+--      Creates temp table with detailed space information
+--      Shows total, used, free space and percentage for all databases
+-----------------------------------------------------------------------
+CREATE TABLE #db_file_information( 
+    fileid INTEGER,
+    theFileGroup INTEGER,
+    Total_Extents INTEGER,
+    Used_Extents INTEGER,
+    db VARCHAR(30),
+    file_Path_name VARCHAR(300)
+);
+
+-- Get the size of the datafiles
+INSERT INTO #db_file_information 
+    (fileid, theFileGroup, Total_Extents, Used_Extents, db, file_Path_name)
+EXEC sp_MSForEachDB 'Use ?; DBCC showfilestats';
+
+-- Add computed columns
+ALTER TABLE #db_file_information ADD PercentFree AS 
+    ((Total_Extents - Used_Extents) * 100 / Total_extents);
+
+ALTER TABLE #db_file_information ADD TotalSpace_MB AS 
+    ((Total_Extents * 64) / 1024);
+
+ALTER TABLE #db_file_information ADD UsedSpace_MB AS 
+    ((Used_Extents * 64) / 1024);
+
+ALTER TABLE #db_file_information ADD FreeSpace_MB AS 
+    ((Total_Extents * 64) / 1024 - (Used_Extents * 64) / 1024);
+
+-- Display results
+SELECT * FROM #db_file_information
+ORDER BY db, fileid;
+
+-- Cleanup
+DROP TABLE #db_file_information;
+
+-----------------------------------------------------------------------
+-- B15. LUN SPACE MONITORING (All Databases)
+--      Shows space usage for all database files
+--      Useful for identifying databases that are filling up
+-----------------------------------------------------------------------
+EXEC sp_MSForEachDB '
+USE [?];
+SELECT
+    DB_NAME()                                    AS DatabaseName,
+    [name]                                       AS LogicalName,
+    size/128                                     AS SizeMB,
+    FILEPROPERTY([name], ''SpaceUsed'')/128     AS SpaceUsedMB,
+    size/128 - FILEPROPERTY([name], ''SpaceUsed'')/128 AS SpaceUnusedMB,
+    CAST((FILEPROPERTY([name], ''SpaceUsed'')*100)/size AS FLOAT(1)) AS PercentFull,
+    physical_name                                AS PhysicalPath
+FROM sys.database_files
+ORDER BY SpaceUnusedMB DESC;
+';
+
+-----------------------------------------------------------------------
+-- B16. LUN SPACE MONITORING (Specific LUNs)
+--      Monitors space on specific LUN paths
+--      Change the LIKE pattern to match your LUN naming convention
+-----------------------------------------------------------------------
+EXEC sp_MSForEachDB '
+USE [?];
+SELECT
+    DB_NAME()                                    AS DatabaseName,
+    [name]                                       AS LogicalName,
+    size/128                                     AS SizeMB,
+    FILEPROPERTY([name], ''SpaceUsed'')/128     AS SpaceUsedMB,
+    size/128 - FILEPROPERTY([name], ''SpaceUsed'')/128 AS SpaceUnusedMB,
+    CAST((FILEPROPERTY([name], ''SpaceUsed'')*100)/size AS FLOAT(1)) AS PercentFull,
+    physical_name                                AS PhysicalPath
+FROM sys.database_files
+WHERE physical_name LIKE ''O:\server_userdbs_oltp_0[1234]%''
+ORDER BY SpaceUnusedMB DESC;
+';
+
+-----------------------------------------------------------------------
+-- B17. TABLE STORAGE ANALYSIS
+--      Shows row counts and space usage for all user tables
+--      Useful for identifying large tables and planning maintenance
+-----------------------------------------------------------------------
+SELECT
+    t.[NAME]                                      AS TableName,
+    SUM(p.rows)                                   AS RowCounts,
+    SUM(a.total_pages) * 8                        AS TotalSpaceKB,
+    SUM(a.used_pages) * 8                         AS UsedSpaceKB,
+    (SUM(a.total_pages) - SUM(a.used_pages)) * 8  AS UnusedSpaceKB
+FROM sys.tables t
+    INNER JOIN sys.indexes i ON t.OBJECT_ID = i.object_id
+    INNER JOIN sys.partitions p ON i.object_id = p.OBJECT_ID 
+        AND i.index_id = p.index_id
+    INNER JOIN sys.allocation_units a ON p.partition_id = a.container_id
+WHERE t.[NAME] NOT LIKE 'dt%'
+  AND t.is_ms_shipped = 0
+  AND i.OBJECT_ID > 255
+GROUP BY t.[Name]
+ORDER BY UsedSpaceKB DESC;
+
+-----------------------------------------------------------------------
+-- B18. ALLOCATION UNITS BY FILE AND PARTITION
+--      Detailed view of how tables are allocated across files
+--      Useful for understanding file growth patterns
+-----------------------------------------------------------------------
+SELECT
+    OBJECT_NAME(p.object_id)                      AS TableName,
+    u.type_desc                                   AS AllocationUnitType,
+    f.file_id                                     AS FileID,
+    f.[name]                                      AS LogicalFileName,
+    f.physical_name                               AS PhysicalPath,
+    f.size                                        AS FileSize,
+    f.max_size                                    AS MaxSize,
+    f.growth                                      AS Growth,
+    u.total_pages                                 AS TotalPages,
+    u.used_pages                                  AS UsedPages,
+    u.data_pages                                  AS DataPages,
+    p.partition_id                                AS PartitionID,
+    p.rows                                        AS [Rows]
+FROM sys.allocation_units u
+    JOIN sys.database_files f ON u.data_space_id = f.data_space_id
+    JOIN sys.partitions p ON u.container_id = p.hobt_id
+WHERE u.[type] IN (1, 3)  -- IN_ROW_DATA and LOB_DATA
+ORDER BY p.rows DESC;
+
 
 /*==============================================================================
   SECTION C: TEMPDB FILE MANAGEMENT
@@ -248,6 +506,19 @@ ORDER BY t.StartTime DESC;
 -----------------------------------------------------------------------
 EXEC sys.xp_readerrorlog 0, 1, N'The tempdb database has';
 
+-----------------------------------------------------------------------
+-- C2. TEMPDB SPACE USAGE BY OBJECT TYPE
+--     Shows space used by internal objects, user objects, and version store
+--     Run weekly to monitor tempdb growth patterns
+-----------------------------------------------------------------------
+SELECT
+    SUM(internal_object_reserved_page_count) * 8  AS InternalObjectsKB,
+    SUM(unallocated_extent_page_count) * 8        AS FreeSpaceKB,
+    SUM(version_store_reserved_page_count) * 8    AS VersionStoreKB,
+    SUM(user_object_reserved_page_count) * 8      AS UserObjectsKB
+FROM sys.dm_db_file_space_usage
+WHERE database_id = 2;
+
 
 /*==============================================================================
   SECTION D: TRANSACTION LOG MANAGEMENT
@@ -255,13 +526,14 @@ EXEC sys.xp_readerrorlog 0, 1, N'The tempdb database has';
 
 -----------------------------------------------------------------------
 -- D1. TRANSACTION LOG SPACE USAGE (DBCC Method)
---     Shows log space usage for all databases
+--     Classic method to show log space usage for all databases
 -----------------------------------------------------------------------
 DBCC SQLPERF(LOGSPACE);
 
 -----------------------------------------------------------------------
--- D2. TRANSACTION LOG SPACE USAGE (DMV Alternative - Current Database)
+-- D2. TRANSACTION LOG SPACE USAGE (DMV Method)
 --     More detailed log space information with status alerts
+--     Shows information for the current database only
 -----------------------------------------------------------------------
 SELECT
     DB_NAME(database_id)                              AS DatabaseName,
@@ -301,9 +573,9 @@ ORDER BY
     END;
 
 -----------------------------------------------------------------------
--- D4. VLF (Virtual Log File) COUNT - Current Database
---     High VLF counts (> 1000) cause slow recovery and log operations.
---     Fix: shrink log, then grow in large fixed increments.
+-- D4. VLF COUNT (Current Database)
+--     High VLF counts (> 1000) cause slow recovery and log operations
+--     Fix: shrink log, then grow in large fixed increments
 --     Requires SQL Server 2016 SP2+ / 2017+
 -----------------------------------------------------------------------
 SELECT
@@ -318,7 +590,7 @@ FROM sys.dm_db_log_info(DB_ID())
 GROUP BY database_id;
 
 -----------------------------------------------------------------------
--- D5. VLF COUNT - All Databases
+-- D5. VLF COUNT (All Databases)
 --     Shows VLF count for all online databases
 --     Requires SQL Server 2017+
 -----------------------------------------------------------------------
@@ -330,4 +602,3 @@ FROM sys.databases d
 WHERE d.state_desc = 'ONLINE'
 GROUP BY li.database_id
 ORDER BY COUNT(*) DESC;
-

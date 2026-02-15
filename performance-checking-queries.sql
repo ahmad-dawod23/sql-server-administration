@@ -291,3 +291,42 @@ WHERE qs.database_id = DB_ID()
     AND DATEDIFF(Minute, qs.cached_time, GETDATE()) > 0
 ORDER BY avg_elapsed_time DESC OPTION (RECOMPILE);
 GO
+
+-----------------------------------------------------------------------
+-- 11. TOP I/O STATEMENTS
+-----------------------------------------------------------------------
+
+-- Lists the top statements by average input/output usage for the current database  (Query 70) (Top IO Statements)
+SELECT TOP(50) OBJECT_NAME(qt.objectid, dbid) AS [SP Name],
+(qs.total_logical_reads + qs.total_logical_writes) /qs.execution_count AS [Avg IO], 
+qs.execution_count AS [Execution Count],
+SUBSTRING(qt.[text],qs.statement_start_offset/2, 
+    (CASE 
+        WHEN qs.statement_end_offset = -1 
+     THEN LEN(CONVERT(nvarchar(max), qt.[text])) * 2 
+        ELSE qs.statement_end_offset 
+     END - qs.statement_start_offset)/2) AS [Query Text]    
+FROM sys.dm_exec_query_stats AS qs WITH (NOLOCK)
+CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle) AS qt
+WHERE qt.[dbid] = DB_ID()
+ORDER BY [Avg IO] DESC OPTION (RECOMPILE);
+
+-----------------------------------------------------------------------
+-- 12. TOP AVERAGE ELAPSED TIME QUERIES
+-----------------------------------------------------------------------
+
+-- Get top average elapsed time queries for entire instance (Query 54) (Top Avg Elapsed Time Queries)
+SELECT TOP(50) DB_NAME(t.[dbid]) AS [Database Name], 
+REPLACE(REPLACE(LEFT(t.[text], 255), CHAR(10),''), CHAR(13),'') AS [Short Query Text],  
+qs.total_elapsed_time/qs.execution_count AS [Avg Elapsed Time],
+qs.min_elapsed_time, qs.max_elapsed_time, qs.last_elapsed_time,
+qs.execution_count AS [Execution Count],  
+qs.total_logical_reads/qs.execution_count AS [Avg Logical Reads], 
+qs.total_physical_reads/qs.execution_count AS [Avg Physical Reads], 
+qs.total_worker_time/qs.execution_count AS [Avg Worker Time],
+CASE WHEN CONVERT(nvarchar(max), qp.query_plan) COLLATE Latin1_General_BIN2 LIKE N'%<MissingIndexes>%' THEN 1 ELSE 0 END AS [Has Missing Index],
+qs.creation_time AS [Creation Time]
+FROM sys.dm_exec_query_stats AS qs WITH (NOLOCK)
+CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle) AS t
+CROSS APPLY sys.dm_exec_query_plan(qs.plan_handle) AS qp
+ORDER BY qs.total_elapsed_time/qs.execution_count DESC OPTION (RECOMPILE);
