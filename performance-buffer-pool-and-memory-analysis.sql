@@ -8,8 +8,12 @@
 -----------------------------------------------------------------------
 
 -----------------------------------------------------------------------
--- 1. BUFFER POOL USAGE BY DATABASE
---    Shows how much memory each database consumes in the buffer pool.
+-- SECTION 1: BUFFER POOL USAGE
+-----------------------------------------------------------------------
+
+-----------------------------------------------------------------------
+-- 1.1 BUFFER POOL USAGE BY DATABASE
+--     Shows how much memory each database consumes in the buffer pool.
 -----------------------------------------------------------------------
 SELECT
     CASE
@@ -25,8 +29,8 @@ GROUP BY database_id
 ORDER BY PagesInMemory DESC;
 
 -----------------------------------------------------------------------
--- 2. BUFFER POOL USAGE BY OBJECT (current database)
---    Identifies which tables/indexes consume the most memory.
+-- 1.2 BUFFER POOL USAGE BY OBJECT (current database)
+--     Identifies which tables/indexes consume the most memory.
 -----------------------------------------------------------------------
 SELECT TOP 50
     SCHEMA_NAME(o.[schema_id])                    AS [Schema],
@@ -55,9 +59,51 @@ GROUP BY o.[schema_id], o.[name], i.[name], i.[type_desc]
 ORDER BY PagesInMemory DESC;
 
 -----------------------------------------------------------------------
--- 3. MEMORY CLERKS — top consumers
---    Shows where SQL Server allocates memory beyond the buffer pool
---    (plan cache, lock manager, columnstore, etc.).
+-- 1.3 DIRTY PAGES IN BUFFER POOL
+--     High dirty page count = potential I/O bottleneck during
+--     checkpoints or lazy writer activity.
+-----------------------------------------------------------------------
+SELECT
+    DB_NAME(database_id)                          AS DatabaseName,
+    SUM(CASE WHEN is_modified = 1 THEN 1 ELSE 0 END) AS DirtyPages,
+    SUM(CASE WHEN is_modified = 0 THEN 1 ELSE 0 END) AS CleanPages,
+    COUNT(*)                                      AS TotalPages,
+    CAST(100.0 * SUM(CASE WHEN is_modified = 1 THEN 1 ELSE 0 END)
+         / COUNT(*) AS DECIMAL(5,2))              AS DirtyPct
+FROM sys.dm_os_buffer_descriptors
+GROUP BY database_id
+HAVING SUM(CASE WHEN is_modified = 1 THEN 1 ELSE 0 END) > 0
+ORDER BY DirtyPages DESC;
+
+-----------------------------------------------------------------------
+-- 1.4 BUFFER CACHE HIT RATIO
+--     How often SQL Server finds data pages in buffer cache.
+--     Target: As close to 100 as possible.
+--     Low ratio may indicate memory pressure.
+-----------------------------------------------------------------------
+SELECT
+    [counter_name]   = RTRIM([counter_name]),
+    [cntr_value],
+    [instance_name],
+    CASE
+        WHEN [counter_name] = 'Buffer cache hit ratio' 
+        THEN CAST([cntr_value] AS VARCHAR(10)) + ' %'
+        ELSE CAST([cntr_value] AS VARCHAR(10))
+    END AS FormattedValue
+FROM sys.dm_os_performance_counters
+WHERE [counter_name] IN ('Page life expectancy', 'Buffer cache hit ratio', 'Buffer cache hit ratio base')
+  AND [object_name] NOT LIKE '%Partition%'
+  AND [object_name] NOT LIKE '%Node%';
+
+-----------------------------------------------------------------------
+-- SECTION 2: MEMORY CLERKS & ALLOCATIONS
+-----------------------------------------------------------------------
+
+-----------------------------------------------------------------------
+-- 2.1 MEMORY CLERKS — top consumers
+--     Shows where SQL Server allocates memory beyond the buffer pool
+--     (plan cache, lock manager, columnstore, etc.).
+--     Look for high CACHESTORE_SQLCP = Ad-hoc query plan issue.
 -----------------------------------------------------------------------
 SELECT TOP 20
     [type]                                        AS ClerkType,
@@ -71,7 +117,7 @@ FROM sys.dm_os_memory_clerks
 ORDER BY pages_kb DESC;
 
 -----------------------------------------------------------------------
--- 4. PLAN CACHE MEMORY USAGE (by cache type)
+-- 2.2 PLAN CACHE MEMORY USAGE (by cache type)
 -----------------------------------------------------------------------
 SELECT
     cacheobjtype                                  AS CacheObjType,
@@ -87,37 +133,24 @@ GROUP BY cacheobjtype, objtype
 ORDER BY TotalSizeMB DESC;
 
 -----------------------------------------------------------------------
--- 5. PAGE LIFE EXPECTANCY (PLE)
---    How long a page stays in the buffer pool (seconds).
---    Low PLE = memory pressure. Baseline varies by buffer pool size.
---    Rule of thumb: PLE should be > (buffer pool GB × 300).
+-- SECTION 3: MEMORY GRANTS
 -----------------------------------------------------------------------
-SELECT
-    [object_name],
-    instance_name,
-    cntr_value                                    AS PLE_Seconds,
-    CAST(cntr_value / 60.0 AS DECIMAL(10,1))     AS PLE_Minutes,
-    CASE
-        WHEN cntr_value < 300  THEN '*** CRITICAL ***'
-        WHEN cntr_value < 1000 THEN '* Warning *'
-        ELSE 'OK'
-    END                                           AS [Status]
-FROM sys.dm_os_performance_counters
-WHERE [object_name] LIKE '%Buffer Manager%'
-  AND counter_name = 'Page life expectancy';
 
 -----------------------------------------------------------------------
--- 6. MEMORY GRANTS PENDING & CURRENT
---    Queries waiting for memory grants indicate memory pressure.
+-- 3.1 MEMORY GRANTS PENDING
+--     Queries waiting for memory grants indicate memory pressure.
 -----------------------------------------------------------------------
--- Pending grants:
 SELECT
     cntr_value AS MemoryGrantsPending
 FROM sys.dm_os_performance_counters
 WHERE [object_name] LIKE '%Memory Manager%'
   AND counter_name = 'Memory Grants Pending';
 
--- Current granted memory:
+-----------------------------------------------------------------------
+-- 3.2 CURRENT MEMORY GRANTS
+--     Shows granted memory for active queries.
+--     Useful for identifying queries with large memory grants.
+-----------------------------------------------------------------------
 SELECT
     session_id,
     request_time,
@@ -138,8 +171,31 @@ FROM sys.dm_exec_query_memory_grants
 ORDER BY granted_memory_kb DESC;
 
 -----------------------------------------------------------------------
--- 7. MEMORY TARGETS AND CURRENT USAGE
---    Committed vs. target memory — should be close in steady state.
+-- 3.3 MEMORY GRANTS WITH QUERY TEXT
+--     Shows waiting or recently granted memory with query details.
+--     Run multiple times to identify patterns.
+-----------------------------------------------------------------------
+SELECT
+    DB_NAME(st.dbid)         AS DatabaseName,
+    mg.requested_memory_kb,
+    mg.ideal_memory_kb,
+    mg.request_time,
+    mg.grant_time,
+    mg.query_cost,
+    mg.dop,
+    st.[text]                AS QueryText
+FROM sys.dm_exec_query_memory_grants AS mg
+    CROSS APPLY sys.dm_exec_sql_text(plan_handle) AS st
+WHERE mg.request_time < COALESCE(grant_time, '99991231')
+ORDER BY mg.requested_memory_kb DESC;
+
+-----------------------------------------------------------------------
+-- SECTION 4: MEMORY TARGETS & SYSTEM MEMORY
+-----------------------------------------------------------------------
+
+-----------------------------------------------------------------------
+-- 4.1 MEMORY TARGETS AND CURRENT USAGE
+--     Committed vs. target memory — should be close in steady state.
 -----------------------------------------------------------------------
 SELECT
     counter_name,
@@ -159,24 +215,8 @@ WHERE [object_name] LIKE '%Memory Manager%'
 ORDER BY cntr_value DESC;
 
 -----------------------------------------------------------------------
--- 8. PROCESS MEMORY (OS-level view)
------------------------------------------------------------------------
-SELECT
-    CAST(physical_memory_in_use_kb / 1024.0
-         AS DECIMAL(18,2))                        AS PhysicalMemoryInUseMB,
-    CAST(locked_page_allocations_kb / 1024.0
-         AS DECIMAL(18,2))                        AS LockedPagesMB,
-    CAST(virtual_address_space_committed_kb / 1024.0
-         AS DECIMAL(18,2))                        AS VASCommittedMB,
-    CAST(available_commit_limit_kb / 1024.0
-         AS DECIMAL(18,2))                        AS AvailableCommitLimitMB,
-    large_page_allocations_kb,
-    process_physical_memory_low,
-    process_virtual_memory_low
-FROM sys.dm_os_process_memory;
-
------------------------------------------------------------------------
--- 9. OS MEMORY STATUS
+-- 4.2 OS MEMORY STATUS
+--     Operating system level memory availability.
 -----------------------------------------------------------------------
 SELECT
     CAST(total_physical_memory_kb / 1048576.0
@@ -187,145 +227,125 @@ SELECT
          AS DECIMAL(18,2))                        AS TotalPageFileGB,
     CAST(available_page_file_kb / 1048576.0
          AS DECIMAL(18,2))                        AS AvailablePageFileGB,
-    system_memory_state_desc
+    CAST(total_page_file_kb / 1024.0 - total_physical_memory_kb / 1024.0
+         AS DECIMAL(18,2))                        AS PhysicalPageFileSizeMB,
+    CAST(system_cache_kb / 1024.0
+         AS DECIMAL(18,2))                        AS SystemCacheMB,
+    system_memory_state_desc                      AS SystemMemoryState
 FROM sys.dm_os_sys_memory;
 
 -----------------------------------------------------------------------
--- 10. DIRTY PAGES IN BUFFER POOL
---     High dirty page count = potential I/O bottleneck during
---     checkpoints or lazy writer activity.
+-- 4.3 PROCESS MEMORY (SQL Server process-level view)
+--     Shows whether locked pages is enabled, among other things.
 -----------------------------------------------------------------------
 SELECT
-    DB_NAME(database_id)                          AS DatabaseName,
-    SUM(CASE WHEN is_modified = 1 THEN 1 ELSE 0 END) AS DirtyPages,
-    SUM(CASE WHEN is_modified = 0 THEN 1 ELSE 0 END) AS CleanPages,
-    COUNT(*)                                      AS TotalPages,
-    CAST(100.0 * SUM(CASE WHEN is_modified = 1 THEN 1 ELSE 0 END)
-         / COUNT(*) AS DECIMAL(5,2))              AS DirtyPct
-FROM sys.dm_os_buffer_descriptors
-GROUP BY database_id
-HAVING SUM(CASE WHEN is_modified = 1 THEN 1 ELSE 0 END) > 0
-ORDER BY DirtyPages DESC;
-
--- SQL Server Process Address space info  (Query 6) (Process Memory)
--- (shows whether locked pages is enabled, among other things)
-SELECT physical_memory_in_use_kb/1024 AS [SQL Server Memory Usage (MB)],
-	   locked_page_allocations_kb/1024 AS [SQL Server Locked Pages Allocation (MB)],
-       large_page_allocations_kb/1024 AS [SQL Server Large Pages Allocation (MB)], 
-	   page_fault_count, memory_utilization_percentage, available_commit_limit_kb, 
-	   process_physical_memory_low, process_virtual_memory_low
-FROM sys.dm_os_process_memory WITH (NOLOCK) OPTION (RECOMPILE);
-------
-
-
--- Good basic information about OS memory amounts and state  (Query 14) (System Memory)
-SELECT total_physical_memory_kb/1024 AS [Physical Memory (MB)], 
-       available_physical_memory_kb/1024 AS [Available Memory (MB)], 
-       total_page_file_kb/1024 AS [Page File Commit Limit (MB)],
-	   total_page_file_kb/1024 - total_physical_memory_kb/1024 AS [Physical Page File Size (MB)],
-	   available_page_file_kb/1024 AS [Available Page File (MB)], 
-	   system_cache_kb/1024 AS [System Cache (MB)],
-       system_memory_state_desc AS [System Memory State]
-FROM sys.dm_os_sys_memory WITH (NOLOCK) OPTION (RECOMPILE);
-------
-
-
-
--- sys.dm_io_virtual_file_stats (Transact-SQL)
--- https://bit.ly/3bRWUc0
-
-
-
-
--- Look for I/O requests taking longer than 15 seconds in the six most recent SQL Server Error Logs (Query 33) (IO Warnings)
-DROP TABLE IF EXISTS #IOWarningResults;
-CREATE TABLE #IOWarningResults(LogDate datetime, ProcessInfo sysname, LogText nvarchar(1000));
-
-
-	INSERT INTO #IOWarningResults 
-	EXEC xp_readerrorlog 0, 1, N'taking longer than 15 seconds';
-
--- sys.dm_db_log_info (Transact-SQL)
--- https://bit.ly/3jpmqsd
-
-
--- sys.databases (Transact-SQL)
--- https://bit.ly/2G5wqaX
-
-
--- SQL Server Transaction Log Architecture and Management Guide
--- https://bit.ly/2JjmQRZ
-
-
--- VLF Growth Formula (SQL Server 2022)
--- If the log growth increment is less than 1/8th the current size of the log
-
--- Sustained values above 1 suggest further investigation in that area
--- High Avg Runnable Task Counts are a good sign of CPU pressure
--- High Avg Pending DiskIO Counts are a sign of disk pressure
-
-
--- How to Do Some Very Basic SQL Server Monitoring
--- https://bit.ly/30IRla0
-
-
-
-
-
--- Detect blocking (run multiple times)  (Query 45) (Detect Blocking)
-SELECT t1.resource_type AS [lock type], DB_NAME(resource_database_id) AS [database],
-t1.resource_associated_entity_id AS [blk object],t1.request_mode AS [lock req],  -- lock requested
-t1.request_session_id AS [waiter sid], t2.wait_duration_ms AS [wait time],       -- spid of waiter  
-(SELECT [text] FROM sys.dm_exec_requests AS r WITH (NOLOCK)                      -- get sql for waiter
-CROSS APPLY sys.dm_exec_sql_text(r.[sql_handle]) 
-WHERE r.session_id = t1.request_session_id) AS [waiter_batch],
-(SELECT SUBSTRING(qt.[text],r.statement_start_offset/2, 
-    (CASE WHEN r.statement_end_offset = -1 
-    THEN LEN(CONVERT(nvarchar(max), qt.[text])) * 2 
-    ELSE r.statement_end_offset END - r.statement_start_offset)/2) 
-FROM sys.dm_exec_requests AS r WITH (NOLOCK)
-CROSS APPLY sys.dm_exec_sql_text(r.[sql_handle]) AS qt
-WHERE r.session_id = t1.request_session_id) AS [waiter_stmt],					-- statement blocked
-
-
-
--- Helps troubleshoot blocking and deadlocking issues
--- The results will change from second to second on a busy system
--- You should run this query multiple times when you see signs of blocking
-
-
-
-
--- Memory Clerk Usage for instance  (Query 51) (Memory Clerk Usage)
--- Look for high value for CACHESTORE_SQLCP (Ad-hoc query plans)
-SELECT TOP(10) mc.[type] AS [Memory Clerk Type], 
-       CAST((SUM(mc.pages_kb)/1024.0) AS DECIMAL (15,2)) AS [Memory Usage (MB)] 
-FROM sys.dm_os_memory_clerks AS mc WITH (NOLOCK)
-GROUP BY mc.[type]  
-ORDER BY SUM(mc.pages_kb) DESC OPTION (RECOMPILE);
-------
-
-
-
-
-
--- Top Cached SPs By Total Logical Writes (Query 68) (SP Logical Writes)
--- Logical writes relate to both memory and disk I/O pressure 
-SELECT TOP(25) CONCAT(SCHEMA_NAME(p.schema_id), '.', p.name) AS [SP Name], qs.total_logical_writes AS [TotalLogicalWrites], 
-qs.total_logical_writes/qs.execution_count AS [AvgLogicalWrites], qs.execution_count,
-ISNULL(qs.execution_count/DATEDIFF(Minute, qs.cached_time, GETDATE()), 0) AS [Calls/Minute],
-qs.total_elapsed_time, qs.total_elapsed_time/qs.execution_count AS [avg_elapsed_time],
-CASE WHEN CONVERT(nvarchar(max), qp.query_plan) COLLATE Latin1_General_BIN2 LIKE N'%<MissingIndexes>%' THEN 1 ELSE 0 END AS [Has Missing Index], 
-CONVERT(nvarchar(25), qs.last_execution_time, 20) AS [Last Execution Time],
-CONVERT(nvarchar(25), qs.cached_time, 20) AS [Plan Cached Time]
--- ,qp.query_plan AS [Query Plan] -- Uncomment if you want the Query Plan 
-FROM sys.procedures AS p WITH (NOLOCK)
-INNER JOIN sys.dm_exec_procedure_stats AS qs WITH (NOLOCK)
-ON p.[object_id] = qs.[object_id]
-CROSS APPLY sys.dm_exec_query_plan(qs.plan_handle) AS qp
-WHERE qs.database_id = DB_ID()
-AND qs.total_logical_writes > 0
-AND DATEDIFF(Minute, qs.cached_time, GETDATE()) > 0
-ORDER BY qs.total_logical_writes DESC OPTION (RECOMPILE);
-------
-
+    CAST(physical_memory_in_use_kb / 1024.0
+         AS DECIMAL(18,2))                        AS PhysicalMemoryInUseMB,
+    CAST(locked_page_allocations_kb / 1024.0
+         AS DECIMAL(18,2))                        AS LockedPagesMB,
+    CAST(large_page_allocations_kb / 1024.0
+         AS DECIMAL(18,2))                        AS LargePagesMB,
+    CAST(virtual_address_space_committed_kb / 1024.0
+         AS DECIMAL(18,2))                        AS VASCommittedMB,
+    CAST(virtual_address_space_available_kb / 1024.0
+         AS DECIMAL(18,2))                        AS VASAvailableMB,
+    CAST(available_commit_limit_kb / 1024.0
+         AS DECIMAL(18,2))                        AS AvailableCommitLimitMB,
+    page_fault_count,
+    memory_utilization_percentage,
+    process_physical_memory_low,
+    process_virtual_memory_low
+FROM sys.dm_os_process_memory;
+
+-----------------------------------------------------------------------
+-- SECTION 5: PAGE LIFE EXPECTANCY
+-----------------------------------------------------------------------
+
+-----------------------------------------------------------------------
+-- 5.1 PAGE LIFE EXPECTANCY (PLE)
+--     How long a page stays in the buffer pool (seconds).
+--     Low PLE = memory pressure. Baseline varies by buffer pool size.
+--     Rule of thumb: PLE should be > (buffer pool GB × 300).
+-----------------------------------------------------------------------
+SELECT
+    [object_name],
+    instance_name,
+    cntr_value                                    AS PLE_Seconds,
+    CAST(cntr_value / 60.0 AS DECIMAL(10,1))     AS PLE_Minutes,
+    CASE
+        WHEN cntr_value < 300  THEN '*** CRITICAL ***'
+        WHEN cntr_value < 1000 THEN '* Warning *'
+        ELSE 'OK'
+    END                                           AS [Status]
+FROM sys.dm_os_performance_counters
+WHERE [object_name] LIKE '%Buffer Manager%'
+  AND counter_name = 'Page life expectancy';
+
+-----------------------------------------------------------------------
+-- SECTION 6: RING BUFFER MEMORY MONITOR
+-----------------------------------------------------------------------
+
+-----------------------------------------------------------------------
+-- 6.1 RING BUFFER MEMORY-RELATED USAGE
+--     Historical view of memory resource monitor notifications.
+-----------------------------------------------------------------------
+SELECT
+    EventTime,
+    record.value('(/Record/ResourceMonitor/Notification)[1]', 'varchar(max)') AS [Type],
+    record.value('(/Record/ResourceMonitor/IndicatorsProcess)[1]', 'int')     AS [IndicatorsProcess],
+    record.value('(/Record/ResourceMonitor/IndicatorsSystem)[1]', 'int')      AS [IndicatorsSystem],
+    record.value('(/Record/MemoryRecord/AvailablePhysicalMemory)[1]', 'bigint') AS [AvailPhysMemKb],
+    record.value('(/Record/MemoryRecord/AvailableVirtualAddressSpace)[1]', 'bigint') AS [AvailVASKb]
+FROM (
+    SELECT
+        DATEADD(ss, (-1 * ((cpu_ticks / CONVERT(float, (cpu_ticks / ms_ticks))) - [timestamp]) / 1000), GETDATE()) AS EventTime,
+        CONVERT(xml, record) AS record
+    FROM sys.dm_os_ring_buffers
+        CROSS JOIN sys.dm_os_sys_info
+    WHERE ring_buffer_type = 'RING_BUFFER_RESOURCE_MONITOR'
+) AS tab
+ORDER BY EventTime DESC;
+
+-----------------------------------------------------------------------
+-- SECTION 7: COMPREHENSIVE DIAGNOSTICS
+-----------------------------------------------------------------------
+
+-----------------------------------------------------------------------
+-- 7.1 DBCC MEMORYSTATUS
+--     Comprehensive memory diagnostic information.
+--     Reference: http://support.microsoft.com/kb/907877/en-us
+-----------------------------------------------------------------------
+-- DBCC MEMORYSTATUS;
+
+
+-----------------------------------------------------------------------
+-- SECTION 8: MEMORY DUMP INFORMATION
+-----------------------------------------------------------------------
+
+-----------------------------------------------------------------------
+-- 8.1 MEMORY DUMP FILES — LOCATION, TIME, AND SIZE
+--     Get information on location, time and size of any memory dumps 
+--     from SQL Server. Memory dumps may indicate crashes or severe errors.
+-----------------------------------------------------------------------
+SELECT 
+    [filename], 
+    creation_time, 
+    size_in_bytes/1048576.0 AS [Size (MB)]
+FROM sys.dm_server_memory_dumps WITH (NOLOCK) 
+ORDER BY creation_time DESC OPTION (RECOMPILE);
+GO
+
+
+-----------------------------------------------------------------------
+-- SECTION 9: BUFFER POOL SCAN MONITORING
+-----------------------------------------------------------------------
+
+-----------------------------------------------------------------------
+-- 9.1 LONG DURATION BUFFER POOL SCANS FROM ERROR LOG
+--     Finds buffer pool scans that took more than 10 seconds in the 
+--     current SQL Server Error log.
+--     This should happen much less often in SQL Server 2022.
+-----------------------------------------------------------------------
+EXEC sys.xp_readerrorlog 0, 1, N'Buffer pool scan took';
+GO
+

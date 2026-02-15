@@ -8,8 +8,14 @@
 -----------------------------------------------------------------------
 
 -----------------------------------------------------------------------
--- 1. PLAN CACHE SIZE AND COMPOSITION
---    Shows how much memory the plan cache is consuming by plan type.
+-- SECTION 1: PLAN CACHE OVERVIEW & HEALTH
+--    These queries provide a high-level view of plan cache health
+--    and identify memory waste from single-use plans.
+-----------------------------------------------------------------------
+
+-----------------------------------------------------------------------
+-- 1.1 PLAN CACHE SIZE AND COMPOSITION
+--     Shows how much memory the plan cache is consuming by plan type.
 -----------------------------------------------------------------------
 SELECT
     objtype                                       AS PlanType,
@@ -27,9 +33,9 @@ GROUP BY objtype, cacheobjtype
 ORDER BY TotalSizeMB DESC;
 
 -----------------------------------------------------------------------
--- 2. PLAN CACHE BLOAT — SINGLE-USE PLANS
---    High single-use plan count wastes memory.
---    Fix: Enable "optimize for ad hoc workloads" or parameterize.
+-- 1.2 PLAN CACHE BLOAT — SINGLE-USE PLANS
+--     High single-use plan count wastes memory.
+--     Fix: Enable "optimize for ad hoc workloads" or parameterize.
 -----------------------------------------------------------------------
 SELECT
     SUM(CASE WHEN usecounts = 1 THEN 1 ELSE 0 END) AS SingleUsePlans,
@@ -49,7 +55,37 @@ SELECT
 FROM sys.dm_exec_cached_plans;
 
 -----------------------------------------------------------------------
--- 3. TOP 25 MOST EXECUTED PLANS (plan reuse check)
+-- 1.3 TOP 50 SINGLE-USE AD HOC QUERIES (by size)
+--     Find single-use, ad-hoc and prepared queries bloating the plan cache.
+--     These queries are executed once and never reused.
+--     Reference: https://bit.ly/2EfYOkl
+-----------------------------------------------------------------------
+SELECT TOP(50) 
+    DB_NAME(t.[dbid]) AS [Database Name],
+    REPLACE(REPLACE(LEFT(t.[text], 255), CHAR(10),''), CHAR(13),'') AS [Short Query Text], 
+    cp.objtype AS [Object Type], 
+    cp.cacheobjtype AS [Cache Object Type],  
+    cp.size_in_bytes/1024 AS [Plan Size in KB],
+    CASE WHEN CONVERT(nvarchar(max), qp.query_plan) COLLATE Latin1_General_BIN2 
+        LIKE N'%<MissingIndexes>%' THEN 1 ELSE 0 END AS [Has Missing Index]
+    --,t.[text] AS [Query Text], qp.query_plan AS [Query Plan] -- uncomment out these columns if not copying results to Excel
+FROM sys.dm_exec_cached_plans AS cp WITH (NOLOCK)
+CROSS APPLY sys.dm_exec_sql_text(plan_handle) AS t
+CROSS APPLY sys.dm_exec_query_plan(plan_handle) AS qp
+WHERE cp.cacheobjtype = N'Compiled Plan' 
+AND cp.objtype IN (N'Adhoc', N'Prepared') 
+AND cp.usecounts = 1
+ORDER BY cp.size_in_bytes DESC OPTION (RECOMPILE);
+GO
+
+-----------------------------------------------------------------------
+-- SECTION 2: PLAN CACHE CONTENT ANALYSIS
+--    Detailed analysis of what's in the plan cache and how plans
+--    are being reused.
+-----------------------------------------------------------------------
+
+-----------------------------------------------------------------------
+-- 2.1 TOP 25 MOST EXECUTED PLANS (plan reuse check)
 -----------------------------------------------------------------------
 SELECT TOP 25
     cp.usecounts                                  AS ExecutionCount,
@@ -69,8 +105,8 @@ WHERE cp.cacheobjtype = 'Compiled Plan'
 ORDER BY cp.usecounts DESC;
 
 -----------------------------------------------------------------------
--- 4. TOP 25 LARGEST PLANS IN CACHE
---    Large plans consume significant memory.
+-- 2.2 TOP 25 LARGEST PLANS IN CACHE
+--     Large plans consume significant memory.
 -----------------------------------------------------------------------
 SELECT TOP 25
     cp.size_in_bytes / 1024                       AS PlanSizeKB,
@@ -83,7 +119,12 @@ FROM sys.dm_exec_cached_plans cp
 ORDER BY cp.size_in_bytes DESC;
 
 -----------------------------------------------------------------------
--- 5. TOP 25 CPU-INTENSIVE QUERIES (from plan cache)
+-- SECTION 3: PERFORMANCE ANALYSIS (FROM PLAN CACHE)
+--    Identify resource-intensive queries cached in the plan cache.
+-----------------------------------------------------------------------
+
+-----------------------------------------------------------------------
+-- 3.1 TOP 25 CPU-INTENSIVE QUERIES (from plan cache)
 -----------------------------------------------------------------------
 SELECT TOP 25
     qs.total_worker_time                          AS TotalCPU_us,
@@ -108,7 +149,7 @@ FROM sys.dm_exec_query_stats qs
 ORDER BY qs.total_worker_time DESC;
 
 -----------------------------------------------------------------------
--- 6. TOP 25 QUERIES BY LOGICAL READS (I/O pressure)
+-- 3.2 TOP 25 QUERIES BY LOGICAL READS (I/O pressure)
 -----------------------------------------------------------------------
 SELECT TOP 25
     qs.total_logical_reads                        AS TotalReads,
@@ -129,9 +170,15 @@ FROM sys.dm_exec_query_stats qs
 ORDER BY qs.total_logical_reads DESC;
 
 -----------------------------------------------------------------------
--- 7. QUERIES WITH MULTIPLE PLANS (parameter sniffing candidates)
---    Multiple plans for the same query_hash often indicates
---    parameter sniffing issues.
+-- SECTION 4: PLAN CACHE ISSUES & DIAGNOSTICS
+--    Identify problematic patterns like parameter sniffing and
+--    excessive recompilations.
+-----------------------------------------------------------------------
+
+-----------------------------------------------------------------------
+-- 4.1 QUERIES WITH MULTIPLE PLANS (parameter sniffing candidates)
+--     Multiple plans for the same query_hash often indicates
+--     parameter sniffing issues.
 -----------------------------------------------------------------------
 SELECT
     query_hash,
@@ -147,7 +194,7 @@ HAVING COUNT(DISTINCT query_plan_hash) > 1
 ORDER BY COUNT(DISTINCT query_plan_hash) DESC;
 
 -----------------------------------------------------------------------
--- 8. QUERIES WITH EXCESSIVE RECOMPILATIONS
+-- 4.2 QUERIES WITH EXCESSIVE RECOMPILATIONS
 -----------------------------------------------------------------------
 SELECT TOP 25
     qs.plan_generation_num                        AS Recompilations,
@@ -162,8 +209,13 @@ WHERE qs.plan_generation_num > 1
 ORDER BY qs.plan_generation_num DESC;
 
 -----------------------------------------------------------------------
--- 9. FORCED PLANS (Query Store)
---    Lists all queries where a plan has been manually forced.
+-- SECTION 5: QUERY STORE & PLAN MANAGEMENT
+--    Manage query plans using Query Store and Plan Guides.
+-----------------------------------------------------------------------
+
+-----------------------------------------------------------------------
+-- 5.1 FORCED PLANS (Query Store)
+--     Lists all queries where a plan has been manually forced.
 -----------------------------------------------------------------------
 SELECT
     qsp.plan_id,
@@ -184,7 +236,27 @@ WHERE qsp.is_forced_plan = 1
 ORDER BY qsp.last_execution_time DESC;
 
 -----------------------------------------------------------------------
--- 10. PLAN CACHE CLEANUP COMMANDS (use with caution!)
+-- 5.2 PLAN GUIDE INVENTORY
+--     Lists all plan guides in the current database.
+-----------------------------------------------------------------------
+SELECT
+    [name]                 AS PlanGuideName,
+    scope_type_desc        AS ScopeType,
+    is_disabled,
+    create_date,
+    modify_date,
+    SUBSTRING(query_text, 1, 200) AS QueryText,
+    hints
+FROM sys.plan_guides
+ORDER BY [name];
+
+-----------------------------------------------------------------------
+-- SECTION 6: PLAN CACHE MAINTENANCE
+--    Commands for clearing and managing the plan cache.
+-----------------------------------------------------------------------
+
+-----------------------------------------------------------------------
+-- 6.1 PLAN CACHE CLEANUP COMMANDS (use with caution!)
 -----------------------------------------------------------------------
 -- Clear entire plan cache (NEVER in production without reason):
 -- DBCC FREEPROCCACHE;
@@ -199,33 +271,5 @@ ORDER BY qsp.last_execution_time DESC;
 -- EXEC sp_configure 'optimize for ad hoc workloads', 1;
 -- RECONFIGURE;
 
------------------------------------------------------------------------
--- 11. PLAN GUIDE INVENTORY
---    Lists all plan guides in the current database.
------------------------------------------------------------------------
-SELECT
-    [name]                 AS PlanGuideName,
-    scope_type_desc        AS ScopeType,
-    is_disabled,
-    create_date,
-    modify_date,
-    SUBSTRING(query_text, 1, 200) AS QueryText,
-    hints
-FROM sys.plan_guides
-ORDER BY [name];
-
--- sys.fn_PageResCracker (Transact-SQL)
--- https://bit.ly/3sgwp9B
-
-
-
-
-
-
--- Get CPU Utilization History for last 256 minutes (in one minute intervals)  (Query 47) (CPU Utilization History)
-DECLARE @ts_now bigint = (SELECT ms_ticks FROM sys.dm_os_sys_info WITH (NOLOCK)); 
-
-
-SELECT TOP(256) SQLProcessUtilization AS [SQL Server Process CPU Utilization], 
-               SystemIdle AS [System Idle Process], 
-               100 - SystemIdle - SQLProcessUtilization AS [Other Process CPU Utilization], 
+
+

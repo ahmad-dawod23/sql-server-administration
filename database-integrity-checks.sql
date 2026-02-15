@@ -8,8 +8,12 @@
 -----------------------------------------------------------------------
 
 -----------------------------------------------------------------------
--- 1. DBCC CHECKDB — full consistency check (current database)
---    Gold standard for detecting corruption.
+-- SECTION 1: CORE INTEGRITY CHECK COMMANDS
+-----------------------------------------------------------------------
+
+-----------------------------------------------------------------------
+-- 1.1 DBCC CHECKDB — full consistency check (current database)
+--     Gold standard for detecting corruption.
 -----------------------------------------------------------------------
 -- Run for current database:
 DBCC CHECKDB WITH NO_INFOMSGS, ALL_ERRORMSGS;
@@ -19,8 +23,8 @@ DBCC CHECKDB WITH NO_INFOMSGS, ALL_ERRORMSGS;
 -- DBCC CHECKDB WITH PHYSICAL_ONLY, NO_INFOMSGS;
 
 -----------------------------------------------------------------------
--- 2. GENERATE CHECKDB FOR ALL USER DATABASES
---    Generates one statement per database — run sequentially.
+-- 1.2 GENERATE CHECKDB FOR ALL USER DATABASES
+--     Generates one statement per database — run sequentially.
 -----------------------------------------------------------------------
 SELECT
     'DBCC CHECKDB (' + QUOTENAME([name]) + ') WITH NO_INFOMSGS, ALL_ERRORMSGS;' AS CheckCommand,
@@ -33,26 +37,30 @@ WHERE database_id > 4          -- skip system databases (optional)
 ORDER BY [name];
 
 -----------------------------------------------------------------------
--- 3. DBCC CHECKTABLE — check a single table
---    Useful when you suspect corruption in a specific table.
+-- 1.3 DBCC CHECKTABLE — check a single table
+--     Useful when you suspect corruption in a specific table.
 -----------------------------------------------------------------------
 -- DBCC CHECKTABLE ('dbo.YourTableName') WITH NO_INFOMSGS, ALL_ERRORMSGS;
 
 -----------------------------------------------------------------------
--- 4. DBCC CHECKALLOC — allocation consistency only
---    Faster than CHECKDB; verifies page and extent structures.
+-- 1.4 DBCC CHECKALLOC — allocation consistency only
+--     Faster than CHECKDB; verifies page and extent structures.
 -----------------------------------------------------------------------
 DBCC CHECKALLOC WITH NO_INFOMSGS, ALL_ERRORMSGS;
 
 -----------------------------------------------------------------------
--- 5. DBCC CHECKCATALOG — system catalog consistency
+-- 1.5 DBCC CHECKCATALOG — system catalog consistency
 -----------------------------------------------------------------------
 DBCC CHECKCATALOG WITH NO_INFOMSGS;
 
 -----------------------------------------------------------------------
--- 6. LAST KNOWN GOOD CHECKDB DATE
---    SQL Server stores the last successful CHECKDB date in the
---    boot page. Critical for monitoring — alert if > 7 days old.
+-- SECTION 2: INTEGRITY MONITORING AND AUDIT QUERIES
+-----------------------------------------------------------------------
+
+-----------------------------------------------------------------------
+-- 2.1 LAST KNOWN GOOD CHECKDB DATE
+--     SQL Server stores the last successful CHECKDB date in the
+--     boot page. Critical for monitoring — alert if > 7 days old.
 -----------------------------------------------------------------------
 SELECT
     d.[name]                                     AS DatabaseName,
@@ -77,9 +85,9 @@ WHERE d.state_desc = 'ONLINE'
 ORDER BY DaysSinceLastCheck DESC;
 
 -----------------------------------------------------------------------
--- 7. CHECK SUSPECT PAGES TABLE
---    sys.suspect_pages records pages where I/O errors were detected.
---    Any rows here indicate potential corruption.
+-- 2.2 CHECK SUSPECT PAGES TABLE
+--     sys.suspect_pages records pages where I/O errors were detected.
+--     Any rows here indicate potential corruption.
 -----------------------------------------------------------------------
 SELECT
     DB_NAME(database_id)   AS DatabaseName,
@@ -100,27 +108,9 @@ FROM msdb.dbo.suspect_pages
 ORDER BY last_update_date DESC;
 
 -----------------------------------------------------------------------
--- 8. DBCC CHECKDB WITH REPAIR OPTIONS (reference only)
---    *** DANGER *** — REPAIR_ALLOW_DATA_LOSS can delete data.
---    Always restore from backup first if possible.
---    Database must be in SINGLE_USER mode.
------------------------------------------------------------------------
--- -- Step 1: Set single-user
--- ALTER DATABASE [YourDB] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
---
--- -- Step 2: Try repair (lossless first)
--- DBCC CHECKDB ('YourDB', REPAIR_REBUILD) WITH NO_INFOMSGS;
---
--- -- Step 3: If REPAIR_REBUILD fails, only then consider:
--- -- DBCC CHECKDB ('YourDB', REPAIR_ALLOW_DATA_LOSS) WITH NO_INFOMSGS;
---
--- -- Step 4: Return to multi-user
--- ALTER DATABASE [YourDB] SET MULTI_USER;
-
------------------------------------------------------------------------
--- 9. PAGE VERIFICATION SETTING AUDIT
---    All databases should use CHECKSUM for page verification.
---    NONE or TORN_PAGE_DETECTION are legacy settings.
+-- 2.3 PAGE VERIFICATION SETTING AUDIT
+--     All databases should use CHECKSUM for page verification.
+--     NONE or TORN_PAGE_DETECTION are legacy settings.
 -----------------------------------------------------------------------
 SELECT
     [name]              AS DatabaseName,
@@ -142,8 +132,35 @@ FROM sys.databases
 WHERE page_verify_option_desc <> 'CHECKSUM'
   AND state_desc = 'ONLINE';
 
+
 -----------------------------------------------------------------------
--- 10. SQL AGENT JOB TEMPLATE — Automated Weekly CHECKDB
+-- SECTION 3: REPAIR PROCEDURES (USE WITH EXTREME CAUTION)
+-----------------------------------------------------------------------
+
+-----------------------------------------------------------------------
+-- 3.1 DBCC CHECKDB WITH REPAIR OPTIONS (reference only)
+--     *** DANGER *** — REPAIR_ALLOW_DATA_LOSS can delete data.
+--     Always restore from backup first if possible.
+--     Database must be in SINGLE_USER mode.
+-----------------------------------------------------------------------
+-- -- Step 1: Set single-user
+-- ALTER DATABASE [YourDB] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
+--
+-- -- Step 2: Try repair (lossless first)
+-- DBCC CHECKDB ('YourDB', REPAIR_REBUILD) WITH NO_INFOMSGS;
+--
+-- -- Step 3: If REPAIR_REBUILD fails, only then consider:
+-- -- DBCC CHECKDB ('YourDB', REPAIR_ALLOW_DATA_LOSS) WITH NO_INFOMSGS;
+--
+-- -- Step 4: Return to multi-user
+-- ALTER DATABASE [YourDB] SET MULTI_USER;
+
+-----------------------------------------------------------------------
+-- SECTION 4: AUTOMATION AND SCHEDULING
+-----------------------------------------------------------------------
+
+-----------------------------------------------------------------------
+-- 4.1 SQL AGENT JOB TEMPLATE — Automated Weekly CHECKDB
 --     Modify schedule/database list as needed.
 -----------------------------------------------------------------------
 /*
@@ -184,15 +201,35 @@ EXEC sp_attach_schedule
 EXEC sp_add_jobserver
     @job_name = N'DBA - Weekly CHECKDB All Databases';
 */
-
-
-
--- Get information on location, time and size of any memory dumps from SQL Server  (Query 23) (Memory Dump Info)
-SELECT [filename], creation_time, size_in_bytes/1048576.0 AS [Size (MB)]
-FROM sys.dm_server_memory_dumps WITH (NOLOCK) 
-ORDER BY creation_time DESC OPTION (RECOMPILE);
-------
-
-
--- This will not return any rows if you have 
--- not had any memory dumps (which is a good thing)
+
+
+-----------------------------------------------------------------------
+-- SECTION 5: TRANSACTION LOG HEALTH — VLF COUNTS
+-----------------------------------------------------------------------
+
+-----------------------------------------------------------------------
+-- 5.1 GET VLF COUNTS FOR ALL DATABASES
+--     Virtual Log Files (VLFs) are subunits of the transaction log.
+--     Too many VLFs can cause performance issues during recovery,
+--     transaction log backups, or growth operations.
+--
+--     Recommendations:
+--       < 50 VLFs     = Excellent
+--       50-200 VLFs   = Good
+--       200-500 VLFs  = Monitor
+--       > 500 VLFs    = Consider log file maintenance
+-----------------------------------------------------------------------
+SELECT 
+    [name] AS [Database Name], 
+    [VLF Count]
+FROM sys.databases AS db WITH (NOLOCK)
+CROSS APPLY (
+    SELECT file_id, COUNT(*) AS [VLF Count]
+    FROM sys.dm_db_log_info(db.database_id)
+    GROUP BY file_id
+) AS li
+ORDER BY [VLF Count] DESC OPTION (RECOMPILE);
+GO
+
+
+

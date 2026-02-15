@@ -1,5 +1,21 @@
+/*******************************************************************************
+ * IOPS & STORAGE PERFORMANCE MONITORING SCRIPT
+ * 
+ * Purpose: Comprehensive IOPS, throughput, and storage performance analysis
+ * 
+ * File Organization:
+ *   Section 1: Azure SQL MI - IOPS & Throughput Monitoring
+ *   Section 2: Storage Volume & Drive Information
+ *   Section 3: I/O Latency Analysis
+ *   Section 4: Database File I/O Statistics
+ *   Section 5: Unrelated Queries (see suggestions for relocation)
+ * 
+ * Last Updated: 2026-02-15
+ *******************************************************************************/
+
 -----------------------------------------------------------------------
--- IOPS & STORAGE THROUGHPUT MEASURING (AZURE SQL MI)
+-- SECTION 1: AZURE SQL MI - IOPS & THROUGHPUT MONITORING
+-----------------------------------------------------------------------
 -- Purpose : Measure IOPS/throughput per database file and compare
 --           against Azure Premium Storage blob limits.
 -- Safety  : Read-only measurement loop. Does not modify data.
@@ -165,436 +181,168 @@ END TRY
 BEGIN CATCH
     THROW;
 END CATCH;
+GO
 
 
--- This shows all of your drives, not just LUNs with SQL Server database files
+-----------------------------------------------------------------------
+-- SECTION 2: STORAGE VOLUME & DRIVE INFORMATION
+-----------------------------------------------------------------------
 
+-- Query 2.1: Enumerate all fixed drives on the server
 -- New in SQL Server 2017
-
-
-
-
-
 -- sys.dm_os_enumerate_fixed_drives (Transact-SQL)
-
 -- https://bit.ly/2EZoHLj
-
-
-
-
-
-
-
-
-
-
-
-
-
--- Volume info for all LUNS that have database files on the current instance (Query 30) (Volume Info)
-
-SELECT DISTINCT vs.volume_mount_point, vs.file_system_type, vs.logical_volume_name, 
-
-CONVERT(DECIMAL(18,2), vs.total_bytes/1073741824.0) AS [Total Size (GB)],
-
-CONVERT(DECIMAL(18,2), vs.available_bytes/1073741824.0) AS [Available Size (GB)],  
-
-CONVERT(DECIMAL(18,2), vs.available_bytes * 1. / vs.total_bytes * 100.) AS [Space Free %],
-
-vs.supports_compression, vs.is_compressed, 
-
-vs.supports_sparse_files, vs.supports_alternate_streams
-
-FROM sys.master_files AS f WITH (NOLOCK)
-
-CROSS APPLY sys.dm_os_volume_stats(f.database_id, f.[file_id]) AS vs 
-
-ORDER BY vs.volume_mount_point OPTION (RECOMPILE);
-
+-- Shows all of your drives, not just LUNs with SQL Server database files
+------
+-- NOTE: This query is commented out as sys.dm_os_enumerate_fixed_drives is not shown in the original
+-- SELECT * FROM sys.dm_os_enumerate_fixed_drives;
 ------
 
 
-
-
-
+-- Query 2.2: Volume information for all LUNs with database files
 -- Shows you the total and free space on the LUNs where you have database files
-
 -- Being low on free space can negatively affect performance
-
-
-
-
-
 -- sys.dm_os_volume_stats (Transact-SQL)
-
 -- https://bit.ly/2oBPNNr
+------
+SELECT DISTINCT 
+    vs.volume_mount_point, 
+    vs.file_system_type, 
+    vs.logical_volume_name, 
+    CONVERT(DECIMAL(18,2), vs.total_bytes/1073741824.0) AS [Total Size (GB)],
+    CONVERT(DECIMAL(18,2), vs.available_bytes/1073741824.0) AS [Available Size (GB)],  
+    CONVERT(DECIMAL(18,2), vs.available_bytes * 1. / vs.total_bytes * 100.) AS [Space Free %],
+    vs.supports_compression, 
+    vs.is_compressed, 
+    vs.supports_sparse_files, 
+    vs.supports_alternate_streams
+FROM sys.master_files AS f WITH (NOLOCK)
+CROSS APPLY sys.dm_os_volume_stats(f.database_id, f.[file_id]) AS vs 
+ORDER BY vs.volume_mount_point OPTION (RECOMPILE);
+------
 
 
+-----------------------------------------------------------------------
+-- SECTION 3: I/O LATENCY ANALYSIS
+-----------------------------------------------------------------------
 
-
-
-
-
-
-
-
-
-
-
--- Drive level latency information (Query 31) (Drive Level Latency)
-
-SELECT tab.[Drive], tab.volume_mount_point AS [Volume Mount Point], 
-
-
-
--- Drive level latency information (Query 31) (Drive Level Latency)
-
-SELECT tab.[Drive], tab.volume_mount_point AS [Volume Mount Point], 
-
-	CASE 
-
-		WHEN num_of_reads = 0 THEN 0 
-
-		ELSE (io_stall_read_ms/num_of_reads) 
-
-	END AS [Read Latency],
-
-	CASE 
-
-		WHEN num_of_writes = 0 THEN 0 
-
-		ELSE (io_stall_write_ms/num_of_writes) 
-
-	END AS [Write Latency],
-
-	CASE 
-
-		WHEN (num_of_reads = 0 AND num_of_writes = 0) THEN 0 
-
-		ELSE (io_stall/(num_of_reads + num_of_writes)) 
-
-	END AS [Overall Latency],
-
-	CASE 
-
-		WHEN num_of_reads = 0 THEN 0 
-
-		ELSE (num_of_bytes_read/num_of_reads) 
-
-	END AS [Avg Bytes/Read],
-
-	CASE 
-
-		WHEN num_of_writes = 0 THEN 0 
-
-		ELSE (num_of_bytes_written/num_of_writes) 
-
-	END AS [Avg Bytes/Write],
-
-	CASE 
-
-		WHEN (num_of_reads = 0 AND num_of_writes = 0) THEN 0 
-
-		ELSE ((num_of_bytes_read + num_of_bytes_written)/(num_of_reads + num_of_writes)) 
-
-	END AS [Avg Bytes/Transfer]
-
-FROM (SELECT LEFT(UPPER(mf.physical_name), 2) AS Drive, SUM(num_of_reads) AS num_of_reads,
-
-	         SUM(io_stall_read_ms) AS io_stall_read_ms, SUM(num_of_writes) AS num_of_writes,
-
-	         SUM(io_stall_write_ms) AS io_stall_write_ms, SUM(num_of_bytes_read) AS num_of_bytes_read,
-
-	         SUM(num_of_bytes_written) AS num_of_bytes_written, SUM(io_stall) AS io_stall, vs.volume_mount_point 
-
-
-
+-- Query 3.1: Drive-level latency information
 -- Shows you the drive-level latency for reads and writes, in milliseconds
-
 -- Latency above 30-40ms is usually a problem
-
 -- These latency numbers include all file activity against all SQL Server 
-
 -- database files on each drive since SQL Server was last started
-
-
-
-
-
 -- sys.dm_io_virtual_file_stats (Transact-SQL)
-
 -- https://bit.ly/3bRWUc0
-
-
-
-
-
 -- sys.dm_os_volume_stats (Transact-SQL)
-
 -- https://bit.ly/33thz2j
+------
+SELECT 
+    tab.[Drive], 
+    tab.volume_mount_point AS [Volume Mount Point], 
+    CASE 
+        WHEN num_of_reads = 0 THEN 0 
+        ELSE (io_stall_read_ms/num_of_reads) 
+    END AS [Read Latency],
+    CASE 
+        WHEN num_of_writes = 0 THEN 0 
+        ELSE (io_stall_write_ms/num_of_writes) 
+    END AS [Write Latency],
+    CASE 
+        WHEN (num_of_reads = 0 AND num_of_writes = 0) THEN 0 
+        ELSE (io_stall/(num_of_reads + num_of_writes)) 
+    END AS [Overall Latency],
+    CASE 
+        WHEN num_of_reads = 0 THEN 0 
+        ELSE (num_of_bytes_read/num_of_reads) 
+    END AS [Avg Bytes/Read],
+    CASE 
+        WHEN num_of_writes = 0 THEN 0 
+        ELSE (num_of_bytes_written/num_of_writes) 
+    END AS [Avg Bytes/Write],
+    CASE 
+        WHEN (num_of_reads = 0 AND num_of_writes = 0) THEN 0 
+        ELSE ((num_of_bytes_read + num_of_bytes_written)/(num_of_reads + num_of_writes)) 
+    END AS [Avg Bytes/Transfer]
+FROM (
+    SELECT 
+        LEFT(UPPER(mf.physical_name), 2) AS Drive, 
+        SUM(num_of_reads) AS num_of_reads,
+        SUM(io_stall_read_ms) AS io_stall_read_ms, 
+        SUM(num_of_writes) AS num_of_writes,
+        SUM(io_stall_write_ms) AS io_stall_write_ms, 
+        SUM(num_of_bytes_read) AS num_of_bytes_read,
+        SUM(num_of_bytes_written) AS num_of_bytes_written, 
+        SUM(io_stall) AS io_stall, 
+        vs.volume_mount_point
+    FROM sys.dm_io_virtual_file_stats(NULL, NULL) AS vfs
+    INNER JOIN sys.master_files AS mf WITH (NOLOCK)
+        ON vfs.database_id = mf.database_id
+        AND vfs.[file_id] = mf.[file_id]
+    CROSS APPLY sys.dm_os_volume_stats(mf.database_id, mf.[file_id]) AS vs
+    GROUP BY LEFT(UPPER(mf.physical_name), 2), vs.volume_mount_point
+) AS tab
+ORDER BY tab.[Drive] OPTION (RECOMPILE);
+------
 
 
-
-
-
-
-
-
-
--- Calculates average latency per read, per write, and per total input/output for each database file  (Query 32) (IO Latency by File)
-
-SELECT DB_NAME(fs.database_id) AS [Database Name], CAST(fs.io_stall_read_ms/(1.0 + fs.num_of_reads) AS NUMERIC(10,1)) AS [avg_read_latency_ms],
-
-CAST(fs.io_stall_write_ms/(1.0 + fs.num_of_writes) AS NUMERIC(10,1)) AS [avg_write_latency_ms],
-
-CAST((fs.io_stall_read_ms + fs.io_stall_write_ms)/(1.0 + fs.num_of_reads + fs.num_of_writes) AS NUMERIC(10,1)) AS [avg_io_latency_ms],
-
-CONVERT(DECIMAL(18,2), mf.size/128.0) AS [File Size (MB)], mf.physical_name, mf.type_desc, fs.io_stall_read_ms, fs.num_of_reads, 
-
-fs.io_stall_write_ms, fs.num_of_writes, fs.io_stall_read_ms + fs.io_stall_write_ms AS [io_stalls], fs.num_of_reads + fs.num_of_writes AS [total_io],
-
-io_stall_queued_read_ms AS [Resource Governor Total Read IO Latency (ms)], io_stall_queued_write_ms AS [Resource Governor Total Write IO Latency (ms)] 
-
-FROM sys.dm_io_virtual_file_stats(null,null) AS fs
-
+-- Query 3.2: I/O latency by database file (Instance-wide)
+-- Calculates average latency per read, per write, and per total input/output for each database file
+-- Helps identify which specific database files have latency issues
+------
+SELECT 
+    DB_NAME(fs.database_id) AS [Database Name], 
+    CAST(fs.io_stall_read_ms/(1.0 + fs.num_of_reads) AS NUMERIC(10,1)) AS [avg_read_latency_ms],
+    CAST(fs.io_stall_write_ms/(1.0 + fs.num_of_writes) AS NUMERIC(10,1)) AS [avg_write_latency_ms],
+    CAST((fs.io_stall_read_ms + fs.io_stall_write_ms)/(1.0 + fs.num_of_reads + fs.num_of_writes) AS NUMERIC(10,1)) AS [avg_io_latency_ms],
+    CONVERT(DECIMAL(18,2), mf.size/128.0) AS [File Size (MB)], 
+    mf.physical_name, 
+    mf.type_desc, 
+    fs.io_stall_read_ms, 
+    fs.num_of_reads, 
+    fs.io_stall_write_ms, 
+    fs.num_of_writes, 
+    fs.io_stall_read_ms + fs.io_stall_write_ms AS [io_stalls], 
+    fs.num_of_reads + fs.num_of_writes AS [total_io],
+    io_stall_queued_read_ms AS [Resource Governor Total Read IO Latency (ms)], 
+    io_stall_queued_write_ms AS [Resource Governor Total Write IO Latency (ms)] 
+FROM sys.dm_io_virtual_file_stats(NULL, NULL) AS fs
 INNER JOIN sys.master_files AS mf WITH (NOLOCK)
-
-ON fs.database_id = mf.database_id
-
-AND fs.[file_id] = mf.[file_id]
-
+    ON fs.database_id = mf.database_id
+    AND fs.[file_id] = mf.[file_id]
 ORDER BY avg_io_latency_ms DESC OPTION (RECOMPILE);
-
 ------
 
 
-
-
-
--- Getting missing index information for all of the databases on the instance is very useful
-
--- Look at last user seek time, number of user seeks to help determine source and importance
-
--- Also look at avg_user_impact and avg_total_user_cost to help determine importance
-
--- SQL Server is overly eager to add included columns, so beware
-
--- Do not just blindly add indexes that show up from this query!!!
-
--- H�kan Winther has given me some great suggestions for this query
-
-
-
-
-
--- SQL Server Index Design Guide
-
--- https://bit.ly/2qtZr4N
-
-
-
-
-
-
-
-
-
-
-
-
-
--- Get VLF Counts for all databases on the instance (Query 37) (VLF Counts)
-
-SELECT [name] AS [Database Name], [VLF Count]
-
-FROM sys.databases AS db WITH (NOLOCK)
-
-CROSS APPLY (SELECT file_id, COUNT(*) AS [VLF Count]
-
-		     FROM sys.dm_db_log_info(db.database_id)
-
-			 GROUP BY file_id) AS li
-
-ORDER BY [VLF Count] DESC OPTION (RECOMPILE);
-
-------
-
-
-
-
-
-
-
--- sys.dm_exec_function_stats (Transact-SQL)
-
--- https://bit.ly/2q1Q6BM
-
-
-
-
-
--- Showplan Enhancements for UDFs
-
--- https://bit.ly/2LVqiQ1
-
-
-
-
-
-
-
-
-
-
-
-
-
--- Look for long duration buffer pool scans (Query 56) (Long Buffer Pool Scans)
-
-EXEC sys.xp_readerrorlog 0, 1, N'Buffer pool scan took';
-
-------
-
-
-
-
-
--- Finds buffer pool scans that took more than 10 seconds in the current SQL Server Error log
-
--- This should happen much less often in SQL Server 2022
-
-
-
--- I/O Statistics by file for the current database  (Query 61) (IO Stats By File)
-
-SELECT DB_NAME(DB_ID()) AS [Database Name], df.name AS [Logical Name], vfs.[file_id], df.type_desc,
-
-df.physical_name AS [Physical Name], CAST(vfs.size_on_disk_bytes/1048576.0 AS DECIMAL(15, 2)) AS [Size on Disk (MB)],
-
-vfs.num_of_reads, vfs.num_of_writes, vfs.io_stall_read_ms, vfs.io_stall_write_ms,
-
-CAST(100. * vfs.io_stall_read_ms/(vfs.io_stall_read_ms + vfs.io_stall_write_ms) AS DECIMAL(10,1)) AS [IO Stall Reads Pct],
-
-CAST(100. * vfs.io_stall_write_ms/(vfs.io_stall_write_ms + vfs.io_stall_read_ms) AS DECIMAL(10,1)) AS [IO Stall Writes Pct],
-
-(vfs.num_of_reads + vfs.num_of_writes) AS [Writes + Reads], 
-
-CAST(vfs.num_of_bytes_read/1048576.0 AS DECIMAL(15, 2)) AS [MB Read], 
-
-CAST(vfs.num_of_bytes_written/1048576.0 AS DECIMAL(15, 2)) AS [MB Written],
-
-CAST(100. * vfs.num_of_reads/(vfs.num_of_reads + vfs.num_of_writes) AS DECIMAL(15,1)) AS [# Reads Pct],
-
-CAST(100. * vfs.num_of_writes/(vfs.num_of_reads + vfs.num_of_writes) AS DECIMAL(15,1)) AS [# Write Pct],
-
-CAST(100. * vfs.num_of_bytes_read/(vfs.num_of_bytes_read + vfs.num_of_bytes_written) AS DECIMAL(15,1)) AS [Read Bytes Pct],
-
-CAST(100. * vfs.num_of_bytes_written/(vfs.num_of_bytes_read + vfs.num_of_bytes_written) AS DECIMAL(15,1)) AS [Written Bytes Pct]
-
-FROM sys.dm_io_virtual_file_stats(DB_ID(), NULL) AS vfs
-
-INNER JOIN sys.database_files AS df WITH (NOLOCK)
-
-ON vfs.[file_id]= df.[file_id] OPTION (RECOMPILE);
-
-------
-
-
-
-
-
+-----------------------------------------------------------------------
+-- SECTION 4: DATABASE FILE I/O STATISTICS
+-----------------------------------------------------------------------
+
+-- Query 4.1: I/O statistics by file for the current database
 -- This helps you characterize your workload better from an I/O perspective for this database
-
 -- It helps you determine whether you have an OLTP or DW/DSS type of workload
-
-
-
-
-
-
-
-
-
-
-
--- Get most frequently executed queries for this database (Query 62) (Query Execution Counts)
-
-SELECT TOP(50) LEFT(t.[text], 50) AS [Short Query Text], qs.execution_count AS [Execution Count],
-
-ISNULL(qs.execution_count/DATEDIFF(Minute, qs.creation_time, GETDATE()), 0) AS [Calls/Minute],
-
-qs.total_logical_reads AS [Total Logical Reads],
-
-qs.total_logical_reads/qs.execution_count AS [Avg Logical Reads],
-
-qs.total_worker_time AS [Total Worker Time],
-
-qs.total_worker_time/qs.execution_count AS [Avg Worker Time], 
-
-qs.total_elapsed_time AS [Total Elapsed Time],
-
-qs.total_elapsed_time/qs.execution_count AS [Avg Elapsed Time],
-
-CASE WHEN CONVERT(nvarchar(max), qp.query_plan) COLLATE Latin1_General_BIN2 LIKE N'%<MissingIndexes>%' THEN 1 ELSE 0 END AS [Has Missing Index], 
-
-qs.last_execution_time AS [Last Execution Time], qs.creation_time AS [Creation Time]
-
---,t.[text] AS [Complete Query Text], qp.query_plan AS [Query Plan] -- uncomment out these columns if not copying results to Excel
-
-FROM sys.dm_exec_query_stats AS qs WITH (NOLOCK)
-
-CROSS APPLY sys.dm_exec_sql_text(plan_handle) AS t 
-
-CROSS APPLY sys.dm_exec_query_plan(plan_handle) AS qp 
-
-WHERE t.dbid = DB_ID()
-
-AND DATEDIFF(Minute, qs.creation_time, GETDATE()) > 0
-
-ORDER BY qs.execution_count DESC OPTION (RECOMPILE);
-
 ------
-
-
-
-
-
--- Tells you which cached queries are called the most often
-
--- This helps you characterize and baseline your workload
-
--- It also helps you find possible caching opportunities
-
-
-
-
-
--- Tells you which cached stored procedures are called the most often
-
--- This helps you characterize and baseline your workload
-
--- It also helps you find possible caching opportunities
-
-
-
-
-
-
-
-
-
--- Top Cached SPs By Avg Elapsed Time (Query 64) (SP Avg Elapsed Time)
-
-SELECT TOP(25) CONCAT(SCHEMA_NAME(p.schema_id), '.', p.name) AS [SP Name], qs.min_elapsed_time, qs.total_elapsed_time/qs.execution_count AS [avg_elapsed_time], 
-
-qs.max_elapsed_time, qs.last_elapsed_time, qs.total_elapsed_time, qs.execution_count, 
-
-ISNULL(qs.execution_count/DATEDIFF(Minute, qs.cached_time, GETDATE()), 0) AS [Calls/Minute], 
-
-qs.total_worker_time/qs.execution_count AS [AvgWorkerTime], 
-
-qs.total_worker_time AS [TotalWorkerTime],
-
-CASE WHEN CONVERT(nvarchar(max), qp.query_plan) COLLATE Latin1_General_BIN2 LIKE N'%<MissingIndexes>%' THEN 1 ELSE 0 END AS [Has Missing Index],
-
-CONVERT(nvarchar(25), qs.last_execution_time, 20) AS [Last Execution Time],
+SELECT 
+    DB_NAME(DB_ID()) AS [Database Name], 
+    df.name AS [Logical Name], 
+    vfs.[file_id], 
+    df.type_desc,
+    df.physical_name AS [Physical Name], 
+    CAST(vfs.size_on_disk_bytes/1048576.0 AS DECIMAL(15, 2)) AS [Size on Disk (MB)],
+    vfs.num_of_reads, 
+    vfs.num_of_writes, 
+    vfs.io_stall_read_ms, 
+    vfs.io_stall_write_ms,
+    CAST(100. * vfs.io_stall_read_ms/(vfs.io_stall_read_ms + vfs.io_stall_write_ms) AS DECIMAL(10,1)) AS [IO Stall Reads Pct],
+    CAST(100. * vfs.io_stall_write_ms/(vfs.io_stall_write_ms + vfs.io_stall_read_ms) AS DECIMAL(10,1)) AS [IO Stall Writes Pct],
+    (vfs.num_of_reads + vfs.num_of_writes) AS [Writes + Reads], 
+    CAST(vfs.num_of_bytes_read/1048576.0 AS DECIMAL(15, 2)) AS [MB Read], 
+    CAST(vfs.num_of_bytes_written/1048576.0 AS DECIMAL(15, 2)) AS [MB Written],
+    CAST(100. * vfs.num_of_reads/(vfs.num_of_reads + vfs.num_of_writes) AS DECIMAL(15,1)) AS [# Reads Pct],
+    CAST(100. * vfs.num_of_writes/(vfs.num_of_reads + vfs.num_of_writes) AS DECIMAL(15,1)) AS [# Write Pct],
+    CAST(100. * vfs.num_of_bytes_read/(vfs.num_of_bytes_read + vfs.num_of_bytes_written) AS DECIMAL(15,1)) AS [Read Bytes Pct],
+    CAST(100. * vfs.num_of_bytes_written/(vfs.num_of_bytes_read + vfs.num_of_bytes_written) AS DECIMAL(15,1)) AS [Written Bytes Pct]
+FROM sys.dm_io_virtual_file_stats(DB_ID(), NULL) AS vfs
+INNER JOIN sys.database_files AS df WITH (NOLOCK)
+    ON vfs.[file_id]= df.[file_id] 
+OPTION (RECOMPILE);
+------

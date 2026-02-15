@@ -253,3 +253,18 @@ ORDER BY
 -- Cleanup
 DROP TABLE #IOStats1;
 */
+
+
+-----------------------------------------------------------------------
+-- 6. I/O WARNING DETECTION FROM ERROR LOG
+--    Look for I/O requests taking longer than 15 seconds in error logs.
+--    These warnings indicate severe storage performance issues that 
+--    are directly impacting the SQL Server instance.
+-----------------------------------------------------------------------
+DROP TABLE IF EXISTS #IOWarningResults;
+CREATE TABLE #IOWarningResults(LogDate datetime, ProcessInfo sysname, LogText nvarchar(1000));
+INSERT INTO #IOWarningResults
+EXEC xp_readerrorlog 0, 1, N'taking longer than 15 seconds';
+SELECT * FROM #IOWarningResults;
+DROP TABLE #IOWarningResults;
+GO
