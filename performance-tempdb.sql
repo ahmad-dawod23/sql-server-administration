@@ -262,7 +262,24 @@ GO
 
 
 
+/**********************************************************************************************/
+-- most use of tempdb - five executing tasks
+SELECT top 5 * FROM sys.dm_db_session_space_usage
+ORDER BY (user_objects_alloc_page_count + internal_objects_alloc_page_count) DESC
 
+/**********************************************************************************************/
+-- space in tempdb
+SELECT	
+			SD.name,
+			MF.database_id,
+			SUM( CONVERT(decimal(10,2),(DF.size/128.0)) ) as Size,  
+			SUM( CONVERT(decimal(10,2), (CAST(FILEPROPERTY(DF.name, 'SpaceUsed') AS INT)/128.0 ) ) ) AS UsedSpace
+	FROM sys.master_files MF JOIN sys.databases SD
+		ON SD.database_id = MF.database_id 
+	JOIN sys.database_files DF
+		ON DF.physical_name collate DATABASE_DEFAULT = MF.physical_name collate DATABASE_DEFAULT
+	WHERE MF.type = 0 
+	GROUP BY SD.name, MF.database_id
 
 
 

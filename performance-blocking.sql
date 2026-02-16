@@ -7,40 +7,46 @@
 -----------------------------------------------------------------------
 
 SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+GO
 
 -----------------------------------------------------------------------
--- 1. HEAD BLOCKER FINDER (Comprehensive)
---    Identifies the root session causing a blocking chain.
+-- SECTION 1: HEAD BLOCKER DETECTION
+-----------------------------------------------------------------------
+
+-----------------------------------------------------------------------
+-- 1.1 HEAD BLOCKER FINDER (Comprehensive)
+--     Identifies the root session causing a blocking chain.
+--     Shows detailed information about blockers and blocked sessions.
 -----------------------------------------------------------------------
 SELECT
-   [HeadBlocker] = 
+    [HeadBlocker] = 
         CASE 
-            -- session has an active request, is blocked, but is blocking others
+            -- Session has an active request, is blocked, but is blocking others
             -- or session is idle but has an open transaction and is blocking others 
             WHEN r2.session_id IS NOT NULL AND (r.blocking_session_id = 0 OR r.session_id IS NULL) THEN '1' 
-            -- session is either not blocking someone, or is blocking someone but is blocked by another party 
+            -- Session is either not blocking someone, or is blocking someone but is blocked by another party 
             ELSE '' 
         END, 
-   [SessionID] = s.session_id, 
-   [Login] = s.login_name,   
-   [Database] = DB_NAME(p.dbid), 
-   [BlockedBy] = w.blocking_session_id, 
-   [OpenTransactions] = r.open_transaction_count, 
-   [Status] = s.status, 
-   [WaitType] = w.wait_type, 
-   [WaitTime_ms] = w.wait_duration_ms, 
-   [WaitResource] = r.wait_resource, 
-   [WaitResourceDesc] = w.resource_description, 
-   [Command] = r.command, 
-   [Application] = s.program_name, 
-   [TotalCPU_ms] = s.cpu_time, 
-   [TotalPhysicalIO_MB] = (s.reads + s.writes) * 8 / 1024, 
-   [MemoryUse_KB] = s.memory_usage * 8192 / 1024, 
-   [LoginTime] = s.login_time, 
-   [LastRequestStartTime] = s.last_request_start_time, 
-   [HostName] = s.host_name,
-   [QueryHash] = r.query_hash, 
-   [BlockerQuery_or_MostRecentQuery] = txt.text
+    [SessionID] = s.session_id, 
+    [Login] = s.login_name,   
+    [Database] = DB_NAME(p.dbid), 
+    [BlockedBy] = w.blocking_session_id, 
+    [OpenTransactions] = r.open_transaction_count, 
+    [Status] = s.status, 
+    [WaitType] = w.wait_type, 
+    [WaitTime_ms] = w.wait_duration_ms, 
+    [WaitResource] = r.wait_resource, 
+    [WaitResourceDesc] = w.resource_description, 
+    [Command] = r.command, 
+    [Application] = s.program_name, 
+    [TotalCPU_ms] = s.cpu_time, 
+    [TotalPhysicalIO_MB] = (s.reads + s.writes) * 8 / 1024, 
+    [MemoryUse_KB] = s.memory_usage * 8192 / 1024, 
+    [LoginTime] = s.login_time, 
+    [LastRequestStartTime] = s.last_request_start_time, 
+    [HostName] = s.host_name,
+    [QueryHash] = r.query_hash, 
+    [BlockerQuery_or_MostRecentQuery] = txt.text
 FROM sys.dm_exec_sessions s 
     LEFT OUTER JOIN sys.dm_exec_connections c 
         ON s.session_id = c.session_id
@@ -49,7 +55,8 @@ FROM sys.dm_exec_sessions s
     LEFT OUTER JOIN sys.dm_os_tasks t 
         ON r.session_id = t.session_id AND r.request_id = t.request_id
     LEFT OUTER JOIN ( 
-        SELECT *, ROW_NUMBER() OVER (PARTITION BY waiting_task_address ORDER BY wait_duration_ms DESC) AS row_num 
+        SELECT *, 
+               ROW_NUMBER() OVER (PARTITION BY waiting_task_address ORDER BY wait_duration_ms DESC) AS row_num 
         FROM sys.dm_os_waiting_tasks 
     ) w 
         ON t.task_address = w.waiting_task_address AND w.row_num = 1
@@ -61,43 +68,72 @@ FROM sys.dm_exec_sessions s
 WHERE s.is_user_process = 1 
     AND ((r2.session_id IS NOT NULL AND (r.blocking_session_id = 0 OR r.session_id IS NULL)) OR p.blocked > 0)
 ORDER BY [HeadBlocker] DESC, s.session_id;
-GO 
------------------------------------------------------------------------
--- 2. DETECT BLOCKING (Simplified)
---    Shows lock details, wait time, blocker and waiter information.
---    Run multiple times to catch transient blocking.
------------------------------------------------------------------------
-SELECT 
-    t1.resource_type AS [lock type], 
-    DB_NAME(t1.resource_database_id) AS [database],
-    t1.resource_associated_entity_id AS [blk object],
-    t1.request_mode AS [lock req], -- lock requested
-    t1.request_session_id AS [waiter sid], -- spid of waiter
-    t2.wait_duration_ms AS [wait time],
-    (SELECT [text] 
-     FROM sys.dm_exec_requests AS r WITH (NOLOCK)
-         CROSS APPLY sys.dm_exec_sql_text(r.[sql_handle]) 
-     WHERE r.session_id = t1.request_session_id) AS [waiter_batch], -- get sql for waiter
-    (SELECT SUBSTRING(qt.[text], r.statement_start_offset/2, 
-        (CASE WHEN r.statement_end_offset = -1 
-         THEN LEN(CONVERT(NVARCHAR(MAX), qt.[text])) * 2 
-         ELSE r.statement_end_offset END - r.statement_start_offset)/2) 
-     FROM sys.dm_exec_requests AS r WITH (NOLOCK)
-         CROSS APPLY sys.dm_exec_sql_text(r.[sql_handle]) AS qt
-     WHERE r.session_id = t1.request_session_id) AS [waiter_stmt], -- statement blocked
-    t2.blocking_session_id AS [blocker sid], -- spid of blocker
-    (SELECT [text] 
-     FROM sys.sysprocesses AS p
-         CROSS APPLY sys.dm_exec_sql_text(p.[sql_handle]) 
-     WHERE p.spid = t2.blocking_session_id) AS [blocker_batch] -- get sql for blocker
-FROM sys.dm_tran_locks AS t1 WITH (NOLOCK)
-    INNER JOIN sys.dm_os_waiting_tasks AS t2 WITH (NOLOCK)
-        ON t1.lock_owner_address = t2.resource_address 
-OPTION (RECOMPILE);
 GO
+
 -----------------------------------------------------------------------
--- 3. BLOCKING HIERARCHY WITH CTE
---    Shows complete blocking chain from head blocker to all victims.
+-- 1.2 HEAD BLOCKER FINDER (Simple Method)
+--     Find sessions that are blocking others but not blocked themselves.
+--     Faster and simpler alternative to query 1.1.
+-----------------------------------------------------------------------
+SELECT DISTINCT 
+    blocking_session_id
+FROM sys.dm_exec_requests AS r
+WHERE NOT EXISTS (
+        SELECT 1 
+        FROM sys.dm_exec_requests r2
+        WHERE r.blocking_session_id = r2.session_id
+            AND r2.blocking_session_id > 0
+    )
+    AND r.blocking_session_id > 0;
+GO
+
+-----------------------------------------------------------------------
+-- 1.3 HEAD BLOCKER FINDER (Detailed Alternative)
+--     Find sessions that are blocking others but not blocked themselves.
+--     Includes detailed session and query information.
+-----------------------------------------------------------------------
+SELECT
+    r.session_id,
+    r.plan_handle,
+    r.sql_handle,
+    r.request_id,
+    r.start_time, 
+    r.status,
+    r.command, 
+    r.database_id,
+    r.user_id, 
+    r.wait_type,
+    r.wait_time,
+    r.last_wait_type,
+    r.wait_resource, 
+    r.total_elapsed_time,
+    r.cpu_time, 
+    r.transaction_isolation_level,
+    r.row_count,
+    st.text 
+FROM sys.dm_exec_requests r 
+    CROSS APPLY sys.dm_exec_sql_text(r.sql_handle) AS st  
+WHERE r.blocking_session_id = 0 
+    AND r.session_id IN (
+        SELECT DISTINCT blocking_session_id 
+        FROM sys.dm_exec_requests
+    ) 
+GROUP BY 
+    r.session_id, r.plan_handle, r.sql_handle, r.request_id, r.start_time, r.status,
+    r.command, r.database_id, r.user_id, r.wait_type, r.wait_time, r.last_wait_type,
+    r.wait_resource, r.total_elapsed_time, r.cpu_time, r.transaction_isolation_level,
+    r.row_count, st.text  
+ORDER BY r.total_elapsed_time DESC;
+GO
+
+-----------------------------------------------------------------------
+-- SECTION 2: BLOCKING CHAIN ANALYSIS
+-----------------------------------------------------------------------
+
+-----------------------------------------------------------------------
+-- 2.1 BLOCKING HIERARCHY WITH CTE
+--     Shows complete blocking chain from head blocker to all victims.
+--     Recursively identifies all levels of blocking.
 -----------------------------------------------------------------------
 WITH cteHead (session_id, request_id, wait_type, wait_resource, last_wait_type, 
     is_user_process, request_cpu_time, request_logical_reads, request_reads, 
@@ -164,9 +200,11 @@ AS (
         0 AS [Level]
     FROM cteHead AS head
     WHERE (head.blocking_session_id IS NULL OR head.blocking_session_id = 0)
-        AND head.session_id IN (SELECT DISTINCT blocking_session_id 
-                                FROM cteHead 
-                                WHERE blocking_session_id != 0)
+        AND head.session_id IN (
+            SELECT DISTINCT blocking_session_id 
+            FROM cteHead 
+            WHERE blocking_session_id != 0
+        )
     UNION ALL
     SELECT 
         h.head_blocker_session_id, 
@@ -184,7 +222,7 @@ AS (
     FROM cteHead AS blocked
         INNER JOIN cteBlockingHierarchy AS h 
             ON h.session_id = blocked.blocking_session_id 
-            AND h.session_id != blocked.session_id -- avoid infinite recursion for latch type of blocking
+            AND h.session_id != blocked.session_id -- Avoid infinite recursion for latch type of blocking
     WHERE h.wait_type COLLATE Latin1_General_BIN NOT IN ('EXCHANGE', 'CXPACKET') 
         OR h.wait_type IS NULL
 )
@@ -194,209 +232,180 @@ SELECT
 FROM cteBlockingHierarchy AS bh 
     OUTER APPLY sys.dm_exec_sql_text(ISNULL([sql_handle], most_recent_sql_handle)) AS txt;
 GO
+
 -----------------------------------------------------------------------
--- 3.1 IDENTIFY HEAD BLOCKERS (Alternative Method)
---    Find sessions that are blocking others but not blocked themselves.
+-- 2.2 VIEW BLOCKED PROCESSES
+--     Shows all blocked sessions with their status and wait information.
 -----------------------------------------------------------------------
-SELECT
-    r.session_id,
-    r.plan_handle,
-    r.sql_handle,
-    r.request_id,
-    r.start_time, 
-    r.status,
+SELECT 
+    r.session_id, 
+    r.status, 
+    r.blocking_session_id,
     r.command, 
-    r.database_id,
-    r.user_id, 
-    r.wait_type,
+    r.wait_type, 
     r.wait_time,
-    r.last_wait_type,
-    r.wait_resource, 
-    r.total_elapsed_time,
-    r.cpu_time, 
-    r.transaction_isolation_level,
-    r.row_count,
-    st.text 
-FROM sys.dm_exec_requests r 
-    CROSS APPLY sys.dm_exec_sql_text(r.sql_handle) AS st  
-WHERE r.blocking_session_id = 0 
-    AND r.session_id IN (SELECT DISTINCT blocking_session_id 
-                         FROM sys.dm_exec_requests) 
-GROUP BY 
-    r.session_id, r.plan_handle, r.sql_handle, r.request_id, r.start_time, r.status,
-    r.command, r.database_id, r.user_id, r.wait_type, r.wait_time, r.last_wait_type,
-    r.wait_resource, r.total_elapsed_time, r.cpu_time, r.transaction_isolation_level,
-    r.row_count, st.text  
-ORDER BY r.total_elapsed_time DESC;
+    t.text
+FROM sys.dm_exec_requests AS r
+    CROSS APPLY sys.dm_exec_sql_text(r.sql_handle) AS t 
+WHERE r.blocking_session_id > 0;
 GO
 
-
 -----------------------------------------------------------------------
--- 4. SNAPSHOT ISOLATION LEVEL ā ACTIVE TRANSACTIONS
---    Shows which sessions are using snapshot isolation and their
---    version chain traversal.
+-- 2.3 LOCK CONTENTION DETAILS
+--     Shows lock details, wait time, blocker and waiter information.
+--     Run multiple times to catch transient blocking.
 -----------------------------------------------------------------------
-SELECT
-    transaction_sequence_num,
-    commit_sequence_num,
-    is_snapshot,
-    t.session_id,
-    first_snapshot_sequence_num,
-    max_version_chain_traversed,
-    elapsed_time_seconds,
-    host_name,
-    login_name,
-    CASE transaction_isolation_level
-        WHEN '0' THEN 'Unspecified'
-        WHEN '1' THEN 'ReadUncommitted'
-        WHEN '2' THEN 'ReadCommitted'
-        WHEN '3' THEN 'Repeatable'
-        WHEN '4' THEN 'Serializable'
-        WHEN '5' THEN 'Snapshot'
-    END                          AS transaction_isolation_level
-FROM sys.dm_tran_active_snapshot_database_transactions t
-    JOIN sys.dm_exec_sessions s
-        ON t.session_id = s.session_id
-ORDER BY elapsed_time_seconds DESC;
-
------------------------------------------------------------------------
--- 5. ACTIVE OPEN TRANSACTIONS
---    Find sessions with uncommitted transactions (potential blocking).
------------------------------------------------------------------------
-SELECT
-    SP.SPID,
-    SP.open_tran AS OpenTransactions,
-    SP.status,
-    SP.cmd,
-    SP.waittype,
-    SP.waittime,
-    SP.blocked,
-    DEST.[text] AS SQLCode
-FROM sys.sysprocesses SP
-    CROSS APPLY sys.dm_exec_sql_text(SP.[SQL_HANDLE]) AS DEST
-WHERE SP.open_tran >= 1
-ORDER BY SP.open_tran DESC, SP.waittime DESC;
-GO
------------------------------------------------------------------------
--- 6. TOP WAITS FOR SERVER INSTANCE
---    Isolate top waits since last restart or wait statistics clear.
---    Helps identify if blocking is the primary bottleneck or if
---    other issues (I/O, CPU, memory) are contributing.
------------------------------------------------------------------------
-WITH [Waits] 
-AS (
-    SELECT 
-        wait_type, 
-        wait_time_ms / 1000.0 AS [WaitS],
-        (wait_time_ms - signal_wait_time_ms) / 1000.0 AS [ResourceS],
-        signal_wait_time_ms / 1000.0 AS [SignalS],
-        waiting_tasks_count AS [WaitCount],
-        100.0 * wait_time_ms / SUM(wait_time_ms) OVER() AS [Percentage],
-        ROW_NUMBER() OVER(ORDER BY wait_time_ms DESC) AS [RowNum]
-    FROM sys.dm_os_wait_stats WITH (NOLOCK)
-    WHERE [wait_type] NOT IN (
-        N'AZURE_IMDS_VERSIONS',
-        N'BROKER_EVENTHANDLER', N'BROKER_RECEIVE_WAITFOR', N'BROKER_TASK_STOP',
-        N'BROKER_TO_FLUSH', N'BROKER_TRANSMITTER', N'CHECKPOINT_QUEUE',
-        N'CHKPT', N'CLR_AUTO_EVENT', N'CLR_MANUAL_EVENT', N'CLR_SEMAPHORE', N'CXCONSUMER',
-        N'DBMIRROR_DBM_EVENT', N'DBMIRROR_EVENTS_QUEUE', N'DBMIRROR_WORKER_QUEUE',
-        N'DBMIRRORING_CMD', N'DIRTY_PAGE_POLL', N'DISPATCHER_QUEUE_SEMAPHORE',
-        N'EXECSYNC', N'FSAGENT', N'FT_IFTS_SCHEDULER_IDLE_WAIT', N'FT_IFTSHC_MUTEX',
-        N'HADR_CLUSAPI_CALL', N'HADR_FILESTREAM_IOMGR_IOCOMPLETION', N'HADR_LOGCAPTURE_WAIT', 
-        N'HADR_NOTIFICATION_DEQUEUE', N'HADR_TIMER_TASK', N'HADR_WORK_QUEUE',
-        N'KSOURCE_WAKEUP', N'LAZYWRITER_SLEEP', N'LOGMGR_QUEUE', 
-        N'MEMORY_ALLOCATION_EXT', N'ONDEMAND_TASK_QUEUE',
-        N'PARALLEL_REDO_DRAIN_WORKER', N'PARALLEL_REDO_LOG_CACHE', N'PARALLEL_REDO_TRAN_LIST',
-        N'PARALLEL_REDO_WORKER_SYNC', N'PARALLEL_REDO_WORKER_WAIT_WORK',
-        N'PREEMPTIVE_HADR_LEASE_MECHANISM', N'PREEMPTIVE_SP_SERVER_DIAGNOSTICS',
-        N'PREEMPTIVE_OS_LIBRARYOPS', N'PREEMPTIVE_OS_COMOPS', N'PREEMPTIVE_OS_CRYPTOPS',
-        N'PREEMPTIVE_OS_PIPEOPS', N'PREEMPTIVE_OS_AUTHENTICATIONOPS',
-        N'PREEMPTIVE_OS_GENERICOPS', N'PREEMPTIVE_OS_VERIFYTRUST',
-        N'PREEMPTIVE_OS_DELETESECURITYCONTEXT', N'PREEMPTIVE_OS_REPORTEVENT',
-        N'PREEMPTIVE_OS_FILEOPS', N'PREEMPTIVE_OS_DEVICEOPS', N'PREEMPTIVE_OS_QUERYREGISTRY',
-        N'PREEMPTIVE_OS_WRITEFILE', N'PREEMPTIVE_OS_WRITEFILEGATHER',
-        N'PREEMPTIVE_XE_CALLBACKEXECUTE', N'PREEMPTIVE_XE_DISPATCHER',
-        N'PREEMPTIVE_XE_GETTARGETSTATE', N'PREEMPTIVE_XE_SESSIONCOMMIT',
-        N'PREEMPTIVE_XE_TARGETINIT', N'PREEMPTIVE_XE_TARGETFINALIZE',
-        N'POPULATE_LOCK_ORDINALS',
-        N'PWAIT_ALL_COMPONENTS_INITIALIZED', N'PWAIT_DIRECTLOGCONSUMER_GETNEXT',
-        N'PWAIT_EXTENSIBILITY_CLEANUP_TASK',
-        N'QDS_PERSIST_TASK_MAIN_LOOP_SLEEP', N'QDS_ASYNC_QUEUE',
-        N'QDS_CLEANUP_STALE_QUERIES_TASK_MAIN_LOOP_SLEEP', N'REQUEST_FOR_DEADLOCK_SEARCH',
-        N'RESOURCE_QUEUE', N'SERVER_IDLE_CHECK', N'SLEEP_BPOOL_FLUSH', N'SLEEP_DBSTARTUP',
-        N'SLEEP_DCOMSTARTUP', N'SLEEP_MASTERDBREADY', N'SLEEP_MASTERMDREADY',
-        N'SLEEP_MASTERUPGRADED', N'SLEEP_MSDBSTARTUP', N'SLEEP_SYSTEMTASK', N'SLEEP_TASK',
-        N'SLEEP_TEMPDBSTARTUP', N'SNI_HTTP_ACCEPT', N'SOS_WORK_DISPATCHER',
-        N'SP_SERVER_DIAGNOSTICS_SLEEP', N'SOS_WORKER_MIGRATION', N'VDI_CLIENT_OTHER',
-        N'SQLTRACE_BUFFER_FLUSH', N'SQLTRACE_INCREMENTAL_FLUSH_SLEEP', N'SQLTRACE_WAIT_ENTRIES',
-        N'STARTUP_DEPENDENCY_MANAGER',
-        N'WAIT_FOR_RESULTS', N'WAITFOR', N'WAITFOR_TASKSHUTDOWN', N'WAIT_XTP_HOST_WAIT',
-        N'WAIT_XTP_OFFLINE_CKPT_NEW_LOG', N'WAIT_XTP_CKPT_CLOSE', N'WAIT_XTP_RECOVERY',
-        N'XE_BUFFERMGR_ALLPROCESSED_EVENT', N'XE_DISPATCHER_JOIN',
-        N'XE_DISPATCHER_WAIT', N'XE_LIVE_TARGET_TVF', N'XE_TIMER_EVENT'
-    )
-    AND waiting_tasks_count > 0
-)
-SELECT
-    MAX(W1.wait_type) AS [WaitType],
-    CAST(MAX(W1.Percentage) AS DECIMAL(5,2)) AS [Wait Percentage],
-    CAST((MAX(W1.WaitS) / MAX(W1.WaitCount)) AS DECIMAL(16,4)) AS [AvgWait_Sec],
-    CAST((MAX(W1.ResourceS) / MAX(W1.WaitCount)) AS DECIMAL(16,4)) AS [AvgRes_Sec],
-    CAST((MAX(W1.SignalS) / MAX(W1.WaitCount)) AS DECIMAL(16,4)) AS [AvgSig_Sec], 
-    CAST(MAX(W1.WaitS) AS DECIMAL(16,2)) AS [Wait_Sec],
-    CAST(MAX(W1.ResourceS) AS DECIMAL(16,2)) AS [Resource_Sec],
-    CAST(MAX(W1.SignalS) AS DECIMAL(16,2)) AS [Signal_Sec],
-    MAX(W1.WaitCount) AS [Wait Count],
-    CAST(N'https://www.sqlskills.com/help/waits/' + W1.wait_type AS XML) AS [Help/Info URL]
-FROM Waits AS W1
-    INNER JOIN Waits AS W2
-        ON W2.RowNum <= W1.RowNum
-GROUP BY W1.RowNum, W1.wait_type
-HAVING SUM(W2.Percentage) - MAX(W1.Percentage) < 99 -- percentage threshold
+SELECT 
+    t1.resource_type AS [lock_type], 
+    DB_NAME(t1.resource_database_id) AS [database],
+    t1.resource_associated_entity_id AS [blocked_object],
+    t1.request_mode AS [lock_requested], 
+    t1.request_session_id AS [waiter_session_id], 
+    t2.wait_duration_ms AS [wait_time_ms],
+    (SELECT [text] 
+     FROM sys.dm_exec_requests AS r WITH (NOLOCK)
+         CROSS APPLY sys.dm_exec_sql_text(r.[sql_handle]) 
+     WHERE r.session_id = t1.request_session_id) AS [waiter_batch],
+    (SELECT SUBSTRING(qt.[text], r.statement_start_offset/2, 
+        (CASE WHEN r.statement_end_offset = -1 
+         THEN LEN(CONVERT(NVARCHAR(MAX), qt.[text])) * 2 
+         ELSE r.statement_end_offset END - r.statement_start_offset)/2) 
+     FROM sys.dm_exec_requests AS r WITH (NOLOCK)
+         CROSS APPLY sys.dm_exec_sql_text(r.[sql_handle]) AS qt
+     WHERE r.session_id = t1.request_session_id) AS [waiter_statement],
+    t2.blocking_session_id AS [blocker_session_id],
+    (SELECT [text] 
+     FROM sys.sysprocesses AS p
+         CROSS APPLY sys.dm_exec_sql_text(p.[sql_handle]) 
+     WHERE p.spid = t2.blocking_session_id) AS [blocker_batch]
+FROM sys.dm_tran_locks AS t1 WITH (NOLOCK)
+    INNER JOIN sys.dm_os_waiting_tasks AS t2 WITH (NOLOCK)
+        ON t1.lock_owner_address = t2.resource_address 
 OPTION (RECOMPILE);
 GO
 
+-----------------------------------------------------------------------
+-- SECTION 3: SESSION ANALYSIS
+-----------------------------------------------------------------------
 
-/**********************************************************************************************/
--- Analyze all current executing requests inside SQL Server
-select
-	r.command,
-	r.plan_handle,
-	r.wait_type,
-	r.wait_resource,
-	r.wait_time,
-	r.session_id,
-	r.blocking_session_id
-from sys.dm_exec_requests r
-join sys.dm_exec_sessions s on s.session_id = r.session_id
-where s.is_user_process = 1
+-----------------------------------------------------------------------
+-- 3.1 HEAD BLOCKER SESSION DETAILS
+--     Analyze session information for a specific blocker.
+--     Replace @SessionID with the actual session ID from previous queries.
+-----------------------------------------------------------------------
+DECLARE @SessionID INT = NULL; -- Replace with actual session_id
 
-/**********************************************************************************************/
--- Analyze all requests which are currently waiting for a free worker thread
-select * from sys.dm_os_waiting_tasks
-where wait_type = 'THREADPOOL'
+SELECT
+    session_id,
+    login_time,
+    [host_name],
+    [program_name],
+    login_name,
+    [status],
+    last_request_start_time,
+    last_request_end_time
+FROM sys.dm_exec_sessions
+WHERE session_id = @SessionID;
+GO
 
-/**********************************************************************************************/
--- Analyze the head blocker session
-select
-	login_time,
-	[host_name],
-	[program_name],
-	login_name
-from sys.dm_exec_sessions
-where session_id = 54
+-----------------------------------------------------------------------
+-- 3.2 HEAD BLOCKER CONNECTION DETAILS
+--     Analyze connection information for a specific blocker.
+--     Replace @SessionID with the actual session ID from previous queries.
+-----------------------------------------------------------------------
+DECLARE @SessionID INT = NULL; -- Replace with actual session_id
 
-/**********************************************************************************************/
--- Analyze the head blocker connection
 SELECT 
-	connect_time,
-	client_tcp_port,
-	most_recent_sql_handle
+    session_id,
+    connect_time,
+    client_net_address,
+    client_tcp_port,
+    most_recent_sql_handle
 FROM sys.dm_exec_connections
-WHERE session_id = 54
+WHERE session_id = @SessionID;
+GO
 
-/**********************************************************************************************/
--- Retrieve the SQL statement
-SELECT [text] from sys.dm_exec_sql_text(0x0100040064540D33C01210077E02000000000000000000000000000000000000000000000000000000000000)
+-----------------------------------------------------------------------
+-- 3.3 RETRIEVE SQL TEXT BY SQL HANDLE
+--     Get the SQL text for a specific sql_handle.
+--     Replace @SqlHandle with the actual handle from previous queries.
+-----------------------------------------------------------------------
+DECLARE @SqlHandle VARBINARY(64) = NULL; -- Replace with actual sql_handle
+
+SELECT [text] 
+FROM sys.dm_exec_sql_text(@SqlHandle);
+GO
+
+-----------------------------------------------------------------------
+-- 3.4 HEAD BLOCKER QUERY TEXT
+--     Find the code being executed by the head of the blocking chain.
+--     Combines head blocker detection with query text retrieval.
+-----------------------------------------------------------------------
+SELECT 
+    c.session_id,
+    t.text AS [query_text]
+FROM sys.dm_exec_connections AS c
+    CROSS APPLY sys.dm_exec_sql_text(c.most_recent_sql_handle) AS t 
+WHERE c.session_id = (
+    SELECT DISTINCT blocking_session_id
+    FROM sys.dm_exec_requests AS r
+    WHERE NOT EXISTS (
+            SELECT 1 
+            FROM sys.dm_exec_requests r2
+            WHERE r.blocking_session_id = r2.session_id
+                AND r2.blocking_session_id > 0
+        )
+        AND r.blocking_session_id > 0
+);
+GO
+
+-----------------------------------------------------------------------
+-- SECTION 4: SYSTEM-WIDE ANALYSIS
+-----------------------------------------------------------------------
+
+-----------------------------------------------------------------------
+-- 4.1 LONG RUNNING PROCESSES
+--     Identify long-running active sessions that may be causing issues.
+-----------------------------------------------------------------------
+SELECT
+    p.spid,
+    RIGHT(CONVERT(VARCHAR, 
+        DATEADD(ms, DATEDIFF(ms, p.last_batch, GETDATE()), '1900-01-01'), 
+        121), 12) AS batch_duration,
+    p.program_name,
+    p.hostname,
+    p.loginame,
+    p.status,
+    p.cmd,
+    p.blocked,
+    p.open_tran
+FROM master.dbo.sysprocesses p
+WHERE p.spid > 50
+    AND p.status NOT IN ('background', 'sleeping')
+    AND p.cmd NOT IN (
+        'AWAITING COMMAND',
+        'MIRROR HANDLER',
+        'LAZY WRITER',
+        'CHECKPOINT SLEEP',
+        'RA MANAGER'
+    )
+ORDER BY batch_duration DESC;
+GO
+
+-----------------------------------------------------------------------
+-- 4.2 THREADPOOL WAITS
+--     Analyze all requests currently waiting for a free worker thread.
+--     High numbers indicate thread starvation.
+-----------------------------------------------------------------------
+SELECT 
+    session_id,
+    wait_duration_ms,
+    wait_type,
+    blocking_session_id,
+    resource_description
+FROM sys.dm_os_waiting_tasks
+WHERE wait_type = 'THREADPOOL'
+ORDER BY wait_duration_ms DESC;
+GO
 
 

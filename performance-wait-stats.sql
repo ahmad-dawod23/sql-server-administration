@@ -41,11 +41,13 @@ WITH WaitStats AS (
     FROM sys.dm_os_wait_stats
     WHERE wait_type NOT IN (
         -- Filter out benign/idle waits
+        N'AZURE_IMDS_VERSIONS',
         N'BROKER_EVENTHANDLER',        N'BROKER_RECEIVE_WAITFOR',
         N'BROKER_TASK_STOP',           N'BROKER_TO_FLUSH',
         N'BROKER_TRANSMITTER',         N'CHECKPOINT_QUEUE',
         N'CHKPT',                      N'CLR_AUTO_EVENT',
         N'CLR_MANUAL_EVENT',           N'CLR_SEMAPHORE',
+        N'CXCONSUMER',
         N'DBMIRROR_DBM_EVENT',         N'DBMIRROR_EVENTS_QUEUE',
         N'DBMIRROR_WORKER_QUEUE',      N'DBMIRRORING_CMD',
         N'DIRTY_PAGE_POLL',            N'DISPATCHER_QUEUE_SEMAPHORE',
@@ -59,10 +61,21 @@ WITH WaitStats AS (
         N'ONDEMAND_TASK_QUEUE',        N'PARALLEL_REDO_DRAIN_WORKER',
         N'PARALLEL_REDO_LOG_CACHE',    N'PARALLEL_REDO_TRAN_LIST',
         N'PARALLEL_REDO_WORKER_SYNC',  N'PARALLEL_REDO_WORKER_WAIT_WORK',
+        N'POPULATE_LOCK_ORDINALS',
+        N'PREEMPTIVE_HADR_LEASE_MECHANISM', N'PREEMPTIVE_SP_SERVER_DIAGNOSTICS',
+        N'PREEMPTIVE_OS_LIBRARYOPS', N'PREEMPTIVE_OS_COMOPS', N'PREEMPTIVE_OS_CRYPTOPS',
+        N'PREEMPTIVE_OS_PIPEOPS', N'PREEMPTIVE_OS_AUTHENTICATIONOPS',
+        N'PREEMPTIVE_OS_GENERICOPS', N'PREEMPTIVE_OS_VERIFYTRUST',
+        N'PREEMPTIVE_OS_DELETESECURITYCONTEXT', N'PREEMPTIVE_OS_REPORTEVENT',
+        N'PREEMPTIVE_OS_FILEOPS', N'PREEMPTIVE_OS_DEVICEOPS', N'PREEMPTIVE_OS_QUERYREGISTRY',
+        N'PREEMPTIVE_OS_WRITEFILE', N'PREEMPTIVE_OS_WRITEFILEGATHER',
         N'PREEMPTIVE_OS_FLUSHFILEBUFFERS',
-        N'PREEMPTIVE_XE_GETTARGETSTATE',
+        N'PREEMPTIVE_XE_CALLBACKEXECUTE', N'PREEMPTIVE_XE_DISPATCHER',
+        N'PREEMPTIVE_XE_GETTARGETSTATE', N'PREEMPTIVE_XE_SESSIONCOMMIT',
+        N'PREEMPTIVE_XE_TARGETINIT', N'PREEMPTIVE_XE_TARGETFINALIZE',
         N'PVS_PREALLOCATE',           N'PWAIT_ALL_COMPONENTS_INITIALIZED',
         N'PWAIT_DIRECTLOGCONSUMER_GETNEXT',
+        N'PWAIT_EXTENSIBILITY_CLEANUP_TASK',
         N'QDS_PERSIST_TASK_MAIN_LOOP_SLEEP',
         N'QDS_ASYNC_QUEUE',
         N'QDS_CLEANUP_STALE_QUERIES_TASK_MAIN_LOOP_SLEEP',
@@ -75,9 +88,11 @@ WITH WaitStats AS (
         N'SLEEP_MSDBSTARTUP',          N'SLEEP_SYSTEMTASK',
         N'SLEEP_TASK',                 N'SLEEP_TEMPDBSTARTUP',
         N'SNI_HTTP_ACCEPT',            N'SOS_WORK_DISPATCHER',
+        N'SOS_WORKER_MIGRATION',       N'VDI_CLIENT_OTHER',
         N'SP_SERVER_DIAGNOSTICS_SLEEP',N'SQLTRACE_BUFFER_FLUSH',
         N'SQLTRACE_INCREMENTAL_FLUSH_SLEEP',
-        N'SQLTRACE_WAIT_ENTRIES',      N'VDI_CLIENT_OTHER',
+        N'SQLTRACE_WAIT_ENTRIES',
+        N'STARTUP_DEPENDENCY_MANAGER',
         N'WAIT_FOR_RESULTS',           N'WAITFOR',
         N'WAITFOR_TASKSHUTDOWN',       N'WAIT_XTP_CKPT_CLOSE',
         N'WAIT_XTP_HOST_WAIT',         N'WAIT_XTP_OFFLINE_CKPT_NEW_LOG',
@@ -89,12 +104,13 @@ WITH WaitStats AS (
 )
 SELECT
     MAX(W1.wait_type)                                       AS WaitType,
+    CAST(MAX(W1.WaitPct) AS DECIMAL(5,2))                   AS WaitPct,
+    CAST(SUM(W2.WaitPct) AS DECIMAL(5,2))                   AS RunningPct,
     CAST(MAX(W1.TotalWaitMs) / 1000.0 AS DECIMAL(16,2))    AS TotalWaitSec,
     CAST(MAX(W1.ResourceWaitMs) / 1000.0 AS DECIMAL(16,2)) AS ResourceWaitSec,
     CAST(MAX(W1.SignalWaitMs) / 1000.0 AS DECIMAL(16,2))   AS SignalWaitSec,
     MAX(W1.WaitCount)                                       AS WaitCount,
-    CAST(MAX(W1.WaitPct) AS DECIMAL(5,2))                   AS WaitPct,
-    CAST(SUM(W2.WaitPct) AS DECIMAL(5,2))                   AS RunningPct,
+    CAST((MAX(W1.TotalWaitMs) / MAX(W1.WaitCount)) AS DECIMAL(16,4)) AS AvgWaitMs,
     -- Guidance: what does this wait type usually indicate?
     CASE MAX(W1.wait_type)
         WHEN N'CXPACKET'             THEN 'Parallelism — review MAXDOP and Cost Threshold for Parallelism'
@@ -123,7 +139,8 @@ SELECT
         WHEN N'TRACEWRITE'           THEN 'Trace/XE write bottleneck'
         WHEN N'PREEMPTIVE_OS_PIPEOPS' THEN 'Named pipe operations — check connectivity'
         ELSE N''
-    END                                                      AS Recommendation
+    END                                                      AS Recommendation,
+    CAST(N'https://www.sqlskills.com/help/waits/' + MAX(W1.wait_type) AS XML) AS [Help/Info URL]
 FROM WaitStats AS W1
 INNER JOIN WaitStats AS W2
     ON W2.RowNum <= W1.RowNum
@@ -383,3 +400,5 @@ OPTION (RECOMPILE);
     │ HADR_TRANSPORT_SESSION   │ AG transport layer communication            │
     └─────────────────────────┴──────────────────────────────────────────────┘
 */
+
+
