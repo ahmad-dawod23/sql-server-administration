@@ -73,8 +73,7 @@ Start here
 ### other scripts/
 
 - 00-triage.sql — **Start here for incidents** (first-response triage)
-- Administration commands V2.0.sql
-- gemini administration tests.sql
+- blocking-and-deadlock-simulations.sql
 - PerfMonitor-tables-sql-agent-scripts.sql
 - PerfMonitor-tables-views.sql
 - PMC-SQLPerfMonitor-Capture and Analysis Script.sql
@@ -89,6 +88,7 @@ Start here
 - SQLNA.exe
 - SQLNAUI.exe
 - SSPIClient.exe
+- IISCrypto.exe
 
 ## Usage notes
 
