@@ -442,3 +442,152 @@ WHERE [object_name] LIKE '%Deprecated Features%'
   AND cntr_value > 0
 ORDER BY cntr_value DESC;
 
+-----------------------------------------------------------------------
+-- SECTION 7: DATABASE USAGE & MONITORING
+-----------------------------------------------------------------------
+
+-----------------------------------------------------------------------
+-- 7.1 IDENTIFY UNUSED DATABASES SINCE LAST RESTART
+--     Shows databases with no user activity since SQL Server started.
+--     Useful for identifying candidates for archival or decommission.
+-----------------------------------------------------------------------
+SELECT 
+    [name] AS UnusedDatabase
+FROM sys.databases 
+WHERE database_id > 4
+  AND [name] NOT IN (
+      SELECT DB_NAME(database_id) 
+      FROM sys.dm_db_index_usage_stats
+      WHERE COALESCE(last_user_seek, last_user_scan, last_user_lookup, '1/1/1970') > 
+            (SELECT login_time FROM sysprocesses WHERE spid = 1)
+  );
+
+-----------------------------------------------------------------------
+-- SECTION 8: CONFIGURATION CHANGES
+--            *** THESE COMMANDS MODIFY SYSTEM SETTINGS ***
+-----------------------------------------------------------------------
+
+-----------------------------------------------------------------------
+-- 8.1 ENABLE ADVANCED OPTIONS
+--     Required before changing advanced configuration options.
+-----------------------------------------------------------------------
+USE master;
+GO
+EXEC sp_configure 'show advanced option', '1';
+GO
+RECONFIGURE;
+GO
+
+-----------------------------------------------------------------------
+-- 8.2 ADJUST MEMORY ALLOCATION AND MAXDOP
+--     Example: Set max server memory to 12 GB and MAXDOP to 4.
+--     Adjust values based on your server specifications.
+-----------------------------------------------------------------------
+-- EXEC sp_configure 'max server memory', 12288;
+-- GO
+-- EXEC sp_configure 'max degree of parallelism', 4;
+-- GO
+-- RECONFIGURE;
+-- GO
+
+/*******************************************************************************
+ * SECTION 9: DANGEROUS OPERATIONS
+ * 
+ * *** EXTREME CAUTION REQUIRED ***
+ * 
+ * The following queries generate DROP, OFFLINE, DETACH, and DELETE commands
+ * that can cause permanent data loss or service disruption.
+ * 
+ * SAFETY MEASURES:
+ * - All destructive queries are commented out by default
+ * - Review generated scripts carefully before executing
+ * - Always have verified backups before proceeding
+ * - Test in non-production environment first
+ * - Consider impact on applications and users
+ ******************************************************************************/
+
+-----------------------------------------------------------------------
+-- 9.1 GENERATE DROP STATEMENTS FOR ALL USER FUNCTIONS
+--     WARNING: This will DELETE all user-defined functions!
+-----------------------------------------------------------------------
+/*
+SELECT 'DROP FUNCTION [' + SCHEMA_NAME(o.schema_id) + '].[' + o.name + '];'
+FROM sys.sql_modules m 
+INNER JOIN sys.objects o ON m.object_id = o.object_id
+WHERE type_desc LIKE '%function%'
+ORDER BY SCHEMA_NAME(o.schema_id), o.name;
+*/
+
+-----------------------------------------------------------------------
+-- 9.2 GENERATE DROP STATEMENTS FOR ALL USER STORED PROCEDURES
+--     WARNING: This will DELETE all user-defined stored procedures!
+-----------------------------------------------------------------------
+/*
+SELECT 'DROP PROCEDURE [' + SCHEMA_NAME(p.schema_id) + '].[' + p.NAME + '];'
+FROM sys.procedures p
+WHERE is_ms_shipped = 0
+ORDER BY SCHEMA_NAME(p.schema_id), p.NAME;
+*/
+
+-----------------------------------------------------------------------
+-- 9.3 ALTERNATIVE: DROP FUNCTIONS (DIFFERENT METHOD)
+-----------------------------------------------------------------------
+/*
+SELECT 'DROP FUNCTION [' + SCHEMA_NAME(o.schema_id) + '].[' + o.NAME + '];'
+FROM sys.objects o 
+WHERE type IN ('FN', 'IF', 'TF')  -- Scalar, Inline, Table-Valued
+  AND is_ms_shipped = 0
+ORDER BY SCHEMA_NAME(o.schema_id), o.NAME;
+*/
+
+-----------------------------------------------------------------------
+-- 9.4 GENERATE OFFLINE COMMANDS FOR ALL USER DATABASES
+--     WARNING: This will take databases OFFLINE (service disruption)!
+-----------------------------------------------------------------------
+/*
+SELECT 
+    'USE [master];' + CHAR(13) + CHAR(10) +
+    'ALTER DATABASE [' + name + '] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;' + CHAR(13) + CHAR(10) +
+    'ALTER DATABASE [' + name + '] SET OFFLINE WITH ROLLBACK IMMEDIATE;' + CHAR(13) + CHAR(10)
+FROM sys.databases 
+WHERE name NOT IN ('master', 'model', 'msdb', 'tempdb', 'distribution')
+  AND database_id > 4
+ORDER BY name;
+*/
+
+-----------------------------------------------------------------------
+-- 9.5 GENERATE DETACH COMMANDS FOR ALL USER DATABASES
+--     WARNING: This will DETACH databases (removes from instance)!
+-----------------------------------------------------------------------
+/*
+SELECT 
+    'USE [master];' + CHAR(13) + CHAR(10) +
+    'ALTER DATABASE [' + name + '] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;' + CHAR(13) + CHAR(10) +
+    'EXEC master.dbo.sp_detach_db @dbname = N''' + name + ''';' + CHAR(13) + CHAR(10)
+FROM sys.databases 
+WHERE name NOT IN ('master', 'model', 'msdb', 'tempdb', 'distribution')
+  AND database_id > 4
+ORDER BY name;
+*/
+
+-----------------------------------------------------------------------
+-- 9.6 DROP ALL NON-SYSTEM DATABASE USERS
+--     WARNING: This will REMOVE all user access from the database!
+-----------------------------------------------------------------------
+/*
+DECLARE @sql NVARCHAR(MAX) = '';
+
+SELECT @sql = @sql +
+    'PRINT ''Dropping user: ' + name + ''';' + CHAR(13) + CHAR(10) +
+    'DROP USER [' + name + '];' + CHAR(13) + CHAR(10)
+FROM sys.database_principals
+WHERE name NOT IN ('dbo', 'guest', 'INFORMATION_SCHEMA', 'sys', 'public')
+  AND type <> 'R'  -- Exclude roles
+ORDER BY name;
+
+-- Uncomment to execute:
+-- EXEC sp_executesql @sql;
+
+-- To review the generated script:
+PRINT @sql;
+*/
