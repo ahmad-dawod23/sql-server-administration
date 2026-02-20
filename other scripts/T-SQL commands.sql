@@ -39,7 +39,7 @@ select num from example_table where substring(num,3,6)='222222'
 --Returns the starting position of the specified expression in a character string. Start_Location parameter is optional.
 Select CHARINDEX('@','sara@aaa.com',1)
 ---replace: its used to replace a portion of specfic value
-Select * REPLACE(num, 'Nbksigcap','NBKSIGCAP') Where num = 'Nbksigcap12042'
+Select * REPLACE(num, 'Ahmad','AHMAD') Where num = '1234'
 ---replicate: Repeats the given string, for the specified number of times.
 SELECT REPLICATE('Pragim', 3)
     
@@ -196,7 +196,7 @@ b.trade_start_date<>'2016-09-09'
 ---update with replace
 --- its used to replace a portion of specfic value
 --- in the below example, its used in a update statement inorder to change the account number from using lower case letters to upper case letters(real use case)
-Update example_table Set num = REPLACE(num, 'Nbksigcap','NBKSIGCAP') Where num = 'Nbksigcap12042'
+Update example_table Set num = REPLACE(num, 'Ahmad','AHMAD') Where num = '1234'
 
 
 

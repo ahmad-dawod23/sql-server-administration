@@ -278,3 +278,26 @@ from sys.dm_exec_cached_plans
          cross apply sys.dm_exec_sql_text(plan_handle)
          cross apply sys.dm_exec_query_plan(plan_handle) qp
 where qp.objectid in ('1522104463', '816826072')
+
+
+
+/*******************************************************************************
+ SECTION 5: PLAN CACHE ANALYSIS
+ Purpose: Analyze procedure cache distribution and usage
+*******************************************************************************/
+
+-----------------------------------------------------------------------
+-- 5.1 PROCEDURE CACHE DISTRIBUTION
+--     Shows how the procedure cache is distributed by object type
+-----------------------------------------------------------------------
+SELECT
+    cacheobjtype, 
+    objtype, 
+    COUNT(*) AS CountofPlans, 
+    SUM(usecounts) AS UsageCount,
+    SUM(usecounts)/CAST(count(*) AS float) AS AvgUsed, 
+    SUM(size_in_bytes)/1024./1024. AS SizeinMB
+FROM sys.dm_exec_cached_plans
+GROUP BY cacheobjtype, objtype
+ORDER BY CountOfPlans DESC;
+GO

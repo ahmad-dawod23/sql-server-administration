@@ -345,6 +345,15 @@ OPTION (RECOMPILE);
 -- PRINT 'Wait statistics have been cleared at ' + CONVERT(VARCHAR(30), GETDATE(), 121);
 
 
+
+-----------------------------------------------------------------------
+-- 7.1 GENERAL WAIT STATISTICS
+--     Shows all wait statistics for the SQL Server instance
+-----------------------------------------------------------------------
+SELECT * FROM sys.dm_os_wait_stats;
+GO
+
+
 -----------------------------------------------------------------------
 -- WAIT TYPE QUICK REFERENCE
 -----------------------------------------------------------------------

@@ -10,6 +10,8 @@
  *   6. BACKUP VERIFICATION & INTEGRITY CHECKS
  *   7. BACKUP PERFORMANCE & METRICS
  *   8. LOG BACKUP & TRANSACTION LOG MONITORING
+ *   9. RESTORE OPERATIONS & VERIFICATION
+ *  10. SYSTEM DATABASE RESTORE PROCEDURES
  *****************************************************************************************************/
 
 
@@ -607,6 +609,260 @@ GROUP BY
     CAST(CAST(lu.cntr_value AS FLOAT) / CAST(ls.cntr_value AS FLOAT) AS DECIMAL(18,2)) * 100
 ORDER BY database_name;
 GO
+
+
+
+
+/*****************************************************************************************************
+ * SECTION 9: RESTORE OPERATIONS & VERIFICATION
+ * Purpose: Backup file inspection, database restore scenarios, and backup history management
+ *****************************************************************************************************/
+
+-- Query 9.1: Inspect Backup File Header Information
+-- Retrieves backup set metadata from a backup file
+-- Shows backup type, date, server name, database version, and encryption details
+RESTORE HEADERONLY 
+FROM DISK = 'D:\MSSQLServer\Adv.bak';
+GO
+
+
+-- Query 9.2: List Files Contained in Backup
+-- Shows logical and physical file names, file types, and sizes
+-- File types: 'D' = Data, 'L' = Log, 'S' = Filestream
+RESTORE FILELISTONLY 
+FROM DISK = 'D:\MSSQLServer\Adv.bak';
+GO
+
+
+-- Query 9.3: Verify Backup Integrity
+-- Checks backup file validity without restoring it
+-- Verifies readability, checksums, and backup set integrity
+RESTORE VERIFYONLY 
+FROM DISK = 'D:\MSSQLServer\Adv.bak';
+GO
+
+
+-- Query 9.4: Single File Restore (Complete Sequence)
+-- Used when only a specific data file needs to be restored
+-- Step 1: Perform tail-log backup to capture recent transactions
+BACKUP LOG FTest
+    TO DISK = 'D:\MSSQLServer\FTest.trn'
+    WITH INIT, CONTINUE_AFTER_ERROR;
+GO
+
+-- Step 2: Restore only the damaged/missing file
+RESTORE DATABASE FTest
+    FILE = 'FTest1'
+    FROM DISK = 'D:\MSSQLServer\FTest_full.bak'
+    WITH NORECOVERY;
+GO
+
+-- Step 3: Restore the tail-log backup and bring database online
+RESTORE LOG FTest
+    FROM DISK = 'D:\MSSQLServer\FTest.trn'
+    WITH RECOVERY;
+GO
+
+
+-- Query 9.5: Point-in-Time Restore Using Marked Transactions
+-- Allows restoration to a specific transaction mark
+
+-- Example: Mark a transaction for potential recovery point
+-- BEGIN TRAN UpdPrc WITH MARK 'Start of nightly update process';
+
+-- Query marked transactions to find recovery points
+SELECT 
+    database_name,
+    mark_name,
+    description,
+    user_name,
+    lsn,
+    mark_time
+FROM msdb.dbo.logmarkhistory
+ORDER BY mark_time DESC;
+GO
+
+
+-- Query 9.6: Force Database Recovery
+-- If the last restore was inadvertently performed WITH NORECOVERY,
+-- this command forces the database to complete recovery and come online
+-- RESTORE LOG [DatabaseName] WITH RECOVERY;
+GO
+
+
+-- Query 9.7: Restore to Point Before Transaction Mark
+-- Restores database to state immediately before the specified mark
+-- Useful to exclude a problematic transaction
+RESTORE LOG RTest
+    FROM DISK = 'D:\MSSQLServer\RTest.trn'
+    WITH RECOVERY, STOPBEFOREMARK = 'PriorToInsert';
+GO
+
+
+-- Query 9.8: Restore to Specific Transaction Mark
+-- Restores database including the marked transaction
+-- Useful to restore to a known good state
+RESTORE LOG RTest
+    FROM DISK = 'D:\MSSQLServer\RTest.trn'
+    WITH RECOVERY, STOPATMARK = 'PriorToInsert';
+GO
+
+
+-- Query 9.9: Restore with STANDBY Mode (Complete Sequence)
+-- STANDBY allows read-only access between log restores
+-- Useful for reporting on near-current data during log shipping
+
+-- Step 1: Set database to single-user mode
+ALTER DATABASE [MarketYields] 
+SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
+GO
+
+-- Step 2: Restore full backup with file relocation
+RESTORE DATABASE [MarketYields] 
+FROM DISK = N'D:\MSSQLServer\MarketYields.bak' 
+WITH FILE = 2,  
+    MOVE N'MarketYields' TO N'D:\MKTG\MarketYields.mdf',  
+    MOVE N'MarketYields_log' TO N'L:\MKTG\MarketYields_log.ldf',  
+    NORECOVERY,  
+    NOUNLOAD,  
+    STATS = 5;
+GO
+
+-- Step 3: Restore differential backup
+RESTORE DATABASE [MarketYields] 
+FROM DISK = N'D:\MSSQLServer\MarketYields.bak' 
+WITH FILE = 5,  
+    NORECOVERY,  
+    NOUNLOAD,  
+    STATS = 5;
+GO
+
+-- Step 4: Restore transaction log (can repeat for additional logs)
+RESTORE LOG [MarketYields] 
+FROM DISK = N'D:\MSSQLServer\MarketYields.bak' 
+WITH FILE = 6,  
+    NORECOVERY,  
+    NOUNLOAD,  
+    STATS = 5;
+GO
+
+-- Step 5: Restore final log with STANDBY mode
+-- Database will be readable but can accept additional log restores
+RESTORE LOG [MarketYields] 
+FROM DISK = N'D:\MSSQLServer\MarketYields.bak' 
+WITH FILE = 7,  
+    STANDBY = N'L:\Log_Standby.bak',  
+    NOUNLOAD,  
+    STATS = 5;
+GO
+
+-- Step 6: Set database back to multi-user mode
+ALTER DATABASE [MarketYields] 
+SET MULTI_USER;
+GO
+
+
+-- Query 9.10: Delete Backup History
+-- Removes old backup history records from msdb to manage database size
+
+-- Delete all backup history prior to specified date
+EXEC sp_delete_backuphistory 
+    @oldest_date = '20090101';
+GO
+
+-- Delete backup history for a specific database
+EXEC sp_delete_database_backuphistory 
+    @database_name = 'Market';
+GO
+
+
+/*****************************************************************************************************
+ * SECTION 10: SYSTEM DATABASE RESTORE PROCEDURES
+ * Purpose: Guidance for restoring SQL Server system databases
+ *****************************************************************************************************/
+
+/*
+-----------------------------------------------------------------------------------------
+MODEL DATABASE
+-----------------------------------------------------------------------------------------
+Description: Template for all new databases
+Restore Procedure: 
+    1. Start SQL Server instance with the -T3608 trace flag (only starts master)
+    2. Restore model database using the normal RESTORE DATABASE command
+    3. Remove trace flag and restart normally
+
+-----------------------------------------------------------------------------------------
+MSDB DATABASE
+-----------------------------------------------------------------------------------------
+Description: Used by SQL Server Agent for scheduling alerts and jobs, and for 
+             recording details of operations. Also contains backup/restore history tables.
+Restore Procedure:
+    - Can be restored like any user database using RESTORE DATABASE command
+    - If corrupt, SQL Server Agent will not start
+    - Database can still function normally even if msdb is unavailable
+
+-----------------------------------------------------------------------------------------
+RESOURCE DATABASE
+-----------------------------------------------------------------------------------------
+Description: Read-only hidden database that contains copies of all system objects
+Restore Procedure:
+    - Cannot use RESTORE DATABASE command
+    - Must use file-level restore in Windows Explorer (copy mssqlsystemresource.mdf/ldf)
+    - Alternative: Run SQL Server setup program to rebuild system databases
+    - Located in MSSQL\Binn folder
+
+-----------------------------------------------------------------------------------------
+TEMPDB DATABASE
+-----------------------------------------------------------------------------------------
+Description: Workspace for holding temporary tables and intermediate result sets
+Restore Procedure:
+    - NO backup operations can be performed on tempdb
+    - NO restore needed - automatically re-created every time SQL Server starts
+    - If experiencing issues, restart SQL Server instance
+
+-----------------------------------------------------------------------------------------
+MASTER DATABASE
+-----------------------------------------------------------------------------------------
+Description: Holds all system-level configurations, logins, endpoints, linked servers,
+             and metadata about all other databases
+Restore Procedure:
+
+    STEP 1: Ensure a master database exists
+    ----------------------------------------
+    If master is corrupt/missing, SQL Server will not start. Obtain a temporary master 
+    database using one of these methods:
+    
+    a) Run SQL Server setup program (e.g., SQL Server\110\Setup\Bootstrap\SQL11\setup.exe)
+       WARNING: Setup program will overwrite ALL system databases
+    
+    b) Use file-level backup of master.mdf/master.ldf 
+       (must be taken when SQL Server was offline or via VSS service)
+    
+    c) Copy master.mdf from the Templates folder in MSSQL\Binn for the instance
+    
+    STEP 2: Restore the correct master database
+    --------------------------------------------
+    1. Start SQL Server instance in single-user mode using -m startup parameter:
+       sqlservr.exe -m
+       
+    2. Connect using sqlcmd utility:
+       sqlcmd -S ServerName -E
+       
+    3. Execute RESTORE DATABASE command:
+       RESTORE DATABASE [master] 
+       FROM DISK = 'C:\Backups\master.bak' 
+       WITH REPLACE;
+       
+    4. After restore completes, SQL Server instance will automatically shut down
+    
+    5. Remove the single-user parameter (-m) from startup configuration
+    
+    6. Restart SQL Server normally
+    
+    7. Verify all databases and logins are accessible
+
+-----------------------------------------------------------------------------------------
+*/
 
 
 /*****************************************************************************************************

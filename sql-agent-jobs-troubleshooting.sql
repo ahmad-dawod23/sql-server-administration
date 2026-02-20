@@ -105,6 +105,247 @@ ORDER BY sj.name;
 GO
 
 
+
+-----------------------------------------------------------------------
+-- SECTION 4: JOB HISTORY & EXECUTION RESULTS
+-----------------------------------------------------------------------
+
+-- Show recent job executions (last 24 hours)
+WITH jobhistory AS
+(
+    SELECT sj.name,
+        (CASE sjh.run_date
+            WHEN 0 THEN NULL
+            ELSE CONVERT(datetime,
+                    STUFF(STUFF(CAST(sjh.run_date AS nchar(8)),
+                                7,0,'-'),
+                        5,0,'-')
+                    + N' '
+                    + STUFF(STUFF(SUBSTRING(CAST(1000000 + sjh.run_time AS nchar(7)),
+                                2, 6),
+                                5, 0, ':'),
+                            3, 0, ':'),
+                    120)
+        END) AS RunDate,
+        sjh.message,
+        sjh.run_status,
+        sjh.run_duration
+    FROM msdb.dbo.sysjobhistory AS sjh
+    INNER JOIN msdb.dbo.sysjobs AS sj
+        ON sjh.job_id = sj.job_id
+    WHERE sjh.step_id = 0
+)
+SELECT *
+FROM jobhistory
+WHERE RunDate > DATEADD(d,-1,SYSDATETIME())
+ORDER BY RunDate DESC;
+GO
+
+-- View failing job steps in order of date descending
+SELECT
+    sj.name AS job_name,
+    sjh.run_date,
+    sjh.run_time,
+    sjh.step_id,
+    sjh.step_name,
+    sjh.message,
+    sjh.run_status,
+    sjh.run_duration
+FROM msdb.dbo.sysjobhistory AS sjh
+INNER JOIN msdb.dbo.sysjobs AS sj
+    ON sjh.job_id = sj.job_id
+WHERE sjh.step_id > 0
+  AND sjh.run_status <> 1
+ORDER BY sjh.run_date DESC, sjh.run_time DESC;
+GO
+
+-- Job last execution time with status
+SELECT
+    j.[name] AS job_name,
+    CAST(STUFF(STUFF(CAST(jh.run_date as varchar),7,0,'-'),5,0,'-') + ' ' +
+        STUFF(STUFF(REPLACE(STR(jh.run_time,6,0),' ','0'),5,0,':'),3,0,':') as datetime) AS [LastRun],
+    CASE jh.run_status
+        WHEN 0 THEN 'Failed'
+        WHEN 1 THEN 'Success'
+        WHEN 2 THEN 'Retry'
+        WHEN 3 THEN 'Canceled'
+        WHEN 4 THEN 'In progress'
+    END AS [Status]
+FROM (SELECT a.job_id,MAX(a.instance_id) As [instance_id]
+      FROM msdb.dbo.sysjobhistory a
+      WHERE a.step_id = 0
+      GROUP BY a.job_id) b
+INNER JOIN msdb.dbo.sysjobhistory jh
+    ON jh.instance_id=b.instance_id
+INNER JOIN msdb.dbo.sysjobs j
+    ON j.job_id = jh.job_id
+GO
+
+
+-----------------------------------------------------------------------
+-- SECTION 5: JOB MANAGEMENT (CAUTION: MODIFIES DATA)
+-----------------------------------------------------------------------
+
+-- Execute/Start a specific job
+EXEC msdb.dbo.sp_start_job 'job_name';
+GO
+
+-- Disable all jobs on the server (by job name)
+DECLARE @sql nvarchar(max) = '';
+SELECT @sql = @sql + N'EXEC msdb.dbo.sp_update_job @job_name = ''' + name + N''', @enabled = 0;'
+FROM msdb.dbo.sysjobs
+WHERE enabled = 1
+ORDER BY name;
+PRINT @sql;
+-- EXEC (@sql);  -- Uncomment to execute
+GO
+
+-- Disable all jobs on the server (by job GUID)
+DECLARE @sql nvarchar(max) = '';
+SELECT @sql += N'EXEC msdb.dbo.sp_update_job @job_id = ''' + CONVERT(nvarchar(36),job_id) + N''', @enabled = 0;'
+FROM msdb.dbo.sysjobs
+WHERE enabled = 1
+ORDER BY name;
+PRINT @sql;
+-- EXEC (@sql);  -- Uncomment to execute
+GO
+
+
+-----------------------------------------------------------------------
+-- SECTION 6: PROXIES & SECURITY
+-----------------------------------------------------------------------
+
+/*
+Details of the current Proxy Account configuration
+can be obtained through a set of system views:
+
+dbo.sysproxies             -- Returns one row per proxy defined in SQL Server Agent
+dbo.sysproxylogin          -- Returns which SQL Server logins are associated with
+                           -- each SQL Server Agent Proxy Account. Note that no entry
+                           -- for members of the sysadmin role is stored or returned
+dbo.sysproxyloginsubsystem -- Returns which SQL Server Agent subsystems are defined for
+                           -- each Proxy Account
+dbo.syssubsystems          -- Returns information about all available SQL Server Agent
+                           -- proxy subsystems
+*/
+
+-- Query the available proxies on the system
+USE msdb;
+GO
+
+SELECT
+    sp.name AS ProxyName,
+    c.name AS CredentialName,
+    sp.description AS ProxyDescription,
+    sp.enabled
+FROM dbo.sysproxies AS sp
+INNER JOIN sys.credentials AS c
+    ON sp.credential_id = c.credential_id
+ORDER BY sp.name;
+GO
+
+-- Query the proxies defined for job step execution
+SELECT
+    sj.name AS JobName,
+    sjs.step_id,
+    sjs.step_name,
+    sjs.subsystem,
+    COALESCE(sp.name, 'N/A') AS ProxyName
+FROM dbo.sysjobs AS sj
+INNER JOIN dbo.sysjobsteps AS sjs
+    ON sj.job_id = sjs.job_id
+LEFT JOIN dbo.sysproxies AS sp
+    ON sjs.proxy_id = sp.proxy_id
+ORDER BY sj.name, sjs.step_id;
+GO
+
+/*
+SQL Server Agent Security Roles
+
+During the installation of SQL Server, a local group is created with a name in the following format:
+    SQLServerSQLAgentUser$<ComputerName>$<InstanceName>
+
+This group is granted all the access privileges needed by the SQL Server Agent account.
+This only includes the bare minimum permissions that the account needs for SQL Server Agent to function.
+
+SQL Server Agent Roles:
+
+    sysadmin fixed role members can administer SQL Server Agent
+
+    Fixed database roles in the msdb control access for other users:
+
+    SQLAgentUserRole     -- Control permission for jobs and schedules that they own
+
+    SQLAgentReaderRole   -- All permissions of the SQLAgentUserRole plus permission to
+                         -- view the list of all available jobs and job schedules
+
+    SQLAgentOperatorRole -- Permission to manage local jobs, view properties for operators
+                         -- and proxies, and enumerate available proxies and alerts
+*/
+
+
+-----------------------------------------------------------------------
+-- SECTION 7: SQL AGENT ALERTS
+-----------------------------------------------------------------------
+
+-- Get SQL Server Agent Alert Information
+SELECT
+    name AS alert_name,
+    event_source,
+    message_id,
+    severity,
+    [enabled],
+    has_notification,
+    delay_between_responses,
+    occurrence_count,
+    last_occurrence_date,
+    last_occurrence_time
+FROM msdb.dbo.sysalerts WITH (NOLOCK)
+ORDER BY name
+OPTION (RECOMPILE);
+GO
+
+
+-----------------------------------------------------------------------
+-- SECTION 8: MAINTENANCE & UTILITIES
+-----------------------------------------------------------------------
+
+-- Query the results generated by the maintenance tasks
+SELECT *
+FROM msdb.dbo.sysmaintplan_log
+ORDER BY start_time DESC;
+
+SELECT *
+FROM msdb.dbo.sysmaintplan_logdetail
+ORDER BY start_time DESC;
+GO
+
+
+-----------------------------------------------------------------------
+-- SECTION 9: MI CONNECTIVITY TEST VIA SQL AGENT JOB
+--           (For Azure SQL Managed Instance)
+-----------------------------------------------------------------------
+/*
+Use this to test outbound connectivity from a Managed Instance.
+SQL Agent job on the problem MI server, follow the below steps:
+
+1. Create a job
+2. Create a step with step name 'Test Connection'
+3. Add the below PowerShell script:
+
+   tnc login.windows.net -port 443 | select ComputerName, RemoteAddress, TcpTestSucceeded | Format-List
+
+   # DNS resolution test
+   nslookup faultyendpoint.com
+
+4. Save and close job
+5. Go to jobs area in SQL Agent
+6. Right-click on the created job and select 'Start Job at Step'
+7. After making sure the job executed successfully
+8. Use the query in Section 1 to view the job output
+*/
+
+
 -----------------------------------------------------------------------
 -- SECTION 3: JOB SCHEDULES (DETAILED)
 -----------------------------------------------------------------------
@@ -387,243 +628,3 @@ LEFT OUTER JOIN (SELECT job_id, max(run_duration) AS run_duration
 WHERE Next_run_time <> 0
 ORDER BY [Start Date],[Start Time];
 GO
-
-
------------------------------------------------------------------------
--- SECTION 4: JOB HISTORY & EXECUTION RESULTS
------------------------------------------------------------------------
-
--- Show recent job executions (last 24 hours)
-WITH jobhistory AS
-(
-    SELECT sj.name,
-        (CASE sjh.run_date
-            WHEN 0 THEN NULL
-            ELSE CONVERT(datetime,
-                    STUFF(STUFF(CAST(sjh.run_date AS nchar(8)),
-                                7,0,'-'),
-                        5,0,'-')
-                    + N' '
-                    + STUFF(STUFF(SUBSTRING(CAST(1000000 + sjh.run_time AS nchar(7)),
-                                2, 6),
-                                5, 0, ':'),
-                            3, 0, ':'),
-                    120)
-        END) AS RunDate,
-        sjh.message,
-        sjh.run_status,
-        sjh.run_duration
-    FROM msdb.dbo.sysjobhistory AS sjh
-    INNER JOIN msdb.dbo.sysjobs AS sj
-        ON sjh.job_id = sj.job_id
-    WHERE sjh.step_id = 0
-)
-SELECT *
-FROM jobhistory
-WHERE RunDate > DATEADD(d,-1,SYSDATETIME())
-ORDER BY RunDate DESC;
-GO
-
--- View failing job steps in order of date descending
-SELECT
-    sj.name AS job_name,
-    sjh.run_date,
-    sjh.run_time,
-    sjh.step_id,
-    sjh.step_name,
-    sjh.message,
-    sjh.run_status,
-    sjh.run_duration
-FROM msdb.dbo.sysjobhistory AS sjh
-INNER JOIN msdb.dbo.sysjobs AS sj
-    ON sjh.job_id = sj.job_id
-WHERE sjh.step_id > 0
-  AND sjh.run_status <> 1
-ORDER BY sjh.run_date DESC, sjh.run_time DESC;
-GO
-
--- Job last execution time with status
-SELECT
-    j.[name] AS job_name,
-    CAST(STUFF(STUFF(CAST(jh.run_date as varchar),7,0,'-'),5,0,'-') + ' ' +
-        STUFF(STUFF(REPLACE(STR(jh.run_time,6,0),' ','0'),5,0,':'),3,0,':') as datetime) AS [LastRun],
-    CASE jh.run_status
-        WHEN 0 THEN 'Failed'
-        WHEN 1 THEN 'Success'
-        WHEN 2 THEN 'Retry'
-        WHEN 3 THEN 'Canceled'
-        WHEN 4 THEN 'In progress'
-    END AS [Status]
-FROM (SELECT a.job_id,MAX(a.instance_id) As [instance_id]
-      FROM msdb.dbo.sysjobhistory a
-      WHERE a.step_id = 0
-      GROUP BY a.job_id) b
-INNER JOIN msdb.dbo.sysjobhistory jh
-    ON jh.instance_id=b.instance_id
-INNER JOIN msdb.dbo.sysjobs j
-    ON j.job_id = jh.job_id
-GO
-
-
------------------------------------------------------------------------
--- SECTION 5: JOB MANAGEMENT (CAUTION: MODIFIES DATA)
------------------------------------------------------------------------
-
--- Execute/Start a specific job
-EXEC msdb.dbo.sp_start_job 'job_name';
-GO
-
--- Disable all jobs on the server (by job name)
-DECLARE @sql nvarchar(max) = '';
-SELECT @sql = @sql + N'EXEC msdb.dbo.sp_update_job @job_name = ''' + name + N''', @enabled = 0;'
-FROM msdb.dbo.sysjobs
-WHERE enabled = 1
-ORDER BY name;
-PRINT @sql;
--- EXEC (@sql);  -- Uncomment to execute
-GO
-
--- Disable all jobs on the server (by job GUID)
-DECLARE @sql nvarchar(max) = '';
-SELECT @sql += N'EXEC msdb.dbo.sp_update_job @job_id = ''' + CONVERT(nvarchar(36),job_id) + N''', @enabled = 0;'
-FROM msdb.dbo.sysjobs
-WHERE enabled = 1
-ORDER BY name;
-PRINT @sql;
--- EXEC (@sql);  -- Uncomment to execute
-GO
-
-
------------------------------------------------------------------------
--- SECTION 6: PROXIES & SECURITY
------------------------------------------------------------------------
-
-/*
-Details of the current Proxy Account configuration
-can be obtained through a set of system views:
-
-dbo.sysproxies             -- Returns one row per proxy defined in SQL Server Agent
-dbo.sysproxylogin          -- Returns which SQL Server logins are associated with
-                           -- each SQL Server Agent Proxy Account. Note that no entry
-                           -- for members of the sysadmin role is stored or returned
-dbo.sysproxyloginsubsystem -- Returns which SQL Server Agent subsystems are defined for
-                           -- each Proxy Account
-dbo.syssubsystems          -- Returns information about all available SQL Server Agent
-                           -- proxy subsystems
-*/
-
--- Query the available proxies on the system
-USE msdb;
-GO
-
-SELECT
-    sp.name AS ProxyName,
-    c.name AS CredentialName,
-    sp.description AS ProxyDescription,
-    sp.enabled
-FROM dbo.sysproxies AS sp
-INNER JOIN sys.credentials AS c
-    ON sp.credential_id = c.credential_id
-ORDER BY sp.name;
-GO
-
--- Query the proxies defined for job step execution
-SELECT
-    sj.name AS JobName,
-    sjs.step_id,
-    sjs.step_name,
-    sjs.subsystem,
-    COALESCE(sp.name, 'N/A') AS ProxyName
-FROM dbo.sysjobs AS sj
-INNER JOIN dbo.sysjobsteps AS sjs
-    ON sj.job_id = sjs.job_id
-LEFT JOIN dbo.sysproxies AS sp
-    ON sjs.proxy_id = sp.proxy_id
-ORDER BY sj.name, sjs.step_id;
-GO
-
-/*
-SQL Server Agent Security Roles
-
-During the installation of SQL Server, a local group is created with a name in the following format:
-    SQLServerSQLAgentUser$<ComputerName>$<InstanceName>
-
-This group is granted all the access privileges needed by the SQL Server Agent account.
-This only includes the bare minimum permissions that the account needs for SQL Server Agent to function.
-
-SQL Server Agent Roles:
-
-    sysadmin fixed role members can administer SQL Server Agent
-
-    Fixed database roles in the msdb control access for other users:
-
-    SQLAgentUserRole     -- Control permission for jobs and schedules that they own
-
-    SQLAgentReaderRole   -- All permissions of the SQLAgentUserRole plus permission to
-                         -- view the list of all available jobs and job schedules
-
-    SQLAgentOperatorRole -- Permission to manage local jobs, view properties for operators
-                         -- and proxies, and enumerate available proxies and alerts
-*/
-
-
------------------------------------------------------------------------
--- SECTION 7: SQL AGENT ALERTS
------------------------------------------------------------------------
-
--- Get SQL Server Agent Alert Information
-SELECT
-    name AS alert_name,
-    event_source,
-    message_id,
-    severity,
-    [enabled],
-    has_notification,
-    delay_between_responses,
-    occurrence_count,
-    last_occurrence_date,
-    last_occurrence_time
-FROM msdb.dbo.sysalerts WITH (NOLOCK)
-ORDER BY name
-OPTION (RECOMPILE);
-GO
-
-
------------------------------------------------------------------------
--- SECTION 8: MAINTENANCE & UTILITIES
------------------------------------------------------------------------
-
--- Query the results generated by the maintenance tasks
-SELECT *
-FROM msdb.dbo.sysmaintplan_log
-ORDER BY start_time DESC;
-
-SELECT *
-FROM msdb.dbo.sysmaintplan_logdetail
-ORDER BY start_time DESC;
-GO
-
-
------------------------------------------------------------------------
--- SECTION 9: MI CONNECTIVITY TEST VIA SQL AGENT JOB
---           (For Azure SQL Managed Instance)
------------------------------------------------------------------------
-/*
-Use this to test outbound connectivity from a Managed Instance.
-SQL Agent job on the problem MI server, follow the below steps:
-
-1. Create a job
-2. Create a step with step name 'Test Connection'
-3. Add the below PowerShell script:
-
-   tnc login.windows.net -port 443 | select ComputerName, RemoteAddress, TcpTestSucceeded | Format-List
-
-   # DNS resolution test
-   nslookup faultyendpoint.com
-
-4. Save and close job
-5. Go to jobs area in SQL Agent
-6. Right-click on the created job and select 'Start Job at Step'
-7. After making sure the job executed successfully
-8. Use the query in Section 1 to view the job output
-*/

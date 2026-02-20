@@ -71,7 +71,7 @@ ORDER BY [HeadBlocker] DESC, s.session_id;
 GO
 
 -----------------------------------------------------------------------
--- 1.2 HEAD BLOCKER FINDER (Simple Method)
+-- 1.2 HEAD BLOCKER FINDER (Simple Methods)
 --     Find sessions that are blocking others but not blocked themselves.
 --     Faster and simpler alternative to query 1.1.
 -----------------------------------------------------------------------
@@ -86,6 +86,18 @@ WHERE NOT EXISTS (
     )
     AND r.blocking_session_id > 0;
 GO
+
+
+SELECT 
+		t1.resource_type,
+		t1.resource_database_id,
+		t1.resource_associated_entity_id,
+		t1.request_mode,
+		t1.request_session_id,
+		t2.blocking_session_id
+FROM	sys.dm_tran_locks as t1
+	INNER JOIN sys.dm_os_waiting_tasks as t2
+		ON t1.lock_owner_address = t2.resource_address;
 
 -----------------------------------------------------------------------
 -- 1.3 HEAD BLOCKER FINDER (Detailed Alternative)
@@ -408,4 +420,23 @@ WHERE wait_type = 'THREADPOOL'
 ORDER BY wait_duration_ms DESC;
 GO
 
+
+
+-----------------------------------------------------------------------
+-- 4.4 BLOCKING ANALYSIS
+--     Identify blocking sessions and their blockers.
+-----------------------------------------------------------------------
+
+-- check for blocking
+use master
+select distinct(blocked) from sysprocesses where blocked <> 0
+
+-- check if the blocking is blocked
+select blocked from sysprocesses where spid =   <replace_with_blocker_spid>
+
+-- check the command
+dbcc inputbuffer (<replace_with_blocker_spid>) -- change the spid to blocker
+
+-- if the blocker executing a select statement the spid can be safely killed
+kill <replace_with_blocker_spid>  -- change the spid to blocker
 

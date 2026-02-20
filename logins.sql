@@ -21,7 +21,57 @@ Use Error_Code provided in Hex with "net helpmsg" cmd
 For example Error_Code 0x139F -- net helpmsg 5023
 */
 
--- Step 2: Use Ring Buffer to find more information regarding login failures
+-- Step 2: Look for locked accounts, bad password counts, default DB issues
+SELECT
+    [name],
+    LOGINPROPERTY([name], 'IsLocked')         AS IsLocked,
+    LOGINPROPERTY([name], 'BadPasswordCount') AS BadPwdCount,
+    LOGINPROPERTY([name], 'LockoutTime')      AS LockoutTime,
+    default_database_name,
+    is_disabled,
+    create_date,
+    modify_date
+FROM sys.sql_logins
+-- WHERE [name] = N'YourLoginName'
+ORDER BY modify_date DESC;
+
+-- Step 3: Check if the default database exists and is ONLINE
+SELECT
+    sl.[name]                AS LoginName,
+    sl.default_database_name AS DefaultDatabase,
+    d.[name]                 AS ActualDatabaseName,
+    d.state_desc             AS DatabaseState,
+    CASE
+        WHEN d.[name] IS NULL THEN '*** DEFAULT DB DOES NOT EXIST ***'
+        WHEN d.state_desc <> 'ONLINE' THEN '*** DEFAULT DB IS OFFLINE ***'
+        ELSE 'OK'
+    END                      AS [Status]
+FROM sys.sql_logins sl
+    LEFT JOIN sys.databases d
+        ON sl.default_database_name = d.[name]
+-- WHERE sl.[name] = N'YourLoginName'
+ORDER BY sl.[name];
+
+-- Step 4: Check for hidden DENY on CONNECT SQL permission
+SELECT
+    p.[name]           AS LoginName,
+    perm.state_desc    AS PermissionState,
+    perm.permission_name,
+    CASE
+        WHEN perm.state_desc = 'DENY' AND perm.permission_name = 'CONNECT SQL'
+            THEN '*** LOGIN DENIED CONNECT SQL ***'
+        ELSE 'OK'
+    END                AS [Status]
+FROM sys.server_permissions perm
+    JOIN sys.server_principals p
+        ON p.principal_id = perm.grantee_principal_id
+WHERE perm.permission_name = 'CONNECT SQL'
+  AND perm.state_desc = 'DENY'
+-- AND p.[name] = N'YourLoginName'
+ORDER BY p.[name];
+
+
+-- Step 5: Use Ring Buffer to find more information regarding login failures
 SELECT CONVERT (varchar(30), GETDATE(), 121) as [RunTime],
 dateadd (ms, rbf.[timestamp] - tme.ms_ticks, GETDATE()) as [Notification_Time],
 cast(record as xml).value('(//SPID)[1]', 'bigint') as SPID,
@@ -36,7 +86,7 @@ from sys.dm_os_ring_buffers rbf cross join sys.dm_os_sys_info tme
 where rbf.ring_buffer_type = 'RING_BUFFER_SECURITY_ERROR' -- and cast(record as xml).value('(//SPID)[1]', 'int') = XspidNo
 ORDER BY rbf.timestamp DESC
 
--- Step 3: Pull out information from the connectivity ring buffer
+-- Step 6: Pull out information from the connectivity ring buffer
 SELECT CONVERT (varchar(30), GETDATE(), 121) as [RunTime],
 dateadd (ms, (rbf.[timestamp] - tme.ms_ticks), GETDATE()) as Time_Stamp,
 cast(record as xml).value('(//Record/ConnectivityTraceRecord/RecordType)[1]', 'varchar(50)') AS [Action],
@@ -63,57 +113,6 @@ FROM sys.dm_os_ring_buffers rbf
 cross join sys.dm_os_sys_info tme
 where rbf.ring_buffer_type = 'RING_BUFFER_CONNECTIVITY' and cast(record as xml).value('(//Record/ConnectivityTraceRecord/Spid)[1]', 'int') <> 0
 ORDER BY rbf.timestamp DESC 
-
--- Step 4: Look for locked accounts, bad password counts, default DB issues
-SELECT
-    [name],
-    LOGINPROPERTY([name], 'IsLocked')         AS IsLocked,
-    LOGINPROPERTY([name], 'BadPasswordCount') AS BadPwdCount,
-    LOGINPROPERTY([name], 'LockoutTime')      AS LockoutTime,
-    default_database_name,
-    is_disabled,
-    create_date,
-    modify_date
-FROM sys.sql_logins
--- WHERE [name] = N'YourLoginName'
-ORDER BY modify_date DESC;
-
--- Step 5: Check if the default database exists and is ONLINE
-SELECT
-    sl.[name]                AS LoginName,
-    sl.default_database_name AS DefaultDatabase,
-    d.[name]                 AS ActualDatabaseName,
-    d.state_desc             AS DatabaseState,
-    CASE
-        WHEN d.[name] IS NULL THEN '*** DEFAULT DB DOES NOT EXIST ***'
-        WHEN d.state_desc <> 'ONLINE' THEN '*** DEFAULT DB IS OFFLINE ***'
-        ELSE 'OK'
-    END                      AS [Status]
-FROM sys.sql_logins sl
-    LEFT JOIN sys.databases d
-        ON sl.default_database_name = d.[name]
--- WHERE sl.[name] = N'YourLoginName'
-ORDER BY sl.[name];
-
--- Step 6: Check for hidden DENY on CONNECT SQL permission
-SELECT
-    p.[name]           AS LoginName,
-    perm.state_desc    AS PermissionState,
-    perm.permission_name,
-    CASE
-        WHEN perm.state_desc = 'DENY' AND perm.permission_name = 'CONNECT SQL'
-            THEN '*** LOGIN DENIED CONNECT SQL ***'
-        ELSE 'OK'
-    END                AS [Status]
-FROM sys.server_permissions perm
-    JOIN sys.server_principals p
-        ON p.principal_id = perm.grantee_principal_id
-WHERE perm.permission_name = 'CONNECT SQL'
-  AND perm.state_desc = 'DENY'
--- AND p.[name] = N'YourLoginName'
-ORDER BY p.[name];
-
-
 
 
 -----------------------------------------------------------------------
@@ -395,9 +394,7 @@ WHERE dp.[type] IN (''S'', ''U'')
 -----------------------------------------------------------------------
 -- 5.3 FIXING ORPHANED USERS
 -----------------------------------------------------------------------
-EXEC sp_change_users_login 'Report'
-EXEC sp_change_users_login 'Auto_Fix', 'user'
-ALTER USER dbuser WITH LOGIN = loginname; -- SQL Server 2005 SP2
+ALTER USER dbuser WITH LOGIN = loginname; 
 
 
 -----------------------------------------------------------------------
@@ -518,3 +515,23 @@ GO
 CREATE USER XRayApp WITH PASSWORD = 'Pa$$w0rd';
 GO
 
+-----------------------------------------------------------------------
+-- 7.9 RECREATE LOGIN FOR EXISTING USER:
+------------------------------------------------------------------------
+
+--if exists (
+--		select	1
+--		from	master.sys.server_principals
+--		where	name = 'testuser'
+--		)
+--	begin
+--		drop login testuser
+--	end
+--
+--create login testuser
+--	with password = 'T5yqz7SP',
+--	sid = 0x81341CD7A514D746A59712F660F31DE2,
+--	default_database = testdb,
+--	default_language = English,
+--	check_expiration = OFF,
+--	check_policy = ON

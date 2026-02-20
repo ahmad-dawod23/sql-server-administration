@@ -6,12 +6,10 @@
             
    Sections:
    1. Error Log & Diagnostics
-   2. Network Protocol & Connection Security
-   3. Database Information Queries
-   4. DMV Reference Guide
-   5. DBCC Commands & Page Analysis
-   6. Troubleshooting & Recovery
-   7. System Commands (xp_cmdshell)
+   2. SQL Managed Instance (SQL MI) Specific Commands
+   3. Query Store Configuration
+   4. Troubleshooting & Recovery
+   5. System Commands (xp_cmdshell)
    
    Note: For specialized topics (backups, security, TDE, performance, etc.),
          see the dedicated script files in the parent directory.
@@ -25,188 +23,223 @@ GO
 *******************************************************************************/
 
 -----------------------------------------------------------------------
--- 1.1 Search Error Log for Permission Issues
+-- 1.1 Search Error Logs
 -----------------------------------------------------------------------
-EXEC xp_readerrorlog 0, 1, N'permission', NULL, NULL, NULL, N'desc';
+EXEC xp_readerrorlog 0, 1, N'Login failed', NULL, NULL, NULL, N'desc';
 GO
 
+
+-- Search the SQL Server error log files for a nominated string
+-- This script enumerates all of the available SQL Server error log files on an instance, and then searches each of them for a nominated string, returning a single result set.
+
+SET NOCOUNT ON;
+
+DECLARE @log_number INT,
+        @search_string VARCHAR(255) = '<search_string>';
+
+DROP TABLE IF EXISTS #error_log;
+
+CREATE TABLE #error_log
+(
+    log_number INT NOT NULL,
+    log_date DATE NOT NULL,
+    log_size INT NOT NULL
+);
+
+DROP TABLE IF EXISTS #sp_readerrorlog_output;
+
+CREATE TABLE #sp_readerrorlog_output
+(
+    LogDate DATETIME2 NOT NULL,
+    ProcessInfo VARCHAR(255) NOT NULL,
+    Text VARCHAR(255) NOT NULL
+);
+
+INSERT #error_log
+(
+    log_number,
+    log_date,
+    log_size
+)
+EXEC ('EXEC sys.sp_enumerrorlogs;');
+
+DECLARE log_cur CURSOR LOCAL FAST_FORWARD FOR
+SELECT el.log_number
+FROM #error_log AS el
+ORDER BY el.log_number
+FOR READ ONLY;
+
+OPEN log_cur;
+FETCH log_cur
+INTO @log_number;
+
+WHILE @@FETCH_STATUS = 0
+BEGIN
+    INSERT INTO #sp_readerrorlog_output
+    (
+        LogDate,
+        ProcessInfo,
+        Text
+    )
+    EXEC sp_readerrorlog @p1 = @log_number, @p2 = 1, @p3 = @search_string;
+
+    FETCH log_cur
+    INTO @log_number;
+END;
+
+CLOSE log_cur;
+DEALLOCATE log_cur;
+
+SELECT LogDate,
+       ProcessInfo,
+       Text
+FROM #sp_readerrorlog_output
+ORDER BY LogDate DESC;
+
 -----------------------------------------------------------------------
--- 1.2 Search Error Log for Login Failures
---      Note: Also see security-and-permissions-audit.sql for detailed
---            login auditing queries
+-- 1.2 Store Error Log Details (SQL MI Workaround)
+--      Workaround for SQL MI not persisting error logs
 -----------------------------------------------------------------------
--- EXEC xp_readerrorlog 0, 1, N'Login failed', NULL, NULL, NULL, N'desc';
--- GO
+-- Create storage table
+CREATE TABLE ErrorLogDetails
+(
+    Logdate DATETIME,
+    ProcessInfo VARCHAR(20),
+    Text VARCHAR(MAX)
+);
+GO
+
+-- Create stored procedure to capture and store error logs
+CREATE PROCEDURE usp_StoreErrorlogdetails
+AS
+SET NOCOUNT ON;
+
+-- Create temp tables
+CREATE TABLE #total_logs
+(
+    log_number INT,
+    log_date DATE,
+    log_size INT
+);
+
+CREATE TABLE #TempErrorLogDetails
+(
+    Logdate DATETIME,
+    ProcessInfo VARCHAR(20),
+    Text VARCHAR(MAX)
+);
+
+-- Get the max error log number
+INSERT #total_logs
+(
+    log_number,
+    log_date,
+    log_size
+)
+EXEC ('EXEC sys.sp_enumerrorlogs;');
+
+DECLARE @lastlognumber INT,
+        @currentlog INT,
+        @sql NVARCHAR(MAX);
+
+SET @currentlog = 0;
+
+SELECT @lastlognumber = MAX(log_number)
+FROM #total_logs;
+
+WHILE @currentlog <= @lastlognumber
+BEGIN
+    SET @sql = 'master.dbo.sp_readerrorlog ' + TRIM(CAST(@currentlog AS CHAR(2)));
+
+    INSERT INTO #TempErrorLogDetails
+    (
+        Logdate,
+        ProcessInfo,
+        Text
+    )
+    EXEC sp_executesql @sql;
+
+    SET @currentlog = @currentlog + 1;
+END;
+
+-- Insert into table (avoid duplicates)
+INSERT INTO MainatenanceDB.dbo.ErrorLogDetails
+(
+    logdate,
+    processinfo,
+    Text
+)
+SELECT A.Logdate,
+       A.ProcessInfo,
+       A.Text
+FROM #TempErrorLogDetails A
+    LEFT JOIN MainatenanceDB.dbo.ErrorLogDetails B
+        ON A.Logdate = B.LogDate
+WHERE B.logdate IS NULL;
+
+-- Delete old data more than 30 days
+DELETE FROM MainatenanceDB.dbo.ErrorLogDetails
+WHERE logdate <= GETDATE() - 30;
+GO
+
 
 
 
 /*******************************************************************************
-   SECTION 2: NETWORK PROTOCOL & CONNECTION SECURITY
+   SECTION 2: SQL MANAGED INSTANCE (SQL MI) SPECIFIC COMMANDS
 *******************************************************************************/
 
 -----------------------------------------------------------------------
--- 2.1 Current Session Network Protocol
---      Identify the transport protocol for your current connection
+-- 2.1 Check SQL MI Operations Status
 -----------------------------------------------------------------------
-SELECT
-    session_id,
-    net_transport,
-    protocol_type,
-    auth_scheme,
-    encrypt_option
-FROM sys.dm_exec_connections
-WHERE session_id = @@SPID;
+-- View current and recent operations on the managed instance
+SELECT *
+FROM sys.dm_operation_status
+ORDER BY start_time DESC;
 GO
 
------------------------------------------------------------------------
--- 2.2 Non-Encrypted TDS Connections (Azure SQL MI)
---      Find unencrypted connections that aren't using Shared Memory
---      and aren't internal AG/MI Link traffic
------------------------------------------------------------------------
-SELECT DISTINCT
-    net_transport                AS [Transport Protocol],
-    protocol_type                AS [Protocol Type],
-    endpoint_id                  AS [Endpoint Id],
-    auth_scheme                  AS [Authentication Scheme],
-    COUNT(*)                     AS ConnectionCount
-FROM sys.dm_exec_connections
-WHERE encrypt_option != 'TRUE'
-  AND net_transport != 'Shared memory'
-  AND (
-        client_net_address COLLATE database_default
-            NOT IN (SELECT ip_address_or_FQDN COLLATE database_default
-                    FROM sys.dm_hadr_fabric_nodes)
-        OR protocol_type != 'Database Mirroring'
-      )
-GROUP BY net_transport, protocol_type, endpoint_id, auth_scheme
-ORDER BY ConnectionCount DESC;
-GO
 
 
 
 /*******************************************************************************
-   SECTION 3: DATABASE INFORMATION QUERIES
+   SECTION 3: QUERY STORE CONFIGURATION
 *******************************************************************************/
 
 -----------------------------------------------------------------------
--- 3.1 List All Databases
+-- 3.1 Enable Query Store with Recommended Settings
+--      Reference: https://www.sqlskills.com/blogs/erin/query-store-settings/
 -----------------------------------------------------------------------
-SELECT
-    database_id,
-    name AS database_name,
-    state_desc,
-    recovery_model_desc,
-    compatibility_level
-FROM sys.databases
-ORDER BY name;
+-- For SQL Server 2016 & 2017
+USE [master];
 GO
 
------------------------------------------------------------------------
--- 3.2 Get Database ID by Name
------------------------------------------------------------------------
--- SELECT DB_ID('AdventureWorks2012');
--- GO
+-- Enable Query Store
+ALTER DATABASE [ChicagoBulls] SET QUERY_STORE = ON;
+GO
 
------------------------------------------------------------------------
--- 3.3 Get Database Name by ID
------------------------------------------------------------------------
--- SELECT DB_NAME(8);
--- GO
+-- Configure Query Store settings
+ALTER DATABASE [ChicagoBulls]
+SET QUERY_STORE (
+                    OPERATION_MODE = READ_WRITE,
+                    QUERY_CAPTURE_MODE = AUTO,
+                    MAX_PLANS_PER_QUERY = 200,
+                    MAX_STORAGE_SIZE_MB = 128,
+                    CLEANUP_POLICY = (STALE_QUERY_THRESHOLD_DAYS = 30),
+                    SIZE_BASED_CLEANUP_MODE = AUTO,
+                    DATA_FLUSH_INTERVAL_SECONDS = 900,
+                    INTERVAL_LENGTH_MINUTES = 60
+                );
+GO
 
-
-/*******************************************************************************
-   SECTION 4: DMV REFERENCE GUIDE
-   
-   Quick reference for Dynamic Management Views and Functions organized by prefix.
-*******************************************************************************/
-
-/*
-   sys.dm_exec_%  -- Execution and Connection
-      Provides information about connections, sessions, requests, and query execution.
-      Example: sys.dm_exec_sessions provides one row for every session currently
-               connected to the server.
-
-   sys.dm_os_%    -- SQL OS Related Information
-      Provides access to SQL OS related information.
-      Example: sys.dm_os_performance_counters provides access to SQL Server performance
-               counters without the need to access them using operating system tools.
-
-   sys.dm_tran_%  -- Transaction Management
-      Provides access to transaction management information.
-      Example: sys.dm_tran_active_transactions provides details of currently active
-               transactions.
-
-   sys.dm_io_%    -- I/O Related Information
-      Provides information on I/O processes.
-      Example: sys.dm_io_virtual_file_stats provides details of I/O performance and
-               statistics for each database file.
-
-   sys.dm_db_%    -- Database Scoped Information
-      Provides database-scoped information.
-      Example: sys.dm_db_index_usage_stats provides information about how each index
-               in the database has been used.
-*/
 
 
 
 /*******************************************************************************
-   SECTION 5: DBCC COMMANDS & PAGE ANALYSIS
+   SECTION 4: TROUBLESHOOTING & RECOVERY
 *******************************************************************************/
 
 -----------------------------------------------------------------------
--- 5.1 DBCC Trace Status
---      View current trace flag settings
------------------------------------------------------------------------
--- View all trace flags applying to the connection
-DBCC TRACESTATUS(-1);
-GO
-
--- View specific trace flag (3604 - enables output to console)
--- DBCC TRACESTATUS(3604);
--- GO
-
------------------------------------------------------------------------
--- 5.2 Enable DBCC Output
---      Enable trace flag 3604 to show hidden DBCC output
------------------------------------------------------------------------
--- DBCC TRACEON(3604);
--- GO
-
------------------------------------------------------------------------
--- 5.3 DBCC PAGE - Analyze Page Data
---      Format: DBCC PAGE(database_id, file_id, page_number, output_option)
---      Output Options: 0=header only, 1=header+hex, 2=header+detailed, 3=all
------------------------------------------------------------------------
--- Example: View page 1472 from file 1 in database ID 8
--- DBCC PAGE(8, 1, 1472, 3);
--- GO
-
------------------------------------------------------------------------
--- 5.4 Physical Location Formatter
---      Display physical location of rows in a table
---      Format: (file_id:page_id:slot_id)
------------------------------------------------------------------------
-/*
--- Example using AdventureWorks2012
-SELECT
-    sys.fn_PhysLocFormatter(%%physloc%%) AS [Physical Location],
-    BusinessEntityID,
-    FirstName,
-    LastName
-FROM [AdventureWorks2012].[Person].[Person]
-WHERE BusinessEntityID < 100
-ORDER BY [Physical Location];
-GO
-*/
-
-
-
-/*******************************************************************************
-   SECTION 6: TROUBLESHOOTING & RECOVERY
-*******************************************************************************/
-
------------------------------------------------------------------------
--- 6.1 Emergency SA Password Recovery
+-- 4.1 Emergency SA Password Recovery
 --      Use when SQL Server instance is inaccessible and no one remembers
 --      the sa password. Requires local Administrator access.
 -----------------------------------------------------------------------
@@ -233,9 +266,49 @@ GO
       C:\Windows\system32> net start MSSQLSERVER
 */
 
+-----------------------------------------------------------------------
+-- 4.2 Emergency Repair for FileStream Recovery Pending
+--      Fix databases stuck in Recovery Pending after Windows Update
+--      Part of the SQL Server DBA Toolbox at 
+--      https://github.com/DavidSchanzer/Sql-Server-DBA-Toolbox
+-----------------------------------------------------------------------
+-- This script avoids having to perform a database restore in the occasional 
+-- circumstance where Windows patching causes a database that uses FileStream 
+-- into the Recovery Pending state.
+-- Replace all <DBName> with the relevant database name.
+
+USE [master];
+GO
+
+EXEC sp_configure @configname = 'filestream access level', @configvalue = 2;
+RECONFIGURE WITH OVERRIDE;
+GO
+
+ALTER DATABASE <DBName> SET EMERGENCY;
+GO
+
+ALTER DATABASE <DBName> SET SINGLE_USER;
+GO
+
+DBCC CHECKDB(<DBName>, REPAIR_ALLOW_DATA_LOSS) WITH ALL_ERRORMSGS;
+GO
+
+ALTER DATABASE <DBName> SET MULTI_USER;
+GO
+
+
+
 
 /*******************************************************************************
-   SECTION 7: SYSTEM COMMANDS (xp_cmdshell)
+   SECTION 5: SYSTEM COMMANDS (xp_cmdshell)
+   
+   Warning: xp_cmdshell must be enabled and should only be used by authorized
+            administrators. These commands execute with SQL Server service account
+            privileges.
+*******************************************************************************/
+
+/*******************************************************************************
+   SECTION 5: SYSTEM COMMANDS (xp_cmdshell)
    
    Warning: xp_cmdshell must be enabled and should only be used by authorized
             administrators. These commands execute with SQL Server service account
@@ -243,25 +316,26 @@ GO
 *******************************************************************************/
 
 -----------------------------------------------------------------------
--- 7.1 Enable xp_cmdshell (if needed)
+-- 5.1 Enable xp_cmdshell (if needed)
 -----------------------------------------------------------------------
 /*
 EXEC sp_configure 'show advanced options', 1;
 RECONFIGURE;
 GO
+
 EXEC sp_configure 'xp_cmdshell', 1;
 RECONFIGURE;
 GO
 */
 
 -----------------------------------------------------------------------
--- 7.2 Execute Directory Listing
+-- 5.2 Execute Directory Listing
 -----------------------------------------------------------------------
 -- EXEC xp_cmdshell 'dir *.exe';
 -- GO
 
 -----------------------------------------------------------------------
--- 7.3 Map Network Share
+-- 5.3 Map Network Share
 --      Map a network drive for backup/restore operations
 -----------------------------------------------------------------------
 /*
@@ -277,6 +351,8 @@ GO
 EXEC xp_cmdshell 'net use T: /delete';
 GO
 */
+
+
 
 
 /*******************************************************************************

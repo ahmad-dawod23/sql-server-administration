@@ -123,18 +123,12 @@ ORDER BY last_mod_date DESC;
 GO
 
 
------------------------------------------------------------------------
--- 5. TRACK MESSAGE DELIVERY STATUS
------------------------------------------------------------------------
 -- Track the delivery status of individual messages.
-SELECT * FROM msdb.dbo.sysmail_unsentitems;
-GO
-
-SELECT * FROM msdb.dbo.sysmail_mailattachments;
+SELECT TOP 100 * FROM msdb.dbo.sysmail_unsentitems;
 GO
 
 -- Query the Database Mail outgoing message log.
-SELECT * FROM msdb.dbo.sysmail_mailitems;
+SELECT TOP 100 * FROM msdb.dbo.sysmail_mailitems;
 GO
 
 -----------------------------------------------------------------------

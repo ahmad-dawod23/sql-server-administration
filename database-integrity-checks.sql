@@ -261,3 +261,34 @@ ORDER BY [VLF Count] DESC OPTION (RECOMPILE);
 GO
 
 
+/*******************************************************************************
+   SECTION 5: DBCC COMMANDS & PAGE ANALYSIS
+*******************************************************************************/
+
+-----------------------------------------------------------------------
+-- 5.1 DBCC Trace Status
+--      View current trace flag settings
+-----------------------------------------------------------------------
+-- View all trace flags applying to the connection
+DBCC TRACESTATUS(-1);
+GO
+
+-- View specific trace flag (3604 - enables output to console)
+-- DBCC TRACESTATUS(3604);
+-- GO
+
+-----------------------------------------------------------------------
+-- 5.2 Enable DBCC Output
+--      Enable trace flag 3604 to show hidden DBCC output
+-----------------------------------------------------------------------
+-- DBCC TRACEON(3604);
+-- GO
+
+-----------------------------------------------------------------------
+-- 5.3 DBCC PAGE - Analyze Page Data
+--      Format: DBCC PAGE(database_id, file_id, page_number, output_option)
+--      Output Options: 0=header only, 1=header+hex, 2=header+detailed, 3=all
+-----------------------------------------------------------------------
+-- Example: View page 1472 from file 1 in database ID 8
+-- DBCC PAGE(8, 1, 1472, 3);
+-- GO

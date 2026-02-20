@@ -159,117 +159,11 @@ ORDER BY total_cpu_millisec DESC;
 GO
 
 -----------------------------------------------------------------------
--- SECTION 3: CPU HARDWARE & CONFIGURATION
+-- SECTION 3: CPU SCHEDULER & TASK ANALYSIS
 -----------------------------------------------------------------------
 
 -----------------------------------------------------------------------
--- 3.1 GET SOCKET, PHYSICAL CORE AND LOGICAL CORE COUNT
---     Reads from SQL Server Error log.
---     Note: This query might take a few seconds depending on error log size.
------------------------------------------------------------------------
-EXEC sys.xp_readerrorlog 0, 1, N'detected', N'socket';
-GO
-
------------------------------------------------------------------------
--- 3.2 GET PROCESSOR DESCRIPTION FROM WINDOWS REGISTRY
---     Shows processor model and specifications (Windows only).
------------------------------------------------------------------------
-EXEC sys.xp_instance_regread 
-    N'HKEY_LOCAL_MACHINE', 
-    N'HARDWARE\DESCRIPTION\System\CentralProcessor\0', 
-    N'ProcessorNameString';
-GO
-
------------------------------------------------------------------------
--- 3.3 SQL SERVER NUMA NODE INFORMATION
---     Shows NUMA configuration and memory distribution.
------------------------------------------------------------------------
-SELECT 
-    osn.node_id, 
-    osn.node_state_desc, 
-    osn.memory_node_id, 
-    osn.processor_group, 
-    osn.cpu_count, 
-    osn.online_scheduler_count, 
-    osn.idle_scheduler_count, 
-    osn.active_worker_count, 
-    osmn.pages_kb/1024 AS [Committed_Memory_MB], 
-    osmn.locked_page_allocations_kb/1024 AS [Locked_Physical_MB],
-    CONVERT(DECIMAL(18,2), osmn.foreign_committed_kb/1024.0) AS [Foreign_Commited_MB],
-    osmn.target_kb/1024 AS [Target_Memory_Goal_MB],
-    osn.avg_load_balance, 
-    osn.resource_monitor_state
-FROM sys.dm_os_nodes AS osn WITH (NOLOCK)
-    INNER JOIN sys.dm_os_memory_nodes AS osmn WITH (NOLOCK)
-        ON osn.memory_node_id = osmn.memory_node_id
-WHERE osn.node_state_desc <> N'ONLINE DAC' 
-OPTION (RECOMPILE);
-GO
-
------------------------------------------------------------------------
--- 3.4 GET CPU VECTORIZATION LEVEL (SQL Server 2022+)
---     Shows CPU vectorization support for query processing.
------------------------------------------------------------------------
-IF EXISTS (SELECT * WHERE CONVERT(VARCHAR(2), SERVERPROPERTY('ProductMajorVersion')) = '16')
-BEGIN		
-    -- Get CPU Description from Registry (only works on Windows)
-    DROP TABLE IF EXISTS #ProcessorDesc;
-    CREATE TABLE #ProcessorDesc (
-        RegValue NVARCHAR(50), 
-        RegKey NVARCHAR(100)
-    );
-
-    INSERT INTO #ProcessorDesc (RegValue, RegKey)
-    EXEC sys.xp_instance_regread 
-        N'HKEY_LOCAL_MACHINE', 
-        N'HARDWARE\DESCRIPTION\System\CentralProcessor\0', 
-        N'ProcessorNameString';
-    
-    DECLARE @ProcessorDesc NVARCHAR(100) = (SELECT RegKey FROM #ProcessorDesc);
-
-    -- Get CPU Vectorization Level from SQL Server Error Log
-    DROP TABLE IF EXISTS #CPUVectorizationLevel;
-    CREATE TABLE #CPUVectorizationLevel (
-        LogDateTime DATETIME, 
-        ProcessInfo NVARCHAR(12), 
-        LogText NVARCHAR(200)
-    );
-
-    INSERT INTO #CPUVectorizationLevel (LogDateTime, ProcessInfo, LogText)
-    EXEC sys.xp_readerrorlog 0, 1, N'CPU vectorization level';
-    
-    DECLARE @CPUVectorizationLevel NVARCHAR(200) = (SELECT LogText FROM #CPUVectorizationLevel);
-
-    -- Get TF15097 Status
-    DROP TABLE IF EXISTS #TraceFlagStatus;
-    CREATE TABLE #TraceFlagStatus (
-        TraceFlag SMALLINT, 
-        TFStatus TINYINT, 
-        TFGlobal TINYINT, 
-        TFSession TINYINT
-    );
-
-
-
-
-    -- Display results
-    SELECT 
-        @ProcessorDesc AS ProcessorDescription,
-        @CPUVectorizationLevel AS CPUVectorizationLevel;
-    
-    -- Cleanup
-    DROP TABLE IF EXISTS #ProcessorDesc;
-    DROP TABLE IF EXISTS #CPUVectorizationLevel;
-    DROP TABLE IF EXISTS #TraceFlagStatus;
-END
-GO
-
------------------------------------------------------------------------
--- SECTION 4: CPU SCHEDULER & TASK ANALYSIS
------------------------------------------------------------------------
-
------------------------------------------------------------------------
--- 4.1 GET AVERAGE TASK COUNTS (Run Multiple Times)
+-- 3.1 GET AVERAGE TASK COUNTS (Run Multiple Times)
 --     Shows scheduler pressure and CPU workload distribution.
 --     Run multiple times to identify trends and spikes.
 -----------------------------------------------------------------------
@@ -284,11 +178,11 @@ WHERE scheduler_id < 255  -- Exclude hidden schedulers
 OPTION (RECOMPILE);
 GO
 -----------------------------------------------------------------------
--- SECTION 5: SQL SERVER INSTANCE CPU UTILIZATION
+-- SECTION 4: SQL SERVER INSTANCE CPU UTILIZATION
 -----------------------------------------------------------------------
 
 -----------------------------------------------------------------------
--- 5.1 SQL SERVER INSTANCE CPU UTILIZATION HISTORY
+-- 4.1 SQL SERVER INSTANCE CPU UTILIZATION HISTORY
 --     Shows SQL Server vs Other process CPU utilization over time.
 --     Adjust @lastNmin to change time window.
 -----------------------------------------------------------------------
@@ -320,11 +214,11 @@ ORDER BY record_id DESC;
 GO
 
 -----------------------------------------------------------------------
--- SECTION 6: DATABASE-LEVEL CPU ANALYSIS
+-- SECTION 5: DATABASE-LEVEL CPU ANALYSIS
 -----------------------------------------------------------------------
 
 -----------------------------------------------------------------------
--- 6.1 DATABASE CPU CONSUMPTION SNAPSHOT AND DELTA
+-- 5.1 DATABASE CPU CONSUMPTION SNAPSHOT AND DELTA
 --     Shows CPU consumption by database with delta analysis.
 --     Takes two snapshots 10 seconds apart to show CPU rate.
 -----------------------------------------------------------------------
@@ -390,77 +284,11 @@ DROP TABLE IF EXISTS #tbl;
 GO
 
 -----------------------------------------------------------------------
--- 6.2 STORED PROCEDURE CPU STATISTICS (DATABASE-LEVEL)
---     Shows top CPU-consuming stored procedures with delta analysis.
---     Run in the target database context.
------------------------------------------------------------------------
--- First snapshot
-IF OBJECT_ID('tempdb.dbo.#t', 'U') IS NOT NULL
-    DROP TABLE #t;
-
-SELECT TOP (100) 
-    GETDATE() AS ReportedTime,
-    DB_NAME() AS database_name,
-    p.name AS [SP_Name], 
-    qs.total_worker_time AS [TotalWorkerTime], 
-    qs.total_worker_time / qs.execution_count AS [AvgWorkerTime], 
-    qs.execution_count, 
-    ISNULL(qs.execution_count / DATEDIFF(SECOND, qs.cached_time, GETDATE()), 0) AS [Calls_Per_Second],
-    qs.total_elapsed_time, 
-    qs.total_elapsed_time / qs.execution_count AS [avg_elapsed_time], 
-    qs.cached_time
-INTO #t
-FROM sys.procedures AS p WITH (NOLOCK)
-    INNER JOIN sys.dm_exec_procedure_stats AS qs WITH (NOLOCK) 
-        ON p.[object_id] = qs.[object_id]
-WHERE qs.database_id = DB_ID()
-ORDER BY qs.total_worker_time DESC 
-OPTION (RECOMPILE);
-
--- Wait 10 seconds
-WAITFOR DELAY '00:00:10';
-
--- Second snapshot with delta calculation
-SELECT 
-    t.ReportedTime AS [First_Snapshot_Time], 
-    x.[SP_Name], 
-    DATEDIFF(SECOND, t.ReportedTime, x.ReportedTime) AS [Seconds_Between_Snapshots],
-    x.[TotalWorkerTime] - t.[TotalWorkerTime] AS [Delta_TotalWorkerTime],
-    x.[AvgWorkerTime] - t.[AvgWorkerTime] AS [Delta_AvgWorkerTime],
-    x.execution_count - t.execution_count AS [Delta_execution_count],
-    x.total_elapsed_time - t.total_elapsed_time AS [Delta_total_elapsed_time],
-    x.[avg_elapsed_time] - t.[avg_elapsed_time] AS [Delta_avg_elapsed_time]
-FROM #t t 
-    INNER JOIN (
-        SELECT TOP (100) 
-            GETDATE() AS ReportedTime,
-            DB_NAME() AS database_name,
-            p.name AS [SP_Name], 
-            qs.total_worker_time AS [TotalWorkerTime], 
-            qs.total_worker_time / qs.execution_count AS [AvgWorkerTime], 
-            qs.execution_count, 
-            ISNULL(qs.execution_count / DATEDIFF(SECOND, qs.cached_time, GETDATE()), 0) AS [Calls_Per_Second],
-            qs.total_elapsed_time, 
-            qs.total_elapsed_time / qs.execution_count AS [avg_elapsed_time], 
-            qs.cached_time
-        FROM sys.procedures AS p WITH (NOLOCK)
-            INNER JOIN sys.dm_exec_procedure_stats AS qs WITH (NOLOCK) 
-                ON p.[object_id] = qs.[object_id]
-        WHERE qs.database_id = DB_ID()
-        ORDER BY qs.total_worker_time DESC
-    ) AS x ON t.[SP_Name] = x.[SP_Name]
-ORDER BY x.[TotalWorkerTime] - t.[TotalWorkerTime] DESC;
-
--- Cleanup
-DROP TABLE IF EXISTS #t;
-GO
-
------------------------------------------------------------------------
--- SECTION 7: CPU PRESSURE INDICATORS
+-- SECTION 6: CPU PRESSURE INDICATORS
 -----------------------------------------------------------------------
 
 -----------------------------------------------------------------------
--- 7.1 CPU PRESSURE ANALYSIS VIA WAIT STATISTICS
+-- 6.1 CPU PRESSURE ANALYSIS VIA WAIT STATISTICS
 --     Shows signal waits vs resource waits ratio.
 --     High signal waits (>25%) indicate CPU pressure.
 --     Note: This clears wait stats - use with caution.
@@ -477,12 +305,12 @@ FROM sys.dm_os_wait_stats;
 GO
 
 -----------------------------------------------------------------------
--- SECTION 8: PERFMON/THREAD-LEVEL TROUBLESHOOTING
+-- SECTION 7: PERFMON/THREAD-LEVEL TROUBLESHOOTING
 -----------------------------------------------------------------------
 
 /*
 -----------------------------------------------------------------------
--- 8.1 PERFMON APPROACH FOR THREAD-LEVEL ANALYSIS
+-- 7.1 PERFMON APPROACH FOR THREAD-LEVEL ANALYSIS
 --     Manual steps to correlate high CPU threads to SQL queries.
 -----------------------------------------------------------------------
 

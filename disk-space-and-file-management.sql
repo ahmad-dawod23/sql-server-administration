@@ -11,6 +11,7 @@
   SECTION A: DISK & VOLUME SPACE MONITORING
     A1. Volume Free Space (All Database Files)
     A2. LUN Names Used by Instance
+        A3. Fixed Drives Enumeration
   
   SECTION B: DATABASE FILE MANAGEMENT
     B1. Database File Sizes - Current Database
@@ -56,9 +57,14 @@
 SELECT DISTINCT
     vs.volume_mount_point                        AS Drive,
     vs.logical_volume_name                       AS VolumeName,
+    vs.file_system_type                          AS FileSystemType,
     CAST(vs.total_bytes  / 1073741824.0 AS DECIMAL(18,2)) AS TotalGB,
     CAST(vs.available_bytes / 1073741824.0 AS DECIMAL(18,2)) AS FreeGB,
     CAST(100.0 * vs.available_bytes / vs.total_bytes AS DECIMAL(5,2)) AS FreePct,
+    vs.supports_compression                      AS SupportsCompression,
+    vs.is_compressed                             AS IsCompressed,
+    vs.supports_sparse_files                     AS SupportsSparseFiles,
+    vs.supports_alternate_streams                AS SupportsAlternateStreams,
     CASE
         WHEN 100.0 * vs.available_bytes / vs.total_bytes < 10
             THEN '*** LOW SPACE ***'
@@ -78,6 +84,13 @@ SELECT DISTINCT
     SUBSTRING(physical_name, 0, CHARINDEX('\', physical_name, 6)) AS LUNPath
 FROM sys.master_files
 ORDER BY LUNPath;
+
+-----------------------------------------------------------------------
+-- A3. FIXED DRIVES ENUMERATION (SQL Server 2017+)
+--     Shows all fixed drives on the server (not limited to SQL files).
+-----------------------------------------------------------------------
+SELECT *
+FROM sys.dm_os_enumerate_fixed_drives;
 
 
 /*==============================================================================
