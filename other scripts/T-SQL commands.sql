@@ -1,505 +1,624 @@
-
---sql server commands and functions cheat sheet
-
--- cast:
---change datatype into the specficed type
-SELECT * FROM table where cast(num as bigint)=155555555555
--- convert:
--- convert is used whenever you want to convert an entire colume as opposed to cast which only changes a single value (or cell) to another datatype
--- the below query will change the entire column to a big int type instead of varchar
--- it can also be used in a where condition
-SELECT convert (bigint, [num]) FROM [table]
--- round: 
--- second argument of the function specfies the length of the round
---not very useful for our work as we dont deal with float numbers and computations on a db level in our products
-select round(123.918392, 3)
-
-
-
-
----string functions:
-
---Returns the specified number of characters from the left hand side of the given character expression.
-Select LEFT('ABCDE', 3)
---Returns the specified number of characters from the right hand side of the given character expression.
-Select RIGHT('ABCDE', 3)
---left side space removal
-Select LTRIM('   Hello')
---right side space removal:
-Select RTRIM('Hello   ')
---convert upper case to lower case:
-Select LOWER('CONVERT This String Into Lower Case')
----reverse a string 
-Select REVERSE('ABCDEFGHIJKLMNOPQRSTUVWXYZ')
---outputs the total number characters in a string
-Select LEN('SQL Functions   ')
--- extract a substring that starts from the first parameter and goes for the length of the second parameter:
-select substring(num, 3,6) from example_table
-select num from example_table where substring(num,3,6)='222222'
---Returns the starting position of the specified expression in a character string. Start_Location parameter is optional.
-Select CHARINDEX('@','sara@aaa.com',1)
----replace: its used to replace a portion of specfic value
-Select * REPLACE(num, 'Ahmad','AHMAD') Where num = '1234'
----replicate: Repeats the given string, for the specified number of times.
-SELECT REPLICATE('Pragim', 3)
-    
-
---date functions:
-
-Select DAY(GETDATE()) -- Returns the day number of the month, based on current system datetime.
-Select Month(GETDATE()) -- Returns the Month number of the year, based on the current system date and time
-Select Year(GETDATE()) -- Returns the year
-Select DATENAME(Day, '2012-09-30 12:43:46.837') -- Returns a string, that represents a part of the given date. This functions takes 2 parameters. which in this case is 30
---ISDATE() - Checks if the given value, is a valid date, time, or datetime. Returns 1 for success, 0 for failure.
-Select ISDATE(Getdate()) -- returns 1
-
---using them all in one query:
-Select FirstName, LastName, SUBSTRING(Email, 1, 2) + REPLICATE('*',5) + 
-SUBSTRING(Email, CHARINDEX('@',Email), LEN(Email) - CHARINDEX('@',Email)+1) as Email
-from tblEmployee
+/* =========================================================================
+   SQL SERVER T-SQL COMMANDS AND FUNCTIONS - REFERENCE GUIDE
+   =========================================================================
+   
+   This file contains a comprehensive collection of SQL Server commands,
+   functions, and techniques organized by category for easy reference.
+   
+   Table of Contents:
+   1. DATA TYPE CONVERSION FUNCTIONS
+   2. STRING FUNCTIONS
+   3. DATE AND TIME FUNCTIONS
+   4. WINDOW FUNCTIONS
+   5. QUERY OPERATIONS AND TECHNIQUES
+   6. JOINS
+   7. SET OPERATIONS
+   8. UPDATE OPERATIONS
+   9. STORED PROCEDURES
+   10. USER-DEFINED FUNCTIONS
+   11. TEMPORARY TABLES
+   12. INDEXES
+   13. TRIGGERS
+   14. CTEs AND DERIVED TABLES
+   15. TRANSACTIONS AND ISOLATION LEVELS
+   16. ERROR HANDLING
+   17. CURSORS
+   18. BULK OPERATIONS
+   19. TABLE CREATION EXAMPLES
+   
+========================================================================= */
 
 
+/* =========================================================================
+   1. DATA TYPE CONVERSION FUNCTIONS
+========================================================================= */
 
---case:
--- very useful
-SELECT [num]
-      ,[AccountTitle]
-      ,Mandate = case [MandateType]
-	  when '0' then 'Any'
-	  when '2' then 'All'
-	  else 'Custom'
-	  end
-      ,[CreatedDate]
-      ,[CreatedBy]
-  FROM [example_table]
+-- CAST: Change datatype into the specified type
+-- Usage: Converts a single value or cell to another datatype
+SELECT * FROM table WHERE CAST(num AS BIGINT) = 155555555555;
+
+-- CONVERT: Convert an entire column to a different datatype
+-- More flexible than CAST, allows format specification for dates
+SELECT CONVERT(BIGINT, [num]) FROM [table];
+
+-- ROUND: Round numeric values to specified precision
+-- Second argument specifies the number of decimal places
+-- Note: Not very useful for databases that don't deal with float computations
+SELECT ROUND(123.918392, 3); -- Returns 123.918
 
 
+/* =========================================================================
+   2. STRING FUNCTIONS
+========================================================================= */
 
---row number:
---can be useful in some situations
+-- LEFT: Returns specified number of characters from the left side
+SELECT LEFT('ABCDE', 3); -- Returns 'ABC'
 
+-- RIGHT: Returns specified number of characters from the right side
+SELECT RIGHT('ABCDE', 3); -- Returns 'CDE'
+
+-- LTRIM: Remove leading spaces
+SELECT LTRIM('   Hello'); -- Returns 'Hello'
+
+-- RTRIM: Remove trailing spaces
+SELECT RTRIM('Hello   '); -- Returns 'Hello'
+
+-- LOWER: Convert to lowercase
+SELECT LOWER('CONVERT This String Into Lower Case');
+
+-- UPPER: Convert to uppercase
+SELECT UPPER('convert this to upper');
+
+-- REVERSE: Reverse a string
+SELECT REVERSE('ABCDEFGHIJKLMNOPQRSTUVWXYZ');
+
+-- LEN: Get the length of a string (excludes trailing spaces)
+SELECT LEN('SQL Functions   '); -- Returns 13
+
+-- SUBSTRING: Extract a portion of a string
+-- SUBSTRING(string, start_position, length)
+SELECT SUBSTRING(num, 3, 6) FROM example_table;
+SELECT num FROM example_table WHERE SUBSTRING(num, 3, 6) = '222222';
+
+-- CHARINDEX: Find the position of a substring within a string
+-- CHARINDEX(search_string, string, start_location)
+SELECT CHARINDEX('@', 'sara@aaa.com', 1); -- Returns position of @
+
+-- REPLACE: Replace all occurrences of a substring with another string
+SELECT REPLACE(num, 'Ahmad', 'AHMAD') FROM table WHERE num = '1234';
+
+-- REPLICATE: Repeat a string a specified number of times
+SELECT REPLICATE('Pragim', 3); -- Returns 'PragimPragimPragim'
+
+-- Example: Combining string functions to mask email addresses
+SELECT FirstName, 
+       LastName, 
+       SUBSTRING(Email, 1, 2) + REPLICATE('*', 5) + 
+       SUBSTRING(Email, CHARINDEX('@', Email), LEN(Email) - CHARINDEX('@', Email) + 1) AS Email
+FROM tblEmployee;
+
+
+/* =========================================================================
+   3. DATE AND TIME FUNCTIONS
+========================================================================= */
+
+-- DAY: Extract day from a date
+SELECT DAY(GETDATE()); -- Returns day number of the month
+
+-- MONTH: Extract month from a date
+SELECT MONTH(GETDATE()); -- Returns month number
+
+-- YEAR: Extract year from a date
+SELECT YEAR(GETDATE()); -- Returns year
+
+-- DATENAME: Returns a string representing a part of the date
+SELECT DATENAME(Day, '2012-09-30 12:43:46.837'); -- Returns '30'
+
+-- ISDATE: Check if a value is a valid date (returns 1 for valid, 0 for invalid)
+SELECT ISDATE(GETDATE()); -- Returns 1
+
+-- GETDATE: Returns current system date and time
+SELECT GETDATE();
+
+-- DATEDIFF: Calculate difference between two dates
+SELECT DATEDIFF(YEAR, '2000-01-01', GETDATE());
+
+
+/* =========================================================================
+   4. WINDOW FUNCTIONS
+========================================================================= */
+
+-- ROW_NUMBER: Assigns sequential row numbers
+-- Useful for pagination and ranking
 SELECT ROW_NUMBER() OVER (ORDER BY PKID) AS num,
-FROM [example_table]
+       *
+FROM [example_table];
+
+-- RANK: Similar to ROW_NUMBER but assigns same rank to duplicate values
+-- Leaves gaps in ranking sequence after duplicates
+SELECT RANK() OVER (ORDER BY [UnitPrice] DESC) AS PriceRank,
+       [ProductID],
+       [Name],
+       [SupplierID],
+       [CategoryID],
+       [SubCategoryID],
+       [QuantityPerUnit],
+       [UnitPrice],
+       [OldPrice],
+       [UnitWeight],
+       [Size],
+       [Discount],
+       [UnitInStock],
+       [UnitOnOrder],
+       [ProductAvailable],
+       [ImageURL],
+       [AltText],
+       [AddBadge],
+       [OfferTitle],
+       [OfferBadgeClass],
+       [ShortDescription],
+       [LongDescription]
+FROM [Kahreedo].[dbo].[Products];
 
 
---rank function
---can be used just like row number, but its better in the fact that it can filter same values with the same rank
+/* =========================================================================
+   5. QUERY OPERATIONS AND TECHNIQUES
+========================================================================= */
 
-SELECT rank() over (order by [UnitPrice] desc) as PriceRank
-	,[ProductID]
-      ,[Name]
-      ,[SupplierID]
-      ,[CategoryID]
-      ,[SubCategoryID]
-      ,[QuantityPerUnit]
-      ,[UnitPrice]
-      ,[OldPrice]
-      ,[UnitWeight]
-      ,[Size]
-      ,[Discount]
-      ,[UnitInStock]
-      ,[UnitOnOrder]
-      ,[ProductAvailable]
-      ,[ImageURL]
-      ,[AltText]
-      ,[AddBadge]
-      ,[OfferTitle]
-      ,[OfferBadgeClass]
-      ,[ShortDescription]
-      ,[LongDescription]
-  FROM [Kahreedo].[dbo].[Products]
+-- CASE: Conditional logic in SQL
+-- Very useful for conditional transformations
+SELECT [num],
+       [AccountTitle],
+       Mandate = CASE [MandateType]
+                    WHEN '0' THEN 'Any'
+                    WHEN '2' THEN 'All'
+                    ELSE 'Custom'
+                 END,
+       [CreatedDate],
+       [CreatedBy]
+FROM [example_table];
 
+-- SELECT INTO: Create a new table from query results
+-- Note: New table will be created without constraints and indexes
+SELECT * INTO newtable2 FROM exampletable;
 
--- select into:
--- note that the new table will be created with no constrains and indexes 
--- very useful
-select * into newtable2 from exampletable
-  
+-- GROUP BY with HAVING: Aggregate data and filter groups
+-- Very useful for finding duplicates and aggregating data
+-- HAVING clause filters results after grouping
+SELECT num, COUNT(*)
+FROM accounts
+GROUP BY num
+HAVING COUNT(*) > 1; -- Find duplicate account numbers
 
+-- PIVOT: Transform rows into columns
+-- Rotates a table by turning unique values from one column into multiple columns
+SELECT [ProductID], [Polo T-Shirt], [New Polo T-Shirt] 
+FROM [Products]
+PIVOT (
+    SUM(unitinstock) 
+    FOR [Name] IN ([Polo T-Shirt], [New Polo T-Shirt])
+) AS PivotTable;
 
--- group by
--- very useful to group row elements to a single value like account number and using an aggreagite function with it
--- the below example will find repeated account titles if they exist
--- having is a condition that is used with group by, it will apply its condition after the grouping has been made
-select num, count(*)
-from accounts
-group by num
-having count(*)>1
+-- FINDING NTH HIGHEST VALUE
+-- Method 1: Using nested queries
+SELECT TOP 1 Salary, FirstName 
+FROM (
+    SELECT DISTINCT TOP (3) [Salary], [FirstName], [LastName], [Gender]
+    FROM [TestingApplication].[dbo].[Employees] 
+    ORDER BY Salary DESC
+) result
+ORDER BY Salary;
 
-
-
---pivot
---Pivot is a sql server operator that can be used to turn unique values from one column, into multiple columns in the output, there by effectively rotating a table.
-   select [ProductID],[Polo T-Shirt],[New Polo T-Shirt] from [Products]
- pivot
-  (
-  sum(unitinstock) for [Name] in ([Polo T-Shirt],[New Polo T-Shirt])
-  ) 
-  as PivotTable
-
-
--- How to find nth highest value:
-select top 1 Salary, FirstName from (
-SELECT distinct top (3)
- [Salary],
- [FirstName],
- [LastName],
- [Gender]
-FROM [TestingApplication].[dbo].[Employees] order by Salary desc) result
-order by Salary
---another way to find it:
-
+-- Method 2: Using OFFSET-FETCH (more efficient)
 SELECT *
 FROM example_table
 ORDER BY num DESC
-OFFSET 3 rows
-fetch next 1 rows only
+OFFSET 3 ROWS
+FETCH NEXT 1 ROWS ONLY;
+
+-- COALESCE: Return first non-NULL value from a list
+-- Useful for handling NULL values and providing defaults
+SELECT [EMPLOYEE_ID],
+       COALESCE([FIRST_NAME], [LAST_NAME], [EMAIL]) AS Name
+FROM [EMPLOYEES];
 
 
+/* =========================================================================
+   6. JOINS
+========================================================================= */
+
+-- SELF JOIN: Join a table with itself
+-- Useful when hierarchical or relational data exists within the same table
+-- Example: Employees and their managers in the same table
+SELECT a.[EMPLOYEE_ID],
+       a.FIRST_NAME + ' ' + a.LAST_NAME AS EMPLOYEE_NAME,
+       a.MANAGER_ID,
+       b.FIRST_NAME + ' ' + b.LAST_NAME AS MANAGER_NAME
+FROM [HR].[dbo].[EMPLOYEES] a 
+LEFT JOIN EMPLOYEES b ON a.MANAGER_ID = b.EMPLOYEE_ID;
 
 
---self join: can be used to join a table with itself, in the below example from the sample hr schema
--- both the, EMPLOYEE and MANAGER rows, are present in the same table
--- to not confuse ourselves, we can pretend that the second table is a different table altogether and join with it based on the forgin key (in this case the manager id)
--- and retrieve columns from it based on its aliace.
-SELECT a.[EMPLOYEE_ID]
-      ,a.FIRST_NAME+' '+a.LAST_NAME as EMPLOYEE_NAME
-	  ,a.MANAGER_ID
-	  ,b.FIRST_NAME+' '+b.LAST_NAME as MANAGER_NAME
-  FROM [HR].[dbo].[EMPLOYEES] a left join EMPLOYEES b on a.MANAGER_ID=b.EMPLOYEE_ID
+/* =========================================================================
+   7. SET OPERATIONS
+========================================================================= */
 
+-- UNION and UNION ALL: Combine results from multiple SELECT statements
+-- UNION removes duplicate rows (slower - requires distinct sort)
+-- UNION ALL keeps all rows including duplicates (faster)
+-- Requirements: Same number of columns with compatible data types
+-- Difference from JOINS: UNION combines rows, JOINS combine columns
 
-
---Coalesce() function
--- The COALESCE() function returns only the first non null value from the 3 columns.
---We are passing FirstName, MiddleName and LastName columns as parameters to the COALESCE() function.
-
-SELECT [EMPLOYEE_ID]
-      ,COALESCE([FIRST_NAME],[LAST_NAME],[EMAIL])
-  FROM [EMPLOYEES]
-  
-  
---update
-
---update with join:
-
-UPDATE 
-    assets
-SET 
-trade_start_date=b.trade_start_date
-FROM 
-   assets a inner join [EmployeeCaseStudy].[dbo].[temptable] b on a.slug=b.slug
-WHERE 
-b.trade_start_date<>'2016-09-09'
-  
-  
----update with replace
---- its used to replace a portion of specfic value
---- in the below example, its used in a update statement inorder to change the account number from using lower case letters to upper case letters(real use case)
-Update example_table Set num = REPLACE(num, 'Ahmad','AHMAD') Where num = '1234'
-
-
-
-
----union
----UNION and UNION ALL operators in SQL Server, are used to combine the result-set of two or more SELECT queries.
----UNION removes duplicate rows, where as UNION ALL does not. 
---When use UNION, to remove the duplicate rows, sql server has to to do a distinct sort, which is time consuming. 
---For this reason, UNION ALL is much faster than UNION. 
---unions only work with matching datatypes and columns
---If you want to sort, the results of UNION or UNION ALL, the ORDER BY caluse should be used on the last SELECT statement as shown below.
---difference between unions and joins: UNION combines rows from 2 or more tables, where JOINS combine columns from 2 or more table.
-Select Id, Name, Email from tblIndiaCustomers
+-- UNION (removes duplicates)
+SELECT Id, Name, Email FROM tblIndiaCustomers
 UNION
-Select Id, Name, Email from tblUKCustomers
-Order by Name
+SELECT Id, Name, Email FROM tblUKCustomers
+ORDER BY Name; -- ORDER BY must be on the last SELECT statement
+
+-- UNION ALL (keeps duplicates)
+SELECT Id, Name, Email FROM tblIndiaCustomers
+UNION ALL
+SELECT Id, Name, Email FROM tblUKCustomers;
 
 
+/* =========================================================================
+   8. UPDATE OPERATIONS
+========================================================================= */
+
+-- Basic UPDATE with REPLACE
+-- Used to replace a portion of a specific value
+-- Example: Convert lowercase to uppercase in account numbers
+UPDATE example_table 
+SET num = REPLACE(num, 'Ahmad', 'AHMAD') 
+WHERE num = '1234';
+
+-- UPDATE with JOIN: Update based on data from another table
+-- Very useful for bulk updates based on related data
+UPDATE assets
+SET trade_start_date = b.trade_start_date
+FROM assets a 
+INNER JOIN [EmployeeCaseStudy].[dbo].[temptable] b ON a.slug = b.slug
+WHERE b.trade_start_date <> '2016-09-09';
 
 
+/* =========================================================================
+   9. STORED PROCEDURES
+========================================================================= */
+
+-- Basic Stored Procedure with Parameters
+CREATE PROCEDURE spGetEmployeesByGenderAndDepartment 
+    @ManagerId NVARCHAR(50),
+    @DepartmentId INT
+AS
+BEGIN
+    SELECT FIRST_NAME, EMAIL, PHONE_NUMBER 
+    FROM EMPLOYEES 
+    WHERE MANAGER_ID = @ManagerId 
+      AND DEPARTMENT_ID = @DepartmentId;
+END;
+
+-- Execute stored procedure
+EXECUTE spGetEmployeesByManagerAndDep @DepartmentId = 90, @ManagerId = '100';
+
+-- Stored Procedure with OUTPUT Parameter
+CREATE PROCEDURE spGetEmployeeCountByGender
+    @Gender NVARCHAR(20),
+    @EmployeeCount INT OUTPUT
+AS
+BEGIN
+    SELECT @EmployeeCount = COUNT(Id) 
+    FROM tblEmployee 
+    WHERE Gender = @Gender;
+END;
+
+-- Call with OUTPUT parameter
+DECLARE @EmployeeTotal INT;
+EXECUTE spGetEmployeeCountByGender 'Female', @EmployeeTotal OUTPUT;
+SELECT @EmployeeTotal;
+
+-- Stored Procedure with RETURN Value
+-- Note: RETURN should only be used with integer values
+CREATE PROCEDURE spGetTotalCountOfEmployees2
+AS
+BEGIN
+    RETURN (SELECT COUNT(ID) FROM Employees);
+END;
+
+-- Call with RETURN value
+DECLARE @TotalEmployees INT;
+EXECUTE @TotalEmployees = spGetTotalCountOfEmployees2;
+SELECT @TotalEmployees;
+
+-- Stored Procedure Example: Insert Employee
+CREATE PROCEDURE [dbo].[Sp_AddEmployee]
+    @Name NVARCHAR(50),
+    @Gender NVARCHAR(20),
+    @Salary INT
+AS
+BEGIN
+    INSERT INTO [dbo].[tblEmployee] ([Name], [Gender], [Salary])
+    VALUES (@Name, @Gender, @Salary);
+END;
 
 
+/* =========================================================================
+   10. USER-DEFINED FUNCTIONS
+========================================================================= */
 
-
---stored proccudures
----how to create:
-Create Procedure spGetEmployeesByGenderAndDepartment 
-@ManagerId nvarchar(50),
-@DepartmentId int
-as
-Begin
-  Select FIRST_NAME, EMAIL,PHONE_NUMBER from EMPLOYEES Where MANAGER_ID = @ManagerId and DEPARTMENT_ID = @DepartmentId
-End
-
---how to call:
-EXECUTE spGetEmployeesByManagerAndDep @DepartmentId=90, @ManagerId = '100'
-
-
---stored proccudures with an output value:
---create:
-Create Procedure spGetEmployeeCountByGender
-@Gender nvarchar(20),
-@EmployeeCount int Output
-as
-Begin
- Select @EmployeeCount = COUNT(Id) 
- from tblEmployee 
- where Gender = @Gender
-End
---call
-Declare @EmployeeTotal int
-Execute spGetEmployeeCountByGender 'Female', @EmployeeTotal out
-
---stored proccudure with a returned value (only use return with integer values):
-Create Procedure spGetTotalCountOfEmployees2
-as
-Begin
- return (Select COUNT(ID) from Employees)
-End
-
---call
-Declare @TotalEmployees int
-Execute @TotalEmployees = spGetTotalCountOfEmployees2
-Select @TotalEmployees
-
---functions:
--- 1) scalar functions:
---they return a single value of a specfic type i.e varchar, int etc...
-CREATE FUNCTION Age(@DOB Date)  
+-- 1) SCALAR FUNCTIONS
+-- Returns a single value of a specific type (varchar, int, etc.)
+-- Example: Calculate age or years of service
+CREATE FUNCTION Age(@DOB DATE)  
 RETURNS INT  
 AS  
 BEGIN  
- DECLARE @Age INT  
- SET @Age = DATEDIFF(YEAR, @DOB, GETDATE()) - CASE WHEN (MONTH(@DOB) > MONTH(GETDATE())) OR (MONTH(@DOB) = MONTH(GETDATE()) AND DAY(@DOB) > DAY(GETDATE())) THEN 1 ELSE 0 END  
- RETURN @Age  
-END
----functions can be used in select statements and conditions
-SELECT [EMPLOYEE_ID]
-      ,[FIRST_NAME]
-      ,[LAST_NAME]
-      ,[EMAIL]
-      ,[PHONE_NUMBER]
-      ,dbo.age([HIRE_DATE]) as 'service years'
-  FROM [HR].[dbo].[EMPLOYEES] where dbo.age([HIRE_DATE])>20
+    DECLARE @Age INT;
+    SET @Age = DATEDIFF(YEAR, @DOB, GETDATE()) - 
+               CASE WHEN (MONTH(@DOB) > MONTH(GETDATE())) OR 
+                         (MONTH(@DOB) = MONTH(GETDATE()) AND DAY(@DOB) > DAY(GETDATE())) 
+                    THEN 1 
+                    ELSE 0 
+               END;
+    RETURN @Age;
+END;
 
--- 2) inline function
---they return a table 
---the below inline function returns all employees who are part of the specfied department id
-CREATE FUNCTION fn_EmployeesByDepID(@DepId int)
+-- Using scalar functions in SELECT statements and WHERE clauses
+SELECT [EMPLOYEE_ID],
+       [FIRST_NAME],
+       [LAST_NAME],
+       [EMAIL],
+       [PHONE_NUMBER],
+       dbo.Age([HIRE_DATE]) AS 'service years'
+FROM [HR].[dbo].[EMPLOYEES] 
+WHERE dbo.Age([HIRE_DATE]) > 20;
+
+-- 2) INLINE TABLE-VALUED FUNCTIONS
+-- Returns a table - acts like a parameterized view
+-- More efficient than multi-statement functions
+CREATE FUNCTION fn_EmployeesByDepID(@DepId INT)
 RETURNS TABLE
 AS
-RETURN (SELECT [EMPLOYEE_ID]
-      ,[FIRST_NAME]
-      ,[LAST_NAME]
-      ,[EMAIL]
-      ,[PHONE_NUMBER]
-      ,[HIRE_DATE]
-      ,[JOB_ID]
-      ,[SALARY]
-      ,[MANAGER_ID]
-  FROM [EMPLOYEES]
-      where [DEPARTMENT_ID] = @DepId)
--- which can then be called like below, and you can also use a join with an other table when fetching from this function, as you are basically dealing with a table.
-select * from fn_EmployeesByDepID(90) a inner join JOBS b on a.JOB_ID=b.JOB_ID;
---you can also use an inline function in an update statement
-update fn_EmployeesByDepID(90) set Phone_Number='0798632519' where Employee_ID='211'
+RETURN (
+    SELECT [EMPLOYEE_ID],
+           [FIRST_NAME],
+           [LAST_NAME],
+           [EMAIL],
+           [PHONE_NUMBER],
+           [HIRE_DATE],
+           [JOB_ID],
+           [SALARY],
+           [MANAGER_ID]
+    FROM [EMPLOYEES]
+    WHERE [DEPARTMENT_ID] = @DepId
+);
 
+-- Query inline function like a table
+SELECT * 
+FROM fn_EmployeesByDepID(90) a 
+INNER JOIN JOBS b ON a.JOB_ID = b.JOB_ID;
 
- 
--- 3)Multi-Statement Table Valued Functions
---returns a table instance as specificed in its select statement
--- for differences: https://csharp-video-tutorials.blogspot.com/2012/09/multi-statement-table-valued-functions.html
+-- Update through inline function
+UPDATE fn_EmployeesByDepID(90) 
+SET Phone_Number = '0798632519' 
+WHERE Employee_ID = '211';
 
-create function [dbo].[fn_GetEmployees]()
-returns @table table (Id int, EmpNAME varchar(40), HireDate Date)
-as
-begin
-insert into @table
-SELECT [EMPLOYEE_ID],[FIRST_NAME]+' '+[LAST_NAME],[HIRE_DATE]
-FROM [EMPLOYEES]
-return
-end
+-- 3) MULTI-STATEMENT TABLE-VALUED FUNCTIONS
+-- Returns a table with more complex logic
+-- Allows multiple statements and variable declaration
+-- Reference: https://csharp-video-tutorials.blogspot.com/2012/09/multi-statement-table-valued-functions.html
+CREATE FUNCTION [dbo].[fn_GetEmployees]()
+RETURNS @table TABLE (Id INT, EmpNAME VARCHAR(40), HireDate DATE)
+AS
+BEGIN
+    INSERT INTO @table
+    SELECT [EMPLOYEE_ID], 
+           [FIRST_NAME] + ' ' + [LAST_NAME], 
+           [HIRE_DATE]
+    FROM [EMPLOYEES];
+    RETURN;
+END;
 
+-- FUNCTION OPTIONS
 
---encrypting a function:
---to encrypt a function we add the 'with encryption' keyword below the returns keyword 
+-- Encrypting a function (prevents viewing definition)
 ALTER FUNCTION [dbo].[GETID]()
 RETURNS INT
-with encryption
+WITH ENCRYPTION
 AS  
 BEGIN
-DECLARE @maxID int
-set @maxID = (select max([EMPLOYEE_ID]) from EMPLOYEES) 
-RETURN @maxID + 1
-END
+    DECLARE @maxID INT;
+    SET @maxID = (SELECT MAX([EMPLOYEE_ID]) FROM EMPLOYEES);
+    RETURN @maxID + 1;
+END;
 
---schema binding a function with a table, so the binding stops it from getting dropped
+-- Schema binding (prevents dropping referenced tables)
 ALTER FUNCTION [dbo].[GETID]()
 RETURNS INT
-with SchemaBinding
+WITH SCHEMABINDING
 AS  
 BEGIN
-DECLARE @maxID int
-set @maxID = (select max([EMPLOYEE_ID]) from dbo.EMPLOYEES) 
-RETURN @maxID + 1
-END
+    DECLARE @maxID INT;
+    SET @maxID = (SELECT MAX([EMPLOYEE_ID]) FROM dbo.EMPLOYEES);
+    RETURN @maxID + 1;
+END;
 
---more about functions: https://csharp-video-tutorials.blogspot.com/2012/09/important-concepts-related-to-functions.html
-
-
-
---temporary tables:
---tables that are created to contain data that is not permenat and will be dropped when the session is closed
---In SQL Server, there are 2 types of Temporary tables - Local Temporary tables and Global Temporary tables.
---Local temporary tables are only visible to that session of the SQL Server which has created it, 
---where as Global temporary tables are visible to all the SQL server sessions.
-
---Local temporary tables are automatically dropped, when the session that created the temporary tables is closed, 
---where as Global temporary tables are destroyed when the last connection that is referencing the global temp table is closed.
-
---how to create local temp tables
- Create Table #PersonDetails(Id int, Name nvarchar(20))
---how to create global temp tables
- Create Table ##EmployeeDetails(Id int, Name nvarchar(20))
- 
--- you can also use them inside stored proccudures as in the below example
-Create Procedure spCreateLocalTempTable
-as
-Begin
-
-select * into #LinkMonsterDetails from MONSTERS where TYPE='Link Monster'
-
-Select * from #LinkMonsterDetails
-End
+-- More about functions: https://csharp-video-tutorials.blogspot.com/2012/09/important-concepts-related-to-functions.html
 
 
+/* =========================================================================
+   11. TEMPORARY TABLES
+========================================================================= */
+
+-- Temporary tables contain non-permanent data
+-- Useful for storing intermediate results in complex queries
+
+-- LOCAL TEMPORARY TABLES (#TableName)
+-- Only visible to the current session
+-- Automatically dropped when session closes
+CREATE TABLE #PersonDetails(Id INT, Name NVARCHAR(20));
+
+-- GLOBAL TEMPORARY TABLES (##TableName)
+-- Visible to all sessions
+-- Dropped when last connection referencing it closes
+CREATE TABLE ##EmployeeDetails(Id INT, Name NVARCHAR(20));
+
+-- Using temporary tables in stored procedures
+CREATE PROCEDURE spCreateLocalTempTable
+AS
+BEGIN
+    SELECT * INTO #LinkMonsterDetails 
+    FROM MONSTERS 
+    WHERE TYPE = 'Link Monster';
+    
+    SELECT * FROM #LinkMonsterDetails;
+END;
 
 
---indexes
--- how to create:
+/* =========================================================================
+   12. INDEXES
+========================================================================= */
 
-  create index ix_monsters on [MONSTERS] (attack asc)
-  create nonclustered index ixemployeesphones on EMPLOYEES (EMPLOYEE_ID DESC, PHONE_NUMBER DESC)
+-- Creating indexes for performance optimization
+-- Indexes speed up data retrieval but slow down INSERT/UPDATE/DELETE
 
-  
---get info on table indexes:
-sp_helpindex EMPLOYEES
+-- Simple index
+CREATE INDEX ix_monsters ON [MONSTERS] (attack ASC);
 
+-- Composite nonclustered index
+CREATE NONCLUSTERED INDEX ixemployeesphones 
+ON EMPLOYEES (EMPLOYEE_ID DESC, PHONE_NUMBER DESC);
 
--- By default, duplicate values are not allowed on key columns, when you have a unique index or constraint.
--- For, example, if I try to insert 10 rows, out of which 5 rows contain duplicates, then all the 10 rows are rejected. 
---However, if I want only the 5 duplicate rows to be rejected and accept the non-duplicate 5 rows, then I can use IGNORE_DUP_KEY option. 
---An example of using IGNORE_DUP_KEY option is shown below.
+-- Get information about table indexes
+EXEC sp_helpindex EMPLOYEES;
+
+-- UNIQUE INDEX with IGNORE_DUP_KEY option
+-- By default, duplicate values are not allowed on key columns with unique indexes
+-- IGNORE_DUP_KEY: Rejects only duplicate rows instead of entire batch
 CREATE UNIQUE INDEX IX_tblEmployee_City
 ON tblEmployee(City)
-WITH IGNORE_DUP_KEY
+WITH IGNORE_DUP_KEY;
 
 
+/* =========================================================================
+   13. TRIGGERS
+========================================================================= */
 
+-- Triggers are special stored procedures that automatically execute
+-- when an event (INSERT, UPDATE, DELETE) occurs on a table
 
---triggers:
---special kind of stored procedure that automatically executes when an event occurs in the database server
 CREATE TRIGGER [dbo].[tr_tblEMployee_ForInsert]
 ON [dbo].[EMPLOYEES]
 FOR INSERT
 AS
 BEGIN
- Declare @Id int
- Select @Id = EMPLOYEE_ID from inserted
- 
- insert into tblEmployeeAudit 
- values('New employee with Id  = ' + Cast(@Id as nvarchar(5)) + ' is added at ' + cast(Getdate() as nvarchar(20)))
-END
+    DECLARE @Id INT;
+    SELECT @Id = EMPLOYEE_ID FROM inserted;
+    
+    INSERT INTO tblEmployeeAudit 
+    VALUES('New employee with Id = ' + CAST(@Id AS NVARCHAR(5)) + 
+           ' is added at ' + CAST(GETDATE() AS NVARCHAR(20)));
+END;
 
 
+/* =========================================================================
+   14. CTEs AND DERIVED TABLES
+========================================================================= */
 
---Derived table:
+-- DERIVED TABLE (Subquery in FROM clause)
+-- Exists only for the duration of the query
+SELECT DEPARTMENT_NAME, TotalEmployees
+FROM (
+    SELECT [DEPARTMENT_NAME], 
+           a.[DEPARTMENT_ID], 
+           COUNT(*) AS TotalEmployees
+    FROM EMPLOYEES a
+    JOIN DEPARTMENTS b ON a.DEPARTMENT_ID = b.DEPARTMENT_ID
+    GROUP BY [DEPARTMENT_NAME], a.[DEPARTMENT_ID]
+) AS EmployeeCount
+WHERE TotalEmployees >= 2;
 
-Select DEPARTMENT_NAME, TotalEmployees
-from 
- (
-  Select [DEPARTMENT_NAME], a.[DEPARTMENT_ID], COUNT(*) as TotalEmployees
-  from EMPLOYEES a
-  join DEPARTMENTS b
-  on a.DEPARTMENT_ID = b.DEPARTMENT_ID
-  group by [DEPARTMENT_NAME], a.[DEPARTMENT_ID]
- ) 
-as EmployeeCount
-where TotalEmployees >= 2
+-- COMMON TABLE EXPRESSION (CTE)
+-- More readable than derived tables
+-- Can be referenced multiple times in the same query
+-- Supports recursion
 
---common table expression
-With EmployeeCount([DEPARTMENT_NAME], [DEPARTMENT_ID], TotalEmployees)
-as
-(
-  Select [DEPARTMENT_NAME], a.[DEPARTMENT_ID], COUNT(*) as TotalEmployees
-  from EMPLOYEES a
-  join DEPARTMENTS b
-  on a.DEPARTMENT_ID = b.DEPARTMENT_ID
-  group by [DEPARTMENT_NAME], a.[DEPARTMENT_ID]
+-- CTE with column names specified
+WITH EmployeeCount([DEPARTMENT_NAME], [DEPARTMENT_ID], TotalEmployees)
+AS (
+    SELECT [DEPARTMENT_NAME], 
+           a.[DEPARTMENT_ID], 
+           COUNT(*) AS TotalEmployees
+    FROM EMPLOYEES a
+    JOIN DEPARTMENTS b ON a.DEPARTMENT_ID = b.DEPARTMENT_ID
+    GROUP BY [DEPARTMENT_NAME], a.[DEPARTMENT_ID]
 )
+SELECT [DEPARTMENT_NAME], TotalEmployees
+FROM EmployeeCount
+WHERE TotalEmployees >= 2;
 
-Select [DEPARTMENT_NAME], TotalEmployees
-from EmployeeCount
-where TotalEmployees >= 2
-
---the the column names on top are optional and therefore you can also write it like this:
-With EmployeeCount
-as
-(
-  Select [DEPARTMENT_NAME], a.[DEPARTMENT_ID], COUNT(*) as TotalEmployees
-  from EMPLOYEES a
-  join DEPARTMENTS b
-  on a.DEPARTMENT_ID = b.DEPARTMENT_ID
-  group by [DEPARTMENT_NAME], a.[DEPARTMENT_ID]
+-- CTE with inferred column names (simpler syntax)
+WITH EmployeeCount
+AS (
+    SELECT [DEPARTMENT_NAME], 
+           a.[DEPARTMENT_ID], 
+           COUNT(*) AS TotalEmployees
+    FROM EMPLOYEES a
+    JOIN DEPARTMENTS b ON a.DEPARTMENT_ID = b.DEPARTMENT_ID
+    GROUP BY [DEPARTMENT_NAME], a.[DEPARTMENT_ID]
 )
-
-Select [DEPARTMENT_NAME], TotalEmployees
-from EmployeeCount
-where TotalEmployees >= 2
-
-
----- try catch and error handling:
----https://csharp-video-tutorials.blogspot.com/2012/10/error-handling-in-sql-server-2000-part.html
----https://csharp-video-tutorials.blogspot.com/2012/10/error-handling-in-sql-server-2005-and_6.html
+SELECT [DEPARTMENT_NAME], TotalEmployees
+FROM EmployeeCount
+WHERE TotalEmployees >= 2;
 
 
+/* =========================================================================
+   15. TRANSACTIONS AND ISOLATION LEVELS
+========================================================================= */
 
+-- TRANSACTIONS
+-- A transaction is a group of commands treated as a single unit
+-- Ensures either all commands succeed or none of them (ACID properties)
 
---Transactions
---A transaction is a group of commands that change the data stored in a database. A transaction, is treated as a single unit. A transaction ensures that, either all of the --commands succeed, or none of them.
- Begin Try
-  Begin Transaction
-   Update tblMailingAddress set City = 'LONDON' 
-   where AddressId = 1 and EmployeeNumber = 101
-   
-   Update tblPhysicalAddress set City = 'LONDON' 
-   where AddressId = 1 and EmployeeNumber = 101
-  Commit Transaction
- End Try
- Begin Catch
-  Rollback Transaction
- End Catch 
+BEGIN TRY
+    BEGIN TRANSACTION;
+        UPDATE tblMailingAddress 
+        SET City = 'LONDON' 
+        WHERE AddressId = 1 AND EmployeeNumber = 101;
+        
+        UPDATE tblPhysicalAddress 
+        SET City = 'LONDON' 
+        WHERE AddressId = 1 AND EmployeeNumber = 101;
+    COMMIT TRANSACTION;
+END TRY
+BEGIN CATCH
+    ROLLBACK TRANSACTION;
+END CATCH;
 
+-- TRANSACTION ISOLATION LEVELS
+-- Control how transactions handle concurrency and locking
 
---transaction isolation levels
+-- READ COMMITTED (default)
+-- Only read data that has been committed
+SET TRANSACTION ISOLATION LEVEL READ COMMITTED;
 
-set transaction isolation level read committed
---only read data that has been comitted
+-- READ UNCOMMITTED (dirty reads allowed)
+-- Read data that has not been committed
+-- Fastest but least safe
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
 
-set transaction isolation level read uncommitted
---read data that has been uncomitted
+-- REPEATABLE READ
+-- Locks rows being read to prevent modifications until transaction completes
+SET TRANSACTION ISOLATION LEVEL REPEATABLE READ;
 
-set transaction isolation level repeatable read
---locks the table from writting while its being written over
+-- SNAPSHOT
+-- Creates a snapshot of data; reads from snapshot instead of live data
+-- Prevents blocking but uses more tempdb space
+SET TRANSACTION ISOLATION LEVEL SNAPSHOT;
 
-set transaction isolation level snapshot
---creates a snapshot of a table that is being accessed, it will display data from the snapshot before its commited 
+-- SERIALIZABLE (highest isolation)
+-- Strongest isolation; prevents phantom reads
+SET TRANSACTION ISOLATION LEVEL SERIALIZABLE;
 
-set transaction isolation level serializable
-
-
---- check isolation level:
-
+-- Check current isolation level
 SELECT transaction_sequence_num,
        commit_sequence_num,
        is_snapshot,
@@ -510,100 +629,100 @@ SELECT transaction_sequence_num,
        host_name,
        login_name,
        CASE transaction_isolation_level
-           WHEN '0' THEN
-               'Unspecified'
-           WHEN '1' THEN
-               'ReadUncomitted'
-           WHEN '2' THEN
-               'ReadCommitted'
-           WHEN '3' THEN
-               'Repeatable'
-           WHEN '4' THEN
-               'Serializable'
-           WHEN '5' THEN
-               'Snapshot'
+           WHEN '0' THEN 'Unspecified'
+           WHEN '1' THEN 'ReadUncomitted'
+           WHEN '2' THEN 'ReadCommitted'
+           WHEN '3' THEN 'Repeatable'
+           WHEN '4' THEN 'Serializable'
+           WHEN '5' THEN 'Snapshot'
        END AS transaction_isolation_level
 FROM sys.dm_tran_active_snapshot_database_transactions t
-    JOIN sys.dm_exec_sessions s
-        ON t.session_id = s.session_id;
+JOIN sys.dm_exec_sessions s ON t.session_id = s.session_id;
 
 
+/* =========================================================================
+   16. ERROR HANDLING
+========================================================================= */
+
+-- TRY-CATCH blocks for error handling in SQL Server 2005+
+-- Reference: https://csharp-video-tutorials.blogspot.com/2012/10/error-handling-in-sql-server-2000-part.html
+-- Reference: https://csharp-video-tutorials.blogspot.com/2012/10/error-handling-in-sql-server-2005-and_6.html
+
+BEGIN TRY
+    -- Code that might cause an error
+    SELECT 1/0;
+END TRY
+BEGIN CATCH
+    SELECT ERROR_NUMBER() AS ErrorNumber,
+           ERROR_SEVERITY() AS ErrorSeverity,
+           ERROR_STATE() AS ErrorState,
+           ERROR_PROCEDURE() AS ErrorProcedure,
+           ERROR_LINE() AS ErrorLine,
+           ERROR_MESSAGE() AS ErrorMessage;
+END CATCH;
 
 
+/* =========================================================================
+   17. CURSORS
+========================================================================= */
+
+-- Cursors allow row-by-row processing of result sets
+-- Use sparingly - set-based operations are usually more efficient
+
+DECLARE @userFk UNIQUEIDENTIFIER;
+
+DECLARE crsr CURSOR FOR 
+    SELECT objectid FROM AppSetting;
+
+OPEN crsr;
+FETCH NEXT FROM crsr INTO @userFk;
+
+WHILE (@@FETCH_STATUS = 0)
+BEGIN
+    PRINT @userFk;
+    FETCH NEXT FROM crsr INTO @userFk;
+END;
+
+CLOSE crsr;
+DEALLOCATE crsr;
 
 
+/* =========================================================================
+   18. BULK OPERATIONS
+========================================================================= */
 
-
---importing data from a csv file with sql commands
+-- BULK INSERT: Import data from a file
+-- Fast way to load large amounts of data
 BULK INSERT dbo.Actors
 FROM 'C:\Documents\Skyvia\csv-to-mssql\actor.csv'
-WITH
-(
-        FORMAT='CSV',
-        FIRSTROW=2
-)
+WITH (
+    FORMAT = 'CSV',
+    FIRSTROW = 2
+);
 GO
 
 
---- cursors:
+/* =========================================================================
+   19. TABLE CREATION EXAMPLES
+========================================================================= */
 
-declare @userFk uniqueidentifier
-
-declare crsr cursor for 
-select objectid from AppSetting
-open crsr
-fetch next from crsr into @userFk
-
-while (@@FETCH_STATUS=0)
-begin
-
-fetch next from crsr into @userFk
-print @userFk
-
-end
-close crsr
-deallocate crsr
-
-
-
-
-
+-- Example table with identity column and constraints
 CREATE TABLE [dbo].[tblEmployee](
-	[ID] [int] IDENTITY(1,1) NOT NULL,
-	[Name] [nvarchar](50) NULL,
-	[Gender] [nvarchar](50) NULL,
-	[Salary] [nvarchar](50) NULL,
-PRIMARY KEY CLUSTERED 
-(
-	[ID] ASC
-)WITH (PAD_INDEX = OFF, STATISTICS_NORECOMPUTE = OFF, IGNORE_DUP_KEY = OFF, ALLOW_ROW_LOCKS = ON, ALLOW_PAGE_LOCKS = ON, OPTIMIZE_FOR_SEQUENTIAL_KEY = OFF) ON [PRIMARY]
-) ON [PRIMARY]
-GO 
-
-
-
-
-CREATE PROCEDURE [dbo].[Sp_AddEmployee]
-	-- Add the parameters for the stored procedure here
-	@Name nvarchar(50),
-	@Gender nvarchar(20),
-	@Salary int
-
-AS
-BEGIN
-
-	INSERT INTO [dbo].[tblEmployee]
-           ([Name]
-           ,[Gender]
-           ,[Salary])
-     VALUES
-           (@Name
-           ,@Gender
-           ,@Salary)
-
-
-
-END
+    [ID] [INT] IDENTITY(1,1) NOT NULL,
+    [Name] [NVARCHAR](50) NULL,
+    [Gender] [NVARCHAR](50) NULL,
+    [Salary] [NVARCHAR](50) NULL,
+    PRIMARY KEY CLUSTERED ([ID] ASC)
+    WITH (
+        PAD_INDEX = OFF, 
+        STATISTICS_NORECOMPUTE = OFF, 
+        IGNORE_DUP_KEY = OFF, 
+        ALLOW_ROW_LOCKS = ON, 
+        ALLOW_PAGE_LOCKS = ON, 
+        OPTIMIZE_FOR_SEQUENTIAL_KEY = OFF
+    ) ON [PRIMARY]
+) ON [PRIMARY];
+GO
 
 
 
