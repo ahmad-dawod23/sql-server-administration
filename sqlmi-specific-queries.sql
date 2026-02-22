@@ -204,3 +204,120 @@ SELECT CASE WHEN fabric_replica_role_desc IS NOT NULL THEN fabric_replica_role_d
 -- ***************************************************************************************************************************
 -- End
 -- ***************************************************************************************************************************
+
+
+
+-----------------------------------------------------------------------
+-- 3.2 Non-Encrypted TDS Connections (Azure SQL MI)
+--      Find unencrypted connections that aren't using Shared Memory
+--      and aren't internal AG/MI Link traffic
+-----------------------------------------------------------------------
+SELECT DISTINCT
+    net_transport                AS [Transport Protocol],
+    protocol_type                AS [Protocol Type],
+    endpoint_id                  AS [Endpoint Id],
+    auth_scheme                  AS [Authentication Scheme],
+    COUNT(*)                     AS ConnectionCount
+FROM sys.dm_exec_connections
+WHERE encrypt_option != 'TRUE'
+  AND net_transport != 'Shared memory'
+  AND (
+        client_net_address COLLATE database_default
+            NOT IN (SELECT ip_address_or_FQDN COLLATE database_default
+                    FROM sys.dm_hadr_fabric_nodes)
+        OR protocol_type != 'Database Mirroring'
+      )
+GROUP BY net_transport, protocol_type, endpoint_id, auth_scheme
+ORDER BY ConnectionCount DESC;
+GO
+
+
+-----------------------------------------------------------------------
+-- 4.3 STORE ERROR LOG DETAILS (SQL MI WORKAROUND)
+--     Workaround for SQL Managed Instance not persisting error logs
+--     Creates a table and procedure to capture and store error logs
+--     *** CREATES DATABASE OBJECTS ***
+-----------------------------------------------------------------------
+/*
+-- Create storage table
+CREATE TABLE ErrorLogDetails
+(
+    Logdate DATETIME,
+    ProcessInfo VARCHAR(20),
+    Text VARCHAR(MAX)
+);
+GO
+
+-- Create stored procedure to capture and store error logs
+CREATE PROCEDURE usp_StoreErrorlogdetails
+AS
+SET NOCOUNT ON;
+
+-- Create temp tables
+CREATE TABLE #total_logs
+(
+    log_number INT,
+    log_date DATE,
+    log_size INT
+);
+
+CREATE TABLE #TempErrorLogDetails
+(
+    Logdate DATETIME,
+    ProcessInfo VARCHAR(20),
+    Text VARCHAR(MAX)
+);
+
+-- Get the max error log number
+INSERT #total_logs
+(
+    log_number,
+    log_date,
+    log_size
+)
+EXEC ('EXEC sys.sp_enumerrorlogs;');
+
+DECLARE @lastlognumber INT,
+        @currentlog INT,
+        @sql NVARCHAR(MAX);
+
+SET @currentlog = 0;
+
+SELECT @lastlognumber = MAX(log_number)
+FROM #total_logs;
+
+WHILE @currentlog <= @lastlognumber
+BEGIN
+    SET @sql = 'master.dbo.sp_readerrorlog ' + TRIM(CAST(@currentlog AS CHAR(2)));
+
+    INSERT INTO #TempErrorLogDetails
+    (
+        Logdate,
+        ProcessInfo,
+        Text
+    )
+    EXEC sp_executesql @sql;
+
+    SET @currentlog = @currentlog + 1;
+END;
+
+-- Insert into table (avoid duplicates)
+INSERT INTO MainatenanceDB.dbo.ErrorLogDetails
+(
+    logdate,
+    processinfo,
+    Text
+)
+SELECT A.Logdate,
+       A.ProcessInfo,
+       A.Text
+FROM #TempErrorLogDetails A
+    LEFT JOIN MainatenanceDB.dbo.ErrorLogDetails B
+        ON A.Logdate = B.LogDate
+WHERE B.logdate IS NULL;
+
+-- Delete old data more than 30 days
+DELETE FROM MainatenanceDB.dbo.ErrorLogDetails
+WHERE logdate <= GETDATE() - 30;
+GO
+*/

@@ -32,70 +32,6 @@ FROM tempdb.sys.database_files;
 GO
 
 -----------------------------------------------------------------------
--- 1.2 TempDB settings check with disk space analysis
---     Note: Requires xp_cmdshell to be enabled
------------------------------------------------------------------------
-DECLARE @max_size VARCHAR(max) 
-SELECT @max_size = COALESCE(CONVERT(NVARCHAR(100),@max_size) + '  ', '') + CONVERT(NVARCHAR(100),(max_size*8)/1024)
-FROM sys.master_files WHERE database_id = 2 AND type = 0 ORDER BY file_id;
-
-DECLARE @size VARCHAR(max) 
-SELECT @size = COALESCE(CONVERT(NVARCHAR(100),@size) + '  ', '') + CONVERT(NVARCHAR(100),(size*8)/1024)
-FROM sys.master_files WHERE database_id = 2 AND type = 0 ORDER BY file_id;
-
-DECLARE @growth VARCHAR(max) 
-SELECT @growth = COALESCE(CONVERT(NVARCHAR(100),@growth) + '  ', '') + CASE WHEN is_percent_growth = 1 THEN '%' ELSE CONVERT(NVARCHAR(100),(growth*8)/1024) END
-FROM sys.master_files WHERE database_id = 2 AND type = 0 ORDER BY file_id;
-
-DECLARE @is_percent_growth VARCHAR(max) 
-SELECT @is_percent_growth = COALESCE(CONVERT(NVARCHAR(100),@is_percent_growth) + '  ', '') + CONVERT(NVARCHAR(100),is_percent_growth)
-FROM sys.master_files WHERE database_id = 2 AND type = 0 ORDER BY file_id;
-
-DECLARE @LUN SYSNAME
-SET @LUN = (SELECT SUBSTRING(physical_name, 1, CHARINDEX('\', physical_name, 4))
-FROM sys.master_files WHERE database_id = 2 AND file_id = 1);
-
-DECLARE @log_growth VARCHAR(100)
-SELECT @log_growth = CASE WHEN is_percent_growth = 1 THEN '%' ELSE CONVERT(NVARCHAR(100),(growth*8)/1024) END
-FROM sys.master_files WHERE database_id = 2 AND type = 1;
-
-DECLARE @is_log_percent_growth BIT
-SELECT @is_log_percent_growth = is_percent_growth
-FROM sys.master_files WHERE database_id = 2 AND type = 1;
-
-DECLARE @dedicated BIT
-SET @dedicated = (SELECT CASE WHEN (@LUN LIKE '%tempdb%') THEN 1 ELSE 0 END);
-
-DECLARE @cmd SYSNAME
-SET @cmd = 'fsutil volume diskfree ' + @LUN + ' |find "Total # of bytes"'
-DECLARE @Output TABLE (Output NVARCHAR(max))
-INSERT INTO @Output
-EXEC xp_cmdshell @cmd;
-
-SELECT
-    @LUN AS LUN,
-    GB,
-    @dedicated AS Dedicated,
-    CASE WHEN @dedicated = 1 THEN
-        CAST(FLOOR((((GB * 1024) * .8) / 8)) AS NVARCHAR(30))
-    ELSE
-        CAST(FLOOR(((((GB - 10) * 1024) * .7) / 8)) AS NVARCHAR(30)) 
-    END AS [Standard Size MB],
-    @size AS [Actual Size MB],
-    @max_size AS [Max Size MB], 
-    @growth AS [Growth MB],
-    @is_percent_growth AS [Is Percent Growth],
-    @log_growth AS [Log Growth MB],
-    @is_log_percent_growth AS [Is Log Percent Growth]
-FROM
-(
-    SELECT @LUN AS LUN, CONVERT(BIGINT,REPLACE([Output], 'Total # of bytes             : ', '')) / 1073698000 AS GB
-    FROM @Output 
-    WHERE [Output] IS NOT NULL
-) AS x;
-GO
-
------------------------------------------------------------------------
 -- 2. TEMPDB SPACE USAGE BY SESSIONS
 -----------------------------------------------------------------------
 
@@ -283,8 +219,68 @@ SELECT
 
 
 
+-----------------------------------------------------------------------
+-- 1.2 TempDB settings check with disk space analysis
+--     Note: Requires xp_cmdshell to be enabled
+-----------------------------------------------------------------------
+--DECLARE @max_size VARCHAR(max) 
+--SELECT @max_size = COALESCE(CONVERT(NVARCHAR(100),@max_size) + '  ', '') + CONVERT(NVARCHAR(100),(max_size*8)/1024)
+--FROM sys.master_files WHERE database_id = 2 AND type = 0 ORDER BY file_id;
 
+--DECLARE @size VARCHAR(max) 
+--SELECT @size = COALESCE(CONVERT(NVARCHAR(100),@size) + '  ', '') + CONVERT(NVARCHAR(100),(size*8)/1024)
+--FROM sys.master_files WHERE database_id = 2 AND type = 0 ORDER BY file_id;
 
+--DECLARE @growth VARCHAR(max) 
+--SELECT @growth = COALESCE(CONVERT(NVARCHAR(100),@growth) + '  ', '') + CASE WHEN is_percent_growth = 1 THEN '%' ELSE CONVERT(NVARCHAR(100),(growth*8)/1024) END
+--FROM sys.master_files WHERE database_id = 2 AND type = 0 ORDER BY file_id;
 
+--DECLARE @is_percent_growth VARCHAR(max) 
+--SELECT @is_percent_growth = COALESCE(CONVERT(NVARCHAR(100),@is_percent_growth) + '  ', '') + CONVERT(NVARCHAR(100),is_percent_growth)
+--FROM sys.master_files WHERE database_id = 2 AND type = 0 ORDER BY file_id;
+
+--DECLARE @LUN SYSNAME
+--SET @LUN = (SELECT SUBSTRING(physical_name, 1, CHARINDEX('\', physical_name, 4))
+--FROM sys.master_files WHERE database_id = 2 AND file_id = 1);
+
+--DECLARE @log_growth VARCHAR(100)
+--SELECT @log_growth = CASE WHEN is_percent_growth = 1 THEN '%' ELSE CONVERT(NVARCHAR(100),(growth*8)/1024) END
+--FROM sys.master_files WHERE database_id = 2 AND type = 1;
+
+--DECLARE @is_log_percent_growth BIT
+--SELECT @is_log_percent_growth = is_percent_growth
+--FROM sys.master_files WHERE database_id = 2 AND type = 1;
+
+--DECLARE @dedicated BIT
+--SET @dedicated = (SELECT CASE WHEN (@LUN LIKE '%tempdb%') THEN 1 ELSE 0 END);
+
+--DECLARE @cmd SYSNAME
+--SET @cmd = 'fsutil volume diskfree ' + @LUN + ' |find "Total # of bytes"'
+--DECLARE @Output TABLE (Output NVARCHAR(max))
+--INSERT INTO @Output
+--EXEC xp_cmdshell @cmd;
+
+--SELECT
+--    @LUN AS LUN,
+--    GB,
+--    @dedicated AS Dedicated,
+--    CASE WHEN @dedicated = 1 THEN
+--        CAST(FLOOR((((GB * 1024) * .8) / 8)) AS NVARCHAR(30))
+--    ELSE
+--        CAST(FLOOR(((((GB - 10) * 1024) * .7) / 8)) AS NVARCHAR(30)) 
+--    END AS [Standard Size MB],
+--    @size AS [Actual Size MB],
+--    @max_size AS [Max Size MB], 
+--    @growth AS [Growth MB],
+--    @is_percent_growth AS [Is Percent Growth],
+--    @log_growth AS [Log Growth MB],
+--    @is_log_percent_growth AS [Is Log Percent Growth]
+--FROM
+--(
+--    SELECT @LUN AS LUN, CONVERT(BIGINT,REPLACE([Output], 'Total # of bytes             : ', '')) / 1073698000 AS GB
+--    FROM @Output 
+--    WHERE [Output] IS NOT NULL
+--) AS x;
+--GO
 
 

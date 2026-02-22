@@ -305,7 +305,15 @@ GO
 --     Analyze session information for a specific blocker.
 --     Replace @SessionID with the actual session ID from previous queries.
 -----------------------------------------------------------------------
-DECLARE @SessionID INT = NULL; -- Replace with actual session_id
+DECLARE @SessionID INT = (SELECT DISTINCT 
+    blocking_session_id
+FROM sys.dm_exec_requests AS r
+WHERE NOT EXISTS (
+        SELECT 1 
+        FROM sys.dm_exec_requests r2
+        WHERE r.blocking_session_id = r2.session_id
+            AND r2.blocking_session_id > 0)
+    AND r.blocking_session_id > 0); -- Or Replace with actual session_id
 
 SELECT
     session_id,
@@ -325,7 +333,15 @@ GO
 --     Analyze connection information for a specific blocker.
 --     Replace @SessionID with the actual session ID from previous queries.
 -----------------------------------------------------------------------
-DECLARE @SessionID INT = NULL; -- Replace with actual session_id
+DECLARE @SessionID INT = (SELECT DISTINCT 
+    blocking_session_id
+FROM sys.dm_exec_requests AS r
+WHERE NOT EXISTS (
+        SELECT 1 
+        FROM sys.dm_exec_requests r2
+        WHERE r.blocking_session_id = r2.session_id
+            AND r2.blocking_session_id > 0)
+    AND r.blocking_session_id > 0); -- Or Replace with actual session_id
 
 SELECT 
     session_id,
@@ -335,17 +351,6 @@ SELECT
     most_recent_sql_handle
 FROM sys.dm_exec_connections
 WHERE session_id = @SessionID;
-GO
-
------------------------------------------------------------------------
--- 3.3 RETRIEVE SQL TEXT BY SQL HANDLE
---     Get the SQL text for a specific sql_handle.
---     Replace @SqlHandle with the actual handle from previous queries.
------------------------------------------------------------------------
-DECLARE @SqlHandle VARBINARY(64) = NULL; -- Replace with actual sql_handle
-
-SELECT [text] 
-FROM sys.dm_exec_sql_text(@SqlHandle);
 GO
 
 -----------------------------------------------------------------------
@@ -423,10 +428,10 @@ GO
 
 
 -----------------------------------------------------------------------
--- 4.4 BLOCKING ANALYSIS
+-- 4.4 BLOCKING ANALYSIS and SESSION KILLING
 --     Identify blocking sessions and their blockers.
 -----------------------------------------------------------------------
-
+/*
 -- check for blocking
 use master
 select distinct(blocked) from sysprocesses where blocked <> 0
@@ -439,4 +444,4 @@ dbcc inputbuffer (<replace_with_blocker_spid>) -- change the spid to blocker
 
 -- if the blocker executing a select statement the spid can be safely killed
 kill <replace_with_blocker_spid>  -- change the spid to blocker
-
+*/

@@ -464,6 +464,18 @@ SELECT * FROM sys.dm_exec_requests;
 GO
 
 
+-----------------------------------------------------------------------
+--  RETRIEVE SQL TEXT BY SQL HANDLE
+--     Get the SQL text for a specific sql_handle.
+--     Replace @SqlHandle with the actual handle from previous queries.
+-----------------------------------------------------------------------
+DECLARE @SqlHandle VARBINARY(64) = NULL; -- Replace with actual sql_handle
+
+SELECT [text] 
+FROM sys.dm_exec_sql_text(@SqlHandle);
+GO
+
+
 
 
 /*******************************************************************************

@@ -177,6 +177,15 @@ FROM sys.dm_hadr_cluster WITH (NOLOCK)
 OPTION (RECOMPILE);
 GO
 
+-- Shows cluster nodes if SQL Server is in a failover cluster
+SELECT 
+    NodeName, 
+    status_description, 
+    is_current_owner
+FROM sys.dm_os_cluster_nodes WITH (NOLOCK) 
+OPTION (RECOMPILE);
+
+
 -----------------------------------------------------------------------
 -- 9. AG HEALTH AND STATUS OVERVIEW
 --    Comprehensive overview of AG health and status.
