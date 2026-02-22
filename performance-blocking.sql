@@ -2,7 +2,7 @@
 -- BLOCKING & LOCK CONTENTION ANALYSIS
 -- Purpose : Identify head blockers, blocking chains, lock waits,
 --           and open transactions causing contention.
--- Safety  : All queries are read-only.
+-- Safety  : All queries are read-only (except Section 6).
 -- Applies to : On-prem / Azure SQL MI / Both
 -----------------------------------------------------------------------
 
@@ -11,12 +11,14 @@ GO
 
 -----------------------------------------------------------------------
 -- SECTION 1: HEAD BLOCKER DETECTION
+-- Purpose: Identify the root session(s) causing blocking chains
 -----------------------------------------------------------------------
 
 -----------------------------------------------------------------------
 -- 1.1 HEAD BLOCKER FINDER (Comprehensive)
 --     Identifies the root session causing a blocking chain.
 --     Shows detailed information about blockers and blocked sessions.
+--     Use this for complete analysis with all relevant metrics.
 -----------------------------------------------------------------------
 SELECT
     [HeadBlocker] = 
@@ -71,9 +73,10 @@ ORDER BY [HeadBlocker] DESC, s.session_id;
 GO
 
 -----------------------------------------------------------------------
--- 1.2 HEAD BLOCKER FINDER (Simple Methods)
---     Find sessions that are blocking others but not blocked themselves.
---     Faster and simpler alternative to query 1.1.
+-- 1.2 HEAD BLOCKER FINDER (Simple - Session ID Only)
+--     Find session IDs that are blocking others but not blocked themselves.
+--     Fastest method - returns only the head blocker session ID(s).
+--     Use this for quick identification of the root blocker.
 -----------------------------------------------------------------------
 SELECT DISTINCT 
     blocking_session_id
@@ -87,22 +90,11 @@ WHERE NOT EXISTS (
     AND r.blocking_session_id > 0;
 GO
 
-
-SELECT 
-		t1.resource_type,
-		t1.resource_database_id,
-		t1.resource_associated_entity_id,
-		t1.request_mode,
-		t1.request_session_id,
-		t2.blocking_session_id
-FROM	sys.dm_tran_locks as t1
-	INNER JOIN sys.dm_os_waiting_tasks as t2
-		ON t1.lock_owner_address = t2.resource_address;
-
 -----------------------------------------------------------------------
--- 1.3 HEAD BLOCKER FINDER (Detailed Alternative)
+-- 1.3 HEAD BLOCKER FINDER (With Query Details)
 --     Find sessions that are blocking others but not blocked themselves.
 --     Includes detailed session and query information.
+--     Use this for moderate detail without the full comprehensive view.
 -----------------------------------------------------------------------
 SELECT
     r.session_id,
@@ -140,12 +132,41 @@ GO
 
 -----------------------------------------------------------------------
 -- SECTION 2: BLOCKING CHAIN ANALYSIS
+-- Purpose: Understand the complete blocking hierarchy from head to victims
 -----------------------------------------------------------------------
 
 -----------------------------------------------------------------------
--- 2.1 BLOCKING HIERARCHY WITH CTE
+-- 2.1 BLOCKING CHAIN WITH SQL TEXT
+--     Shows blocker and blocked sessions with their SQL statements.
+--     Includes wait type and wait duration for each blocked session.
+--     Use this for quick view of blocker-blocked pairs with query text.
+-----------------------------------------------------------------------
+SELECT
+    blocking_session.session_id AS blocking_session_id,
+    blocked_session.session_id AS blocked_session_id,
+    blocking_sql.text AS blocking_sql_text,
+    blocked_sql.text AS blocked_sql_text,
+    wait_info.wait_type,
+    wait_info.wait_duration_ms
+FROM sys.dm_exec_requests AS blocked_session
+INNER JOIN sys.dm_exec_connections AS blocked_connection
+    ON blocked_session.session_id = blocked_connection.session_id
+CROSS APPLY sys.dm_exec_sql_text(blocked_connection.most_recent_sql_handle) AS blocked_sql
+INNER JOIN sys.dm_exec_requests AS blocking_session
+    ON blocked_session.blocking_session_id = blocking_session.session_id
+INNER JOIN sys.dm_exec_connections AS blocking_connection
+    ON blocking_session.session_id = blocking_connection.session_id
+CROSS APPLY sys.dm_exec_sql_text(blocking_connection.most_recent_sql_handle) AS blocking_sql
+INNER JOIN sys.dm_os_waiting_tasks AS wait_info
+    ON blocked_session.session_id = wait_info.session_id
+WHERE blocked_session.blocking_session_id <> 0;
+GO
+
+-----------------------------------------------------------------------
+-- 2.2 BLOCKING HIERARCHY WITH CTE (Complete Chain)
 --     Shows complete blocking chain from head blocker to all victims.
 --     Recursively identifies all levels of blocking.
+--     Use this for complex multi-level blocking scenarios.
 -----------------------------------------------------------------------
 WITH cteHead (session_id, request_id, wait_type, wait_resource, last_wait_type, 
     is_user_process, request_cpu_time, request_logical_reads, request_reads, 
@@ -246,8 +267,9 @@ FROM cteBlockingHierarchy AS bh
 GO
 
 -----------------------------------------------------------------------
--- 2.2 VIEW BLOCKED PROCESSES
+-- 2.3 VIEW BLOCKED PROCESSES (Summary)
 --     Shows all blocked sessions with their status and wait information.
+--     Simpler alternative to queries 2.1 and 2.2 for quick overview.
 -----------------------------------------------------------------------
 SELECT 
     r.session_id, 
@@ -263,8 +285,32 @@ WHERE r.blocking_session_id > 0;
 GO
 
 -----------------------------------------------------------------------
--- 2.3 LOCK CONTENTION DETAILS
+-- SECTION 3: LOCK CONTENTION ANALYSIS
+-- Purpose: Analyze lock resources and contention details
+-----------------------------------------------------------------------
+
+-----------------------------------------------------------------------
+-- 3.1 LOCK CONTENTION BY RESOURCE
+--     Shows lock resource types and blocking relationships.
+--     Identifies what resources are being locked and who is waiting.
+-----------------------------------------------------------------------
+SELECT 
+    t1.resource_type,
+    t1.resource_database_id,
+    DB_NAME(t1.resource_database_id) AS database_name,
+    t1.resource_associated_entity_id,
+    t1.request_mode,
+    t1.request_session_id,
+    t2.blocking_session_id
+FROM sys.dm_tran_locks AS t1
+    INNER JOIN sys.dm_os_waiting_tasks AS t2
+        ON t1.lock_owner_address = t2.resource_address;
+GO
+
+-----------------------------------------------------------------------
+-- 3.2 LOCK CONTENTION DETAILS (With Query Text)
 --     Shows lock details, wait time, blocker and waiter information.
+--     Includes full query text for both waiting and blocking sessions.
 --     Run multiple times to catch transient blocking.
 -----------------------------------------------------------------------
 SELECT 
@@ -297,23 +343,17 @@ OPTION (RECOMPILE);
 GO
 
 -----------------------------------------------------------------------
--- SECTION 3: SESSION ANALYSIS
+-- SECTION 4: SESSION DETAILS FOR HEAD BLOCKER
+-- Purpose: Detailed analysis of head blocker session
+-- Note: Use queries from Section 1 to identify the head blocker session ID first
 -----------------------------------------------------------------------
 
 -----------------------------------------------------------------------
--- 3.1 HEAD BLOCKER SESSION DETAILS
---     Analyze session information for a specific blocker.
---     Replace @SessionID with the actual session ID from previous queries.
+-- 4.1 HEAD BLOCKER SESSION DETAILS
+--     Analyze session information for head blocker.
+--     Replace @SessionID with actual session ID from Section 1 queries.
 -----------------------------------------------------------------------
-DECLARE @SessionID INT = (SELECT DISTINCT 
-    blocking_session_id
-FROM sys.dm_exec_requests AS r
-WHERE NOT EXISTS (
-        SELECT 1 
-        FROM sys.dm_exec_requests r2
-        WHERE r.blocking_session_id = r2.session_id
-            AND r2.blocking_session_id > 0)
-    AND r.blocking_session_id > 0); -- Or Replace with actual session_id
+DECLARE @SessionID INT = NULL; -- Replace NULL with actual session_id from Section 1
 
 SELECT
     session_id,
@@ -329,19 +369,11 @@ WHERE session_id = @SessionID;
 GO
 
 -----------------------------------------------------------------------
--- 3.2 HEAD BLOCKER CONNECTION DETAILS
---     Analyze connection information for a specific blocker.
---     Replace @SessionID with the actual session ID from previous queries.
+-- 4.2 HEAD BLOCKER CONNECTION DETAILS
+--     Analyze connection information for head blocker.
+--     Replace @SessionID with actual session ID from Section 1 queries.
 -----------------------------------------------------------------------
-DECLARE @SessionID INT = (SELECT DISTINCT 
-    blocking_session_id
-FROM sys.dm_exec_requests AS r
-WHERE NOT EXISTS (
-        SELECT 1 
-        FROM sys.dm_exec_requests r2
-        WHERE r.blocking_session_id = r2.session_id
-            AND r2.blocking_session_id > 0)
-    AND r.blocking_session_id > 0); -- Or Replace with actual session_id
+DECLARE @SessionID INT = NULL; -- Replace NULL with actual session_id from Section 1
 
 SELECT 
     session_id,
@@ -354,35 +386,29 @@ WHERE session_id = @SessionID;
 GO
 
 -----------------------------------------------------------------------
--- 3.4 HEAD BLOCKER QUERY TEXT
---     Find the code being executed by the head of the blocking chain.
---     Combines head blocker detection with query text retrieval.
+-- 4.3 HEAD BLOCKER QUERY TEXT
+--     Get the SQL text being executed by head blocker.
+--     Replace @SessionID with actual session ID from Section 1 queries.
 -----------------------------------------------------------------------
+DECLARE @SessionID INT = NULL; -- Replace NULL with actual session_id from Section 1
+
 SELECT 
     c.session_id,
     t.text AS [query_text]
 FROM sys.dm_exec_connections AS c
     CROSS APPLY sys.dm_exec_sql_text(c.most_recent_sql_handle) AS t 
-WHERE c.session_id = (
-    SELECT DISTINCT blocking_session_id
-    FROM sys.dm_exec_requests AS r
-    WHERE NOT EXISTS (
-            SELECT 1 
-            FROM sys.dm_exec_requests r2
-            WHERE r.blocking_session_id = r2.session_id
-                AND r2.blocking_session_id > 0
-        )
-        AND r.blocking_session_id > 0
-);
+WHERE c.session_id = @SessionID;
 GO
 
 -----------------------------------------------------------------------
--- SECTION 4: SYSTEM-WIDE ANALYSIS
+-- SECTION 5: SYSTEM-WIDE PERFORMANCE ANALYSIS
+-- Purpose: Identify system-wide issues that may contribute to blocking
 -----------------------------------------------------------------------
 
 -----------------------------------------------------------------------
--- 4.1 LONG RUNNING PROCESSES
+-- 5.1 LONG RUNNING PROCESSES
 --     Identify long-running active sessions that may be causing issues.
+--     Sessions with long batch duration may hold locks for extended periods.
 -----------------------------------------------------------------------
 SELECT
     p.spid,
@@ -410,9 +436,9 @@ ORDER BY batch_duration DESC;
 GO
 
 -----------------------------------------------------------------------
--- 4.2 THREADPOOL WAITS
+-- 5.2 THREADPOOL WAITS
 --     Analyze all requests currently waiting for a free worker thread.
---     High numbers indicate thread starvation.
+--     High numbers indicate thread starvation which can cause blocking.
 -----------------------------------------------------------------------
 SELECT 
     session_id,
@@ -425,23 +451,35 @@ WHERE wait_type = 'THREADPOOL'
 ORDER BY wait_duration_ms DESC;
 GO
 
-
+-----------------------------------------------------------------------
+-- SECTION 6: TROUBLESHOOTING ACTIONS
+-- Purpose: Manual intervention commands for resolving blocking
+-- WARNING: These commands modify system state - use with caution
+-----------------------------------------------------------------------
 
 -----------------------------------------------------------------------
--- 4.4 BLOCKING ANALYSIS and SESSION KILLING
---     Identify blocking sessions and their blockers.
+-- 6.1 MANUAL BLOCKING ANALYSIS AND SESSION KILLING
+--     Step-by-step process to identify and kill blocking sessions.
+--     CAUTION: Killing sessions will roll back their transactions.
+--     Only kill sessions after verifying they are safe to terminate.
 -----------------------------------------------------------------------
 /*
--- check for blocking
-use master
-select distinct(blocked) from sysprocesses where blocked <> 0
+-- Step 1: Check for blocking
+USE master;
+SELECT DISTINCT blocked 
+FROM sysprocesses 
+WHERE blocked <> 0;
 
--- check if the blocking is blocked
-select blocked from sysprocesses where spid =   <replace_with_blocker_spid>
+-- Step 2: Check if the blocker is also blocked (find the head blocker)
+SELECT blocked 
+FROM sysprocesses 
+WHERE spid = <replace_with_blocker_spid>;
 
--- check the command
-dbcc inputbuffer (<replace_with_blocker_spid>) -- change the spid to blocker
+-- Step 3: Check the command being executed by the blocker
+DBCC INPUTBUFFER(<replace_with_blocker_spid>);
 
--- if the blocker executing a select statement the spid can be safely killed
-kill <replace_with_blocker_spid>  -- change the spid to blocker
+-- Step 4: If the blocker is executing a SELECT statement (read-only),
+--         the session can typically be safely killed
+-- CAUTION: This will roll back any open transaction
+KILL <replace_with_blocker_spid>;
 */

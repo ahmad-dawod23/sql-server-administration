@@ -23,22 +23,22 @@ Start here
   │           └── Plan cache bloat ─────────────► performance-plan-cache-analysis.sql
   │
   ├─► Investigate specific queries
-  │     └─► performance-checking-queries.sql (Query Store, deadlocks)
+  │     └─► performance-general.sql (Query Store, deadlocks, general analysis)
   │
   ├─► Check index/statistics health
   │     └─► performance-index-and-statistics-maintenance.sql
   │
   └─► Check storage (Azure MI)
-        └─► performance-iops-and-storage-measuring-script.sql
+        └─► sqlmi-specific-queries.sql
 ```
 
-**"I have a security/login issue"** → `logins.sql`
+**"I have a security/login issue"** → `logins-and-security.sql`
 
 **"Replication is broken"** → `replication-troubleshooting-queries.sql`
 
-**"Is my backup OK?"** → `backups.sql`
+**"Is my backup OK?"** → `backups-and-restores.sql`
 
-**"Is my config correct?"** → `configuration-best-practice-audit.sql`
+**"Is my config correct?"** → `general-configurations-and-best-practice.sql`
 
 ## Repository contents
 
@@ -47,27 +47,28 @@ Start here
 | Script | Purpose | Safety |
 |--------|---------|--------|
 | ag-dag-link-monitoring-scripts.sql | AG/DAG/Link health, seeding, failover events | Read-only |
-| backups.sql | Backup/restore progress, history, missing backups | Read-only |
-| configuration-best-practice-audit.sql | Instance config audit vs. best practices | Read-only |
+| backups-and-restores.sql | Backup/restore progress, history, missing backups | Read-only |
 | database-integrity-checks.sql | DBCC CHECKDB/CHECKTABLE/CHECKALLOC, suspect pages | Read-only (CPU-intensive) |
 | database-mail.sql | Database Mail queue, logs, profiles, diagnostics | Read-only |
 | disk-space-and-file-management.sql | Volume free space, file sizes, autogrowth, VLFs | Read-only |
 | extended-events.sql | XE session templates for monitoring | **Contains DDL** |
-| logins.sql | Login troubleshooting, permissions audit, orphaned users | Read-only |
+| general-configurations-and-best-practice.sql | Instance config audit vs. best practices | Read-only |
+| logins-and-security.sql | Login troubleshooting, permissions audit, orphaned users | Read-only |
 | performance-blocking.sql | Head blocker detection, blocking chains, wait stats | Read-only |
 | performance-buffer-pool-and-memory-analysis.sql | Buffer pool by DB/object, memory clerks, PLE, grants | Read-only |
-| performance-checking-queries.sql | Deadlock analysis, Query Store investigation | Read-only |
 | performance-cpu.sql | Top CPU queries (active + Query Store), CPU timeline | Read-only |
+| performance-general.sql | Deadlock analysis, Query Store investigation, general performance | Read-only |
 | performance-index-and-statistics-maintenance.sql | Fragmentation, rebuild/reorganize, stale stats | **Maintenance window** |
 | performance-io-latency.sql | Read/write latency per file, pending I/O | Read-only |
-| performance-iops-and-storage-measuring-script.sql | Azure MI IOPS/throughput vs. storage limits | Read-only |
 | performance-plan-cache-analysis.sql | Plan cache composition, single-use bloat | Read-only |
 | performance-tempdb.sql | TempDB session space, file config, contention | Read-only |
 | performance-wait-stats.sql | Top waits (filtered), signal ratio, latch stats | Read-only |
 | replication-configuration.sql | Distributor setup, publication creation | **Contains DDL** |
 | replication-topology.sql | Automated topology discovery | Read-only |
 | replication-troubleshooting-queries.sql | Agent history, tracer tokens, latency | Read-only |
+| server-information-queries.sql | Server properties, configuration, system info | Read-only |
 | sql-agent-jobs-troubleshooting.sql | Running jobs, schedules, history, failures | Read-only |
+| sqlmi-specific-queries.sql | Azure MI IOPS/throughput, storage limits, MI-specific diagnostics | Read-only |
 | tde-and-encryption-status.sql | TDE status, certificates, Always Encrypted | Read-only |
 
 ### other scripts/
@@ -80,6 +81,7 @@ Start here
 - powershell scripts.ps1
 - sp_WhoIsActive.sql
 - SQL Managed Instance Diagnostic Information Queries.sql
+- stored-proccedure-performance-checking.sql
 - T-SQL commands.sql
 
 ### SQL_UTILITIES/
