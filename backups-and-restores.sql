@@ -13,7 +13,28 @@
  *   9. RESTORE OPERATIONS & VERIFICATION
  *  10. SYSTEM DATABASE RESTORE PROCEDURES
  *****************************************************************************************************/
+--trace flags for backup and restore monitoring, historical reporting, integrity checks, performance analysis, and restore operations. Each section contains multiple queries with comments explaining their purpose and usage. Use these queries as templates for managing SQL Server backups and restores effectively.
 
+DBCC TRACEON(3004,-1) -- Prints progress messages after key steps in restore
+go
+DBCC TRACEON(3014,-1) -- Prints progress messages after each major MTF data stream
+go
+DBCC TRACEON(3110,-1) -- Print log headers 
+go
+DBCC TRACEON(3214,-1) -- Display Sql Text
+go
+DBCC TRACEON(3605,-1) -- Send trace output to the errorlog
+go
+ 
+--Enable DUMPTRIGGER for error 3287 with filter dump  
+DBCC TRACEON(2551,-1) 
+GO 
+DBCC DUMPTRIGGER('set', 3287) 
+GO 
+DBCC DUMPTRIGGER('set', 3013) 
+GO 
+--Disable trace flags after use
+DBCC TRACEOFF (3004,3014,3110,3214,3605,-1)
 
 /*****************************************************************************************************
  * SECTION 1: BACKUP PROGRESS MONITORING

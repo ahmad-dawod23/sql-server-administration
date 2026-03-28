@@ -217,7 +217,44 @@ SELECT
 	WHERE MF.type = 0 
 	GROUP BY SD.name, MF.database_id
 
+-----------------------------------------------------------------------
+-- 6.2 TEMPDB FILE CONFIGURATION
+--     Best practice: Multiple data files (1 per core, up to 8)
+--     All files should have same initial size and autogrowth settings
+-----------------------------------------------------------------------
+SELECT
+    [name]                                        AS FileName,
+    type_desc                                     AS FileType,
+    CAST(size * 8.0 / 1024 AS DECIMAL(18,2))     AS SizeMB,
+    CASE is_percent_growth
+        WHEN 1 THEN CAST(growth AS VARCHAR) + ' %'
+        ELSE CAST(growth * 8 / 1024 AS VARCHAR) + ' MB'
+    END                                           AS AutoGrowth,
+    physical_name
+FROM sys.master_files
+WHERE database_id = DB_ID('tempdb')
+ORDER BY type_desc, [name];
 
+-----------------------------------------------------------------------
+-- 6.3 TEMPDB FILE COUNT RECOMMENDATION
+--     Check if number of tempdb files matches best practices
+-----------------------------------------------------------------------
+SELECT
+    COUNT(*)                                      AS TempdbDataFiles,
+    (SELECT COUNT(*)
+     FROM sys.dm_os_schedulers
+     WHERE [status] = 'VISIBLE ONLINE')           AS OnlineCPUs,
+    CASE
+        WHEN COUNT(*) < LEAST(
+            (SELECT COUNT(*)
+             FROM sys.dm_os_schedulers
+             WHERE [status] = 'VISIBLE ONLINE'), 8)
+        THEN '*** ADD MORE TEMPDB DATA FILES ***'
+        ELSE 'OK'
+    END                                           AS Recommendation
+FROM sys.master_files
+WHERE database_id = DB_ID('tempdb')
+  AND type_desc = 'ROWS';
 
 -----------------------------------------------------------------------
 -- 1.2 TempDB settings check with disk space analysis

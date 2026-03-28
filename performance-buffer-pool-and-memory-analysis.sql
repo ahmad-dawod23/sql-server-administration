@@ -349,3 +349,24 @@ GO
 EXEC sys.xp_readerrorlog 0, 1, N'Buffer pool scan took';
 GO
 
+-----------------------------------------------------------------------
+-- 6.1 MAX SERVER MEMORY vs. PHYSICAL MEMORY CHECK
+--     Verify adequate memory is left for the operating system
+-----------------------------------------------------------------------
+SELECT
+    CONVERT(DECIMAL(18,2), sm.total_physical_memory_kb / 1048576.0) AS TotalPhysicalGB,
+    CONVERT(DECIMAL(18,2), CONVERT(BIGINT, c.value_in_use) / 1024.0) AS MaxServerMemoryGB,
+    CONVERT(DECIMAL(18,0), (sm.total_physical_memory_kb / 1024.0 - CONVERT(BIGINT, c.value_in_use))) AS MemoryLeftForOSMB,
+    CASE
+        WHEN CONVERT(BIGINT, c.value_in_use) = 2147483647
+            THEN '*** UNLIMITED — CONFIGURE NOW ***'
+        WHEN (sm.total_physical_memory_kb / 1024.0 - CONVERT(BIGINT, c.value_in_use)) < 2048
+            THEN '*** LESS THAN 2 GB LEFT FOR OS ***'
+        WHEN (sm.total_physical_memory_kb / 1024.0 - CONVERT(BIGINT, c.value_in_use)) < 4096
+            THEN '* Less than 4 GB left for OS *'
+        ELSE 'OK'
+    END                                                              AS [Status]
+FROM sys.dm_os_sys_memory sm
+    CROSS JOIN sys.configurations c
+WHERE c.[name] = 'max server memory (MB)';
+

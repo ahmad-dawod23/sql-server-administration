@@ -8,8 +8,7 @@
  *   1. SYSTEM & SERVICE INFORMATION
  *   2. CPU HARDWARE & CONFIGURATION
  *   3. NETWORK PROTOCOL & CONNECTION SECURITY
- *   4. DATABASE INFORMATION QUERIES
- *   5. DMV REFERENCE GUIDE
+ *   4. DATABASE INFORMATION, CONFIGURATION & MONITORING
  * 
  * Safety: All queries are read-only unless otherwise noted.
  ******************************************************************************/
@@ -286,7 +285,7 @@ GO
 
 
 /*******************************************************************************
-   SECTION 4: DATABASE INFORMATION QUERIES
+   SECTION 4: DATABASE INFORMATION, CONFIGURATION & MONITORING
 *******************************************************************************/
 
 -----------------------------------------------------------------------
@@ -332,12 +331,118 @@ ORDER BY [Physical Location];
 GO
 */
 
+-----------------------------------------------------------------------
+-- 4.5 DATABASE SETTINGS AUDIT
+--     Review all database settings and flag common misconfigurations
+--     (auto-close, auto-shrink, non-CHECKSUM page verify, etc.)
+-----------------------------------------------------------------------
+SELECT
+    [name]                          AS DatabaseName,
+    compatibility_level,
+    recovery_model_desc             AS RecoveryModel,
+    page_verify_option_desc         AS PageVerify,
+    is_auto_close_on                AS AutoClose,
+    is_auto_shrink_on               AS AutoShrink,
+    is_auto_create_stats_on         AS AutoCreateStats,
+    is_auto_update_stats_on         AS AutoUpdateStats,
+    is_auto_update_stats_async_on   AS AsyncStatsUpdate,
+    is_read_committed_snapshot_on   AS RCSI,
+    snapshot_isolation_state_desc    AS SnapshotIsolation,
+    is_trustworthy_on               AS Trustworthy,
+    is_db_chaining_on               AS DBChaining,
 
-/*******************************************************************************
-   SECTION 5: DMV REFERENCE GUIDE
-   
-   Quick reference for Dynamic Management Views and Functions organized by prefix.
-*******************************************************************************/
+    -- Flags
+    CASE WHEN is_auto_close_on = 1
+         THEN '*** DISABLE AUTO_CLOSE ***' ELSE '' END
+    + CASE WHEN is_auto_shrink_on = 1
+         THEN ' *** DISABLE AUTO_SHRINK ***' ELSE '' END
+    + CASE WHEN page_verify_option_desc <> 'CHECKSUM'
+         THEN ' *** SET PAGE_VERIFY CHECKSUM ***' ELSE '' END
+    + CASE WHEN is_auto_create_stats_on = 0
+         THEN ' * Enable AUTO_CREATE_STATISTICS *' ELSE '' END
+    + CASE WHEN is_auto_update_stats_on = 0
+         THEN ' * Enable AUTO_UPDATE_STATISTICS *' ELSE '' END
+    + CASE WHEN is_trustworthy_on = 1
+         THEN ' * TRUSTWORTHY is on — security risk *' ELSE '' END
+    + CASE WHEN is_db_chaining_on = 1
+         THEN ' * DB_CHAINING is on — review *' ELSE '' END
+                                    AS Warnings
+FROM sys.databases
+WHERE state_desc = 'ONLINE'
+ORDER BY [name];
+
+-----------------------------------------------------------------------
+-- 4.6 DATABASE SCOPED CONFIGURATIONS (SQL Server 2016+)
+--     Review database-level configuration overrides
+-----------------------------------------------------------------------
+SELECT 
+    configuration_id, 
+    name, 
+    [value] AS [value_for_primary], 
+    value_for_secondary, 
+    is_value_default
+FROM sys.database_scoped_configurations WITH (NOLOCK) 
+OPTION (RECOMPILE);
+
+-----------------------------------------------------------------------
+-- 4.7 ENABLE QUERY STORE WITH RECOMMENDED SETTINGS
+--     Query Store helps track query performance over time
+--     *** MODIFIES DATABASE SETTINGS ***
+--     Reference: https://www.sqlskills.com/blogs/erin/query-store-settings/
+-----------------------------------------------------------------------
+
+-- Enable Query Store
+ALTER DATABASE [YourDatabaseName] SET QUERY_STORE = ON;
+GO
+
+-- Configure Query Store settings (for SQL Server 2016 & 2017)
+ALTER DATABASE [YourDatabaseName]
+SET QUERY_STORE (
+    OPERATION_MODE = READ_WRITE,
+    QUERY_CAPTURE_MODE = AUTO,
+    MAX_PLANS_PER_QUERY = 200,
+    MAX_STORAGE_SIZE_MB = 128,
+    CLEANUP_POLICY = (STALE_QUERY_THRESHOLD_DAYS = 30),
+    SIZE_BASED_CLEANUP_MODE = AUTO,
+    DATA_FLUSH_INTERVAL_SECONDS = 900,
+    INTERVAL_LENGTH_MINUTES = 60
+);
+GO
+
+-----------------------------------------------------------------------
+-- 4.8 IDENTIFY UNUSED DATABASES SINCE LAST RESTART
+--     Shows databases with no user activity since SQL Server started
+--     Useful for identifying candidates for archival or decommission
+-----------------------------------------------------------------------
+SELECT 
+    [name] AS UnusedDatabase
+FROM sys.databases 
+WHERE database_id > 4
+  AND [name] NOT IN (
+      SELECT DB_NAME(database_id) 
+      FROM sys.dm_db_index_usage_stats
+      WHERE COALESCE(last_user_seek, last_user_scan, last_user_lookup, '1/1/1970') > 
+            (SELECT login_time FROM sysprocesses WHERE spid = 1)
+  );
+
+-----------------------------------------------------------------------
+-- 4.9 DEPRECATED FEATURES USAGE COUNT
+--     Monitor for features you need to migrate away from
+--     Check these against Microsoft's deprecation timeline
+-----------------------------------------------------------------------
+SELECT
+    instance_name                         AS DeprecatedFeature,
+    cntr_value                            AS UsageCount
+FROM sys.dm_os_performance_counters
+WHERE [object_name] LIKE '%Deprecated Features%'
+  AND cntr_value > 0
+ORDER BY cntr_value DESC;
+
+
+-----------------------------------------------------------------------
+-- 4.10 DMV REFERENCE GUIDE
+--     Quick reference for Dynamic Management Views and Functions organized by prefix.
+-----------------------------------------------------------------------
 
 /*
    sys.dm_exec_%  -- Execution and Connection
@@ -366,6 +471,156 @@ GO
                in the database has been used.
 */
 
+
 /*******************************************************************************
-   END OF FILE
+   SECTION 5: INSTANCE CONFIGURATION & BEST PRACTICES
 *******************************************************************************/
+
+-----------------------------------------------------------------------
+-- 5.1 KEY sys.configurations SETTINGS WITH RECOMMENDATIONS
+--     Review critical instance settings against best practices
+-----------------------------------------------------------------------
+SELECT
+    c.[name]                                     AS Setting,
+    c.value                                      AS ConfiguredValue,
+    c.value_in_use                               AS RunningValue,
+    c.minimum_value                              AS MinAllowed,
+    c.maximum_value                              AS MaxAllowed,
+    c.is_dynamic                                 AS IsDynamic,
+    c.is_advanced                                AS IsAdvanced,
+
+    CASE c.[name]
+
+        -- Memory
+        WHEN 'max server memory (MB)' THEN
+            CASE WHEN c.value_in_use = 2147483647
+                 THEN '*** SET TO A SPECIFIC VALUE (leave 10-20% for OS) ***'
+                 ELSE 'OK - set to ' + CAST(c.value_in_use AS VARCHAR) + ' MB'
+            END
+        WHEN 'min server memory (MB)' THEN
+            CASE WHEN c.value_in_use = 0
+                 THEN '* Consider setting to ~50% of max server memory *'
+                 ELSE 'OK'
+            END
+
+        -- Parallelism
+        WHEN 'max degree of parallelism' THEN
+            CASE WHEN c.value_in_use = 0
+                 THEN '*** SET TO # OF CORES (max 8) or workload-appropriate value ***'
+                 WHEN c.value_in_use > 8
+                 THEN '* Consider <=8 for OLTP workloads *'
+                 ELSE 'OK'
+            END
+        WHEN 'cost threshold for parallelism' THEN
+            CASE WHEN c.value_in_use = 5
+                 THEN '*** DEFAULT (5) is too low — set to 25-50 for OLTP ***'
+                 ELSE 'OK - set to ' + CAST(c.value_in_use AS VARCHAR)
+            END
+
+        -- Tempdb
+        WHEN 'optimize for ad hoc workloads' THEN
+            CASE WHEN c.value_in_use = 0
+                 THEN '*** ENABLE (1) — prevents plan cache bloat ***'
+                 ELSE 'OK - enabled'
+            END
+
+        -- Backup
+        WHEN 'backup compression default' THEN
+            CASE WHEN c.value_in_use = 0
+                 THEN '* Consider enabling (1) — saves I/O and space *'
+                 ELSE 'OK - enabled'
+            END
+        WHEN 'backup checksum default' THEN
+            CASE WHEN c.value_in_use = 0
+                 THEN '* Consider enabling (1) — catches silent corruption *'
+                 ELSE 'OK - enabled'
+            END
+
+        -- Remote access
+        WHEN 'remote admin connections' THEN
+            CASE WHEN c.value_in_use = 0
+                 THEN '* Consider enabling (1) for remote DAC *'
+                 ELSE 'OK - enabled'
+            END
+        WHEN 'remote access' THEN
+            CASE WHEN c.value_in_use = 1
+                 THEN '* Deprecated — consider disabling (0) *'
+                 ELSE 'OK - disabled'
+            END
+
+        -- Security
+        WHEN 'xp_cmdshell' THEN
+            CASE WHEN c.value_in_use = 1
+                 THEN '*** SECURITY RISK — disable unless required ***'
+                 ELSE 'OK - disabled'
+            END
+        WHEN 'clr enabled' THEN
+            CASE WHEN c.value_in_use = 1
+                 THEN '* Enabled — verify this is intentional *'
+                 ELSE 'OK - disabled'
+            END
+        WHEN 'Ole Automation Procedures' THEN
+            CASE WHEN c.value_in_use = 1
+                 THEN '* Enabled — verify this is intentional *'
+                 ELSE 'OK - disabled'
+            END
+        WHEN 'cross db ownership chaining' THEN
+            CASE WHEN c.value_in_use = 1
+                 THEN '*** SECURITY RISK — disable unless required ***'
+                 ELSE 'OK - disabled'
+            END
+        WHEN 'scan for startup procs' THEN
+            CASE WHEN c.value_in_use = 1
+                 THEN '* Enabled — verify startup procs are legitimate *'
+                 ELSE 'OK'
+            END
+
+        -- Query processing
+        WHEN 'fill factor (%)' THEN
+            CASE WHEN c.value_in_use = 0
+                 THEN 'OK - default (100% fill)'
+                 ELSE 'Set to ' + CAST(c.value_in_use AS VARCHAR) + '%'
+            END
+
+        ELSE 'Review manually'
+    END                                          AS Recommendation
+
+FROM sys.configurations c
+WHERE c.[name] IN (
+    'max server memory (MB)',
+    'min server memory (MB)',
+    'max degree of parallelism',
+    'cost threshold for parallelism',
+    'optimize for ad hoc workloads',
+    'backup compression default',
+    'backup checksum default',
+    'remote admin connections',
+    'remote access',
+    'xp_cmdshell',
+    'clr enabled',
+    'Ole Automation Procedures',
+    'cross db ownership chaining',
+    'scan for startup procs',
+    'fill factor (%)',
+    'Database Mail XPs',
+    'default trace enabled',
+    'blocked process threshold (s)',
+    'Agent XPs'
+)
+ORDER BY c.[name];
+
+-----------------------------------------------------------------------
+-- 5.2 ALL INSTANCE CONFIGURATIONS (COMPLETE LIST)
+-----------------------------------------------------------------------
+SELECT 
+    name, 
+    value, 
+    value_in_use, 
+    minimum, 
+    maximum, 
+    [description], 
+    is_dynamic, 
+    is_advanced
+FROM sys.configurations WITH (NOLOCK)
+ORDER BY name 
+OPTION (RECOMPILE);
