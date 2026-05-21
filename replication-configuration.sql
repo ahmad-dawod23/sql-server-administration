@@ -112,3 +112,62 @@ exec sp_replicationdboption @dbname = N'the_database_to_publish',
                             @optname = N'publish', 
                             @value = N'true'
 GO
+
+
+/*******************************************************************************
+ * SECTION 14: MAINTENANCE AND CLEANUP
+ ******************************************************************************/
+
+--how to completely remove replication from SQL Server
+--Step 1: Drop the Publication
+
+USE [publisher_database]
+EXEC sp_droppublication @publication = N'<publication_name>'
+GO
+
+--Step 2: Disable Publishing for the Database
+
+USE [publisher_database]
+EXEC sp_removedbreplication
+GO
+
+--Step 3: Drop the Distributor
+
+
+USE [master]
+EXEC sp_dropdistributor @no_checks = 1
+GO
+
+
+USE [distribution];
+GO
+
+
+-- 14.1 View Current Distribution Database Retention Settings
+EXEC sys.sp_helpdistributiondb @database = N'distribution';
+GO
+
+-- 14.2 Set Distribution / History Retention (SUPPORTED method)
+-- Use sp_changedistributiondb instead of the internal sp_MShistory_cleanup.
+--   @history_retention   = hours of agent history to keep   (default 48)
+--   @max_distretention   = max hours to retain commands     (default 72)
+--   @min_distretention   = min hours to retain commands     (default 0)
+EXEC sys.sp_changedistributiondb
+    @database          = N'distribution',
+    @history_retention = 72;
+
+-- EXEC sys.sp_changedistributiondb
+--     @database          = N'distribution',
+--     @max_distretention = 72,
+--     @min_distretention = 0;
+GO
+
+-- 14.3 Manually Run Distribution Cleanup (only if the job is disabled)
+-- EXEC sys.sp_MSdistribution_cleanup
+--     @min_distretention = 0,
+--     @max_distretention = 72;
+GO
+
+/*******************************************************************************
+ * END OF REPLICATION TROUBLESHOOTING QUERIES
+ ******************************************************************************/

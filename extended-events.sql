@@ -628,6 +628,96 @@ LEFT JOIN sys.server_event_session_actions a ON e.event_session_id = a.event_ses
 ORDER BY s.name, e.name, a.name;
 GO
 
+
+-----------------------------------------------------------------------
+-- 8.6 backup monitoring extended event
+-----------------------------------------------------------------------
+
+
+
+ALTER EVENT SESSION BackupMonitoring
+ON SERVER
+STATE=Start
+GO	
+dbcc traceoff (3004,3014,3212,3213,3605,-1)
+dbcc traceon (3004,3014,3212,3213,3605,-1)
+select @@SPID  
+-- Change the session_id below to the spid running backup
+CREATE EVENT SESSION BackupMonitoring
+ON SERVER
+ADD EVENT sqlserver.sql_statement_starting
+(   ACTION (sqlserver.database_id, sqlserver.sql_text)
+   WHERE (sqlserver.session_id = 55)),
+ADD EVENT sqlserver.sql_statement_completed
+(   ACTION (sqlserver.database_id, sqlserver.sql_text)
+    WHERE (sqlserver.session_id = 55)),
+ADD EVENT sqlserver.databases_backup_restore_throughput
+(   WHERE (sqlserver.session_id = 55)),
+ADD EVENT sqlos.wait_info
+(   ACTION (sqlserver.database_id) 
+    WHERE (sqlserver.session_id = 55  AND duration > 0)),
+ADD EVENT sqlos.wait_info_external
+(   ACTION (sqlserver.database_id) 
+    WHERE (sqlserver.session_id = 55  AND duration > 0)),
+ADD EVENT sqlserver.trace_print
+(   WHERE (sqlserver.session_id = 55)),
+ADD EVENT sqlserver.file_read
+(   WHERE (sqlserver.session_id = 55)),
+ADD EVENT sqlserver.file_read_completed
+(   WHERE (sqlserver.session_id = 55)),
+ADD EVENT sqlserver.physical_page_read
+(   WHERE (sqlserver.session_id = 55)),
+ADD EVENT sqlserver.databases_log_cache_read
+(   WHERE (database_id = 41)),
+ADD EVENT sqlserver.databases_log_cache_hit
+(   WHERE (database_id = 41)),
+ADD EVENT sqlserver.databases_log_flush
+(   WHERE (database_id = 41)),
+ADD EVENT sqlserver.checkpoint_begin
+(   WHERE (database_id = 41)),
+ADD EVENT sqlserver.checkpoint_end
+(   WHERE (database_id = 41))
+ADD TARGET package0.asynchronous_file_target(
+     SET filename='C:\cases\backuplog.xel', -- change to your local drive
+         metadatafile = 'C:\cases\backlog2.xem') – change to your local drive
+GO
+-- Alter the Session to Start it
+ALTER EVENT SESSION BackupMonitoring
+ON SERVER
+STATE=START
+GO
+<Put your backup/restore script here>
+ALTER EVENT SESSION BackupMonitoring
+ON SERVER
+STATE=STOP
+GO
+dbcc traceoff (3004,3014,3212,3213,3605,-1)  
+
+--trace functionality:
+
+--3004: Trace flag 3004 adds information to the output about file preparation, bitmaps, and instant file initialization (instant file initialization, which avoids the costly operation about zeroing out files, is only relevant for restore operations, and only for restoring data files).
+
+--3014: This is one of the undocumented Trace flags in SQL Server, which basically gives a detailed information(Well, This might not be useful in most of the cases) regarding File Creation, Padding and much more related Info while you are taking a Backup of your Database
+
+--3212: Prints “Backup stats” to the SQL log
+
+--3213: Logs Output buffer info for backups to ERRORLOG
+
+--3605: Sends a variety of types of information to the SQL Server error log instead of to the user consol
+
+
+
+CREATE EVENT SESSION [Backup trace] ON SERVER
+ADD EVENT sqlserver.backup_restore_progress_trace
+ADD TARGET package0.event_file(SET filename=N'Backup trace')
+WITH (MAX_MEMORY=4096 KB,EVENT_RETENTION_MODE=ALLOW_SINGLE_EVENT_LOSS,
+MAX_DISPATCH_LATENCY=5 SECONDS,MAX_EVENT_SIZE=0 KB,MEMORY_PARTITION_MODE=NONE,
+TRACK_CAUSALITY=OFF,STARTUP_STATE=OFF)
+GO
+
+
+
+
 /*===========================================================================
     END OF FILE
 ===========================================================================*/

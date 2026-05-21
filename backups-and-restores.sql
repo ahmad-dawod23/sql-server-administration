@@ -884,6 +884,90 @@ Restore Procedure:
 
 -----------------------------------------------------------------------------------------
 */
+/*
+Troubleshooting Steps for Managed / Automated Backups
+*/
+
+-- 1. Enable trace flags
+DBCC TRACEON(3014, 3212, 3004, 3605, 3051, -1);
+
+
+--trace functionality:
+
+--3004: Trace flag 3004 adds information to the output about file preparation, bitmaps, and instant file initialization (instant file initialization, which avoids the costly operation about zeroing out files, is only relevant for restore operations, and only for restoring data files).
+
+--3014: This is one of the undocumented Trace flags in SQL Server, which basically gives a detailed information(Well, This might not be useful in most of the cases) regarding File Creation, Padding and much more related Info while you are taking a Backup of your Database
+
+--3212: Prints “Backup stats” to the SQL log
+
+--3213: Logs Output buffer info for backups to ERRORLOG
+
+--3605: Sends a variety of types of information to the SQL Server error log instead of to the user consol
+
+
+-- 2. Re-enable extended debug events
+EXEC msdb.managed_backup.sp_set_parameter
+    @parameter_name = 'SSMBackup2WADebugXevent',
+    @parameter_value = 'true';
+
+-- 3. Re-enable SQL Agent verbose logging
+EXEC msdb.dbo.sp_set_sqlagent_properties
+    @errorlogging_level = 7;
+
+-- 4. Capture Managed Backup health status
+SELECT *
+FROM managed_backup.fn_get_health_status(NULL, NULL);
+
+-- 5. Run Managed Backup diagnostics
+EXEC managed_backup.sp_get_backup_diagnostics;
+
+-- 6. Take backup of msdb (execute separately, example below)
+-- BACKUP DATABASE msdb TO DISK = 'C:\Backup\msdb.bak' WITH INIT;
+
+
+/*
+7. Data Collection for Troubleshooting
+*/
+
+-- Collect the following:
+
+-- SQL Server Agent logs (especially if verbose logging is enabled)
+
+-- Default XEvent files:
+--   SmartAdminEvents_Backup_*
+--   SmartAdminEvents__*
+
+-- Application logs
+
+-- System event logs
+
+-- Managed Backup diagnostics (reads XEvent files; avoid if files are huge)
+EXEC msdb.smart_admin.sp_get_backup_diagnostics;
+
+-- Managed database metadata
+SELECT *
+FROM msdb.dbo.autoadmin_managed_databases;
+
+SELECT *
+FROM msdb.dbo.autoadmin_system_flags;
+
+SELECT *
+FROM msdb.dbo.autoadmin_task_agent_metadata;
+
+-- SQL Agent job history
+SELECT *
+FROM msdb.dbo.sysjobhistory;
+
+-- Ring buffer exceptions (ensure full text is not truncated)
+SELECT *
+FROM sys.dm_os_ring_buffers
+WHERE ring_buffer_type = 'RING_BUFFER_EXCEPTION';
+
+-- Loaded modules (for stack alignment)
+SELECT *
+FROM sys.dm_os_loaded_modules;
+``
+
 
 
 /*****************************************************************************************************
