@@ -73,6 +73,26 @@ EXEC msdb.dbo.sp_help_jobhistory
     @job_id = 'D55F576C-91B7-48D4-9F77-0C4F11105AD6',  -- <replace job_id>
     @mode   = 'FULL';
 GO
+--alternative way:
+SELECT
+    j.name,
+    ja.start_execution_date,
+    ja.stop_execution_date,
+    ja.run_requested_date,
+    ja.run_requested_source,
+    ja.last_executed_step_id,
+    ja.last_executed_step_date
+FROM msdb.dbo.sysjobactivity ja
+JOIN msdb.dbo.sysjobs j
+    ON ja.job_id = j.job_id
+WHERE j.category_id IN (
+    SELECT category_id 
+    FROM msdb.dbo.syscategories 
+    WHERE name LIKE 'REPL%'
+)
+ORDER BY ja.start_execution_date DESC;
+
+
 
 USE [distribution];
 GO
@@ -267,6 +287,30 @@ SELECT id, name, publisher_db, publication, subscriber_db, subscription_type
 FROM dbo.MSdistribution_agents
 WHERE publisher_database_id = 1;                       -- <replace>
 GO
+
+-- 4.4 Check if Subscriber table is being modified outside replication
+
+
+SELECT 
+    tr.name AS trigger_name,
+    OBJECT_SCHEMA_NAME(tr.parent_id) AS schema_name,
+    OBJECT_NAME(tr.parent_id) AS table_name,
+    tr.is_disabled,
+    tr.is_not_for_replication
+FROM sys.triggers tr
+WHERE tr.parent_id = OBJECT_ID(N'dbo.articlename');
+
+
+
+SELECT 
+    OBJECT_SCHEMA_NAME(object_id) AS schema_name,
+    name,
+    type_desc,
+    modify_date
+FROM sys.objects
+WHERE name LIKE '%articlename%'
+ORDER BY modify_date DESC;
+
 
 /*******************************************************************************
  * SECTION 5: TRACER TOKEN MANAGEMENT

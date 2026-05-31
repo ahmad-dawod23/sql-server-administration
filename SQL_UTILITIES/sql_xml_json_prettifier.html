@@ -1,0 +1,1280 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Code Pretty Printer - XML, JSON & SQL Formatter</title>
+    <style>
+        :root {
+            --bg: #1a1b26;
+            --surface: #1f2133;
+            --surface2: #282a3a;
+            --border: #3b3d54;
+            --text: #c9d1d9;
+            --text-secondary: #8b8fa3;
+            --accent: #7c5cfc;
+            --accent-hover: #9178ff;
+            --accent-subtle: #7c5cfc22;
+            --keyword: #c678dd;
+            --string: #98c379;
+            --number: #d19a66;
+            --tag: #61afef;
+            --attr: #e5c07b;
+            --comment: #5c6370;
+            --bool-null: #d19a66;
+            --error-bg: #3d1a1a;
+            --error-text: #f48771;
+            --success-bg: #1a2d1a;
+            --success-text: #7ec87e;
+            --shadow: 0 4px 24px rgba(0, 0, 0, 0.4);
+            --radius: 12px;
+            --radius-sm: 8px;
+            --transition: 0.2s ease;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: var(--bg);
+            color: var(--text);
+            font-family: 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 24px 16px 48px;
+            line-height: 1.5;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 1100px;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+
+        /* Header */
+        .header {
+            text-align: center;
+            padding: 8px 0 4px;
+        }
+        .header h1 {
+            font-size: 1.8rem;
+            font-weight: 700;
+            letter-spacing: -0.02em;
+            background: linear-gradient(135deg, #c678dd, #61afef, #98c379);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            margin-bottom: 4px;
+        }
+        .header .subtitle {
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+            letter-spacing: 0.02em;
+        }
+
+        /* Panels */
+        .panels {
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+        @media (min-width: 768px) {
+            .panels {
+                flex-direction: row;
+                gap: 20px;
+            }
+            .panel {
+                flex: 1;
+                min-width: 0;
+            }
+        }
+
+        .panel {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+        .panel-label {
+            font-size: 0.8rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            color: var(--text-secondary);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .panel-label .dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--accent);
+            display: inline-block;
+        }
+        .panel-label .dot.output-dot {
+            background: #98c379;
+        }
+
+        /* Textarea & Output */
+        .textarea-wrapper {
+            position: relative;
+            flex: 1;
+            min-height: 320px;
+        }
+        textarea {
+            width: 100%;
+            height: 100%;
+            min-height: 320px;
+            background: var(--surface);
+            border: 2px solid var(--border);
+            border-radius: var(--radius);
+            color: var(--text);
+            font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Consolas', 'Monaco', monospace;
+            font-size: 0.875rem;
+            padding: 16px;
+            resize: vertical;
+            transition: border-color var(--transition), box-shadow var(--transition);
+            line-height: 1.6;
+            tab-size: 2;
+            outline: none;
+        }
+        textarea:focus {
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px var(--accent-subtle);
+        }
+        textarea::placeholder {
+            color: var(--text-secondary);
+            opacity: 0.6;
+        }
+
+        .output-area {
+            width: 100%;
+            min-height: 320px;
+            max-height: 700px;
+            overflow: auto;
+            background: var(--surface);
+            border: 2px solid var(--border);
+            border-radius: var(--radius);
+            padding: 16px;
+            font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Consolas', 'Monaco', monospace;
+            font-size: 0.875rem;
+            line-height: 1.6;
+            white-space: pre;
+            position: relative;
+            transition: border-color var(--transition);
+        }
+        .output-area.has-content {
+            border-color: #98c37955;
+        }
+        .output-area .placeholder {
+            color: var(--text-secondary);
+            opacity: 0.5;
+            font-style: italic;
+            pointer-events: none;
+        }
+        .output-area code {
+            display: block;
+            color: var(--text);
+        }
+
+        /* Syntax Highlighting Spans */
+        .hl-keyword {
+            color: var(--keyword);
+            font-weight: 600;
+        }
+        .hl-string {
+            color: var(--string);
+        }
+        .hl-number {
+            color: var(--number);
+        }
+        .hl-tag {
+            color: var(--tag);
+        }
+        .hl-attr {
+            color: var(--attr);
+        }
+        .hl-comment {
+            color: var(--comment);
+            font-style: italic;
+        }
+        .hl-bool-null {
+            color: var(--bool-null);
+            font-weight: 600;
+        }
+        .hl-punctuation {
+            color: #abb2bf;
+        }
+
+        /* Controls */
+        .controls {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            align-items: center;
+        }
+        .lang-select {
+            background: var(--surface2);
+            color: var(--text);
+            border: 2px solid var(--border);
+            border-radius: var(--radius-sm);
+            padding: 10px 14px;
+            font-size: 0.875rem;
+            font-family: inherit;
+            cursor: pointer;
+            outline: none;
+            transition: border-color var(--transition), box-shadow var(--transition);
+            appearance: none;
+            -webkit-appearance: none;
+            background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3e%3cpath fill='none' stroke='%238b8fa3' stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='m2 5 6 6 6-6'/%3e%3c/svg%3e");
+            background-repeat: no-repeat;
+            background-position: right 10px center;
+            background-size: 16px;
+            padding-right: 36px;
+            min-width: 160px;
+        }
+        .lang-select:focus {
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px var(--accent-subtle);
+        }
+
+        .btn {
+            padding: 10px 20px;
+            border-radius: var(--radius-sm);
+            font-size: 0.875rem;
+            font-weight: 600;
+            font-family: inherit;
+            cursor: pointer;
+            border: none;
+            transition: all var(--transition);
+            letter-spacing: 0.01em;
+            white-space: nowrap;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .btn-format {
+            background: var(--accent);
+            color: #fff;
+            box-shadow: 0 2px 8px rgba(124, 92, 252, 0.3);
+        }
+        .btn-format:hover {
+            background: var(--accent-hover);
+            box-shadow: 0 4px 16px rgba(124, 92, 252, 0.45);
+            transform: translateY(-1px);
+        }
+        .btn-format:active {
+            transform: translateY(0);
+            box-shadow: 0 1px 4px rgba(124, 92, 252, 0.3);
+        }
+        .btn-secondary {
+            background: var(--surface2);
+            color: var(--text);
+            border: 2px solid var(--border);
+        }
+        .btn-secondary:hover {
+            background: var(--border);
+            border-color: #555;
+        }
+        .btn-copy {
+            background: #2d4a2d;
+            color: #98c379;
+            border: 2px solid #3d623d;
+        }
+        .btn-copy:hover {
+            background: #3a5c3a;
+            border-color: #4d7a4d;
+        }
+        .btn-clear {
+            background: transparent;
+            color: var(--text-secondary);
+            border: 2px solid transparent;
+        }
+        .btn-clear:hover {
+            color: #f48771;
+            border-color: #f4877144;
+            background: #f4877111;
+        }
+        .btn-icon {
+            font-size: 1.1rem;
+        }
+
+        /* Error message */
+        .error-msg {
+            background: var(--error-bg);
+            color: var(--error-text);
+            padding: 12px 16px;
+            border-radius: var(--radius-sm);
+            font-size: 0.85rem;
+            font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+            border-left: 3px solid #f48771;
+            display: none;
+            animation: fadeIn 0.3s ease;
+        }
+        .error-msg.visible {
+            display: block;
+        }
+        .success-msg {
+            background: var(--success-bg);
+            color: var(--success-text);
+            padding: 10px 14px;
+            border-radius: var(--radius-sm);
+            font-size: 0.85rem;
+            border-left: 3px solid #7ec87e;
+            display: none;
+            animation: fadeIn 0.3s ease;
+        }
+        .success-msg.visible {
+            display: block;
+        }
+
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+                transform: translateY(-6px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        /* Stats bar */
+        .stats {
+            display: flex;
+            gap: 16px;
+            font-size: 0.75rem;
+            color: var(--text-secondary);
+            flex-wrap: wrap;
+        }
+        .stats span {
+            background: var(--surface2);
+            padding: 4px 10px;
+            border-radius: 20px;
+            letter-spacing: 0.03em;
+        }
+
+        /* Scrollbar */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: var(--border);
+            border-radius: 10px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #555;
+        }
+
+        /* Footer */
+        .footer {
+            text-align: center;
+            font-size: 0.75rem;
+            color: var(--text-secondary);
+            opacity: 0.7;
+            margin-top: 8px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <div class="header">
+            <h1>✨ Code Pretty Printer</h1>
+            <p class="subtitle">Format &amp; beautify XML, JSON, and SQL with syntax highlighting</p>
+        </div>
+
+        <!-- Controls -->
+        <div class="controls">
+            <select class="lang-select" id="languageSelect" aria-label="Select language">
+                <option value="auto">🔍 Auto-Detect</option>
+                <option value="json">📦 JSON</option>
+                <option value="xml">📋 XML</option>
+                <option value="sql">🗄️ SQL</option>
+            </select>
+            <button class="btn btn-format" id="btnFormat" title="Format code (Ctrl+Enter)">
+                <span class="btn-icon">⚡</span> Format
+            </button>
+            <button class="btn btn-copy" id="btnCopy" title="Copy formatted output">
+                <span class="btn-icon">📋</span> Copy
+            </button>
+            <button class="btn btn-clear" id="btnClear" title="Clear all">
+                <span class="btn-icon">🗑️</span> Clear
+            </button>
+            <div class="stats" id="statsBar">
+                <span id="statInput">Input: 0 chars</span>
+                <span id="statOutput">Output: 0 chars</span>
+                <span id="statDetected" style="display:none;"></span>
+            </div>
+        </div>
+
+        <!-- Messages -->
+        <div class="error-msg" id="errorMsg"></div>
+        <div class="success-msg" id="successMsg"></div>
+
+        <!-- Panels -->
+        <div class="panels">
+            <!-- Input Panel -->
+            <div class="panel">
+                <div class="panel-label"><span class="dot"></span> Input</div>
+                <div class="textarea-wrapper">
+                    <textarea
+                    id="inputArea"
+                    placeholder="Paste your XML, JSON, or SQL here...&#10;&#10;Examples:&#10;• {&quot;name&quot;: &quot;hello&quot;, &quot;values&quot;: [1,2,3]}&#10;• &lt;root&gt;&lt;item id=&quot;1&quot;&gt;text&lt;/item&gt;&lt;/root&gt;&#10;• SELECT a,b FROM table WHERE x=1 ORDER BY a"
+                ></textarea>
+            </div>
+        </div>
+
+        <!-- Output Panel -->
+        <div class="panel">
+            <div class="panel-label"><span class="dot output-dot"></span> Formatted Output</div>
+            <div class="output-area" id="outputArea" aria-live="polite">
+                <span class="placeholder">Formatted code will appear here...</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Footer -->
+    <p class="footer">Supports XML · JSON · SQL &nbsp;|&nbsp; All processing happens locally in your browser</p>
+</div>
+
+<script>
+    (function() {
+        // ==================== DOM ELEMENTS ====================
+        const inputArea = document.getElementById('inputArea');
+        const outputArea = document.getElementById('outputArea');
+        const languageSelect = document.getElementById('languageSelect');
+        const btnFormat = document.getElementById('btnFormat');
+        const btnCopy = document.getElementById('btnCopy');
+        const btnClear = document.getElementById('btnClear');
+        const errorMsg = document.getElementById('errorMsg');
+        const successMsg = document.getElementById('successMsg');
+        const statInput = document.getElementById('statInput');
+        const statOutput = document.getElementById('statOutput');
+        const statDetected = document.getElementById('statDetected');
+
+        // ==================== SQL KEYWORD SETS ====================
+        const SQL_RESERVED = new Set([
+            'SELECT', 'FROM', 'WHERE', 'AND', 'OR', 'NOT', 'IN', 'IS', 'NULL', 'LIKE', 'BETWEEN',
+            'EXISTS', 'AS', 'ON', 'JOIN', 'LEFT', 'RIGHT', 'INNER', 'OUTER', 'FULL', 'CROSS',
+            'ORDER', 'BY', 'GROUP', 'HAVING', 'LIMIT', 'OFFSET', 'UNION', 'ALL', 'INTERSECT',
+            'EXCEPT', 'INSERT', 'INTO', 'VALUES', 'UPDATE', 'SET', 'DELETE', 'CREATE', 'TABLE',
+            'ALTER', 'DROP', 'INDEX', 'VIEW', 'TRIGGER', 'PROCEDURE', 'FUNCTION', 'DATABASE',
+            'SCHEMA', 'IF', 'ELSE', 'THEN', 'END', 'CASE', 'WHEN', 'BEGIN', 'COMMIT', 'ROLLBACK',
+            'TRANSACTION', 'PRIMARY', 'KEY', 'FOREIGN', 'REFERENCES', 'CONSTRAINT', 'DEFAULT',
+            'CHECK', 'UNIQUE', 'CASCADE', 'DISTINCT', 'TOP', 'WITH', 'RECURSIVE', 'RETURNING',
+            'ASC', 'DESC', 'NULLS', 'FIRST', 'LAST', 'TRUE', 'FALSE', 'COUNT', 'SUM', 'AVG',
+            'MIN', 'MAX', 'COALESCE', 'CAST', 'CONVERT', 'OVER', 'PARTITION', 'ROWS', 'RANGE',
+            'FETCH', 'NEXT', 'ONLY', 'ROW', 'ROWS', 'LATERAL', 'NATURAL', 'USING', 'HAVING',
+            'ANY', 'SOME', 'EXCEPT', 'REPLACE', 'MERGE', 'DO', 'DECLARE', 'CURSOR', 'OPEN',
+            'CLOSE', 'FETCH', 'GRANT', 'REVOKE', 'TRUNCATE', 'EXPLAIN', 'ANALYZE', 'VACUUM',
+        ]);
+
+        const SQL_CLAUSE_STARTERS = [
+            'SELECT', 'FROM', 'WHERE', 'ORDER BY', 'GROUP BY', 'HAVING', 'LIMIT', 'OFFSET',
+            'UNION ALL', 'UNION', 'INTERSECT', 'EXCEPT', 'INSERT INTO', 'INSERT', 'VALUES',
+            'UPDATE', 'DELETE FROM', 'DELETE', 'SET', 'CREATE TABLE', 'CREATE', 'ALTER TABLE',
+            'ALTER', 'DROP TABLE', 'DROP', 'TRUNCATE', 'RETURNING', 'WITH', 'MERGE',
+            'LEFT JOIN', 'RIGHT JOIN', 'INNER JOIN', 'OUTER JOIN', 'FULL JOIN', 'CROSS JOIN',
+            'JOIN', 'ON', 'BEGIN', 'COMMIT', 'ROLLBACK', 'DECLARE',
+        ];
+
+        const SQL_JOIN_KEYWORDS = [
+            'LEFT JOIN', 'RIGHT JOIN', 'INNER JOIN', 'OUTER JOIN', 'FULL JOIN', 'CROSS JOIN', 'JOIN',
+        ];
+
+        const SQL_CONDITIONAL = ['AND', 'OR', 'WHEN', 'THEN', 'ELSE', 'END'];
+
+        // ==================== FORMATTING FUNCTIONS ====================
+
+        function formatJSON(input) {
+            const trimmed = input.trim();
+            if (!trimmed) return { result: '', error: null };
+            const parsed = JSON.parse(trimmed);
+            const formatted = JSON.stringify(parsed, null, 2);
+            return { result: formatted, error: null };
+        }
+
+        function formatXML(input) {
+            const trimmed = input.trim();
+            if (!trimmed) return { result: '', error: null };
+
+            // Extract XML declaration if present
+            let declaration = '';
+            let xmlContent = trimmed;
+            const declMatch = trimmed.match(/^<\?xml[^?]*\?>\s*/i);
+            if (declMatch) {
+                declaration = declMatch[0].trim();
+                xmlContent = trimmed.substring(declMatch[0].length).trim();
+            }
+
+            // Wrap in a root element if the content is a fragment (for DOMParser)
+            // Check if it looks like a single root or multiple roots
+            const parser = new DOMParser();
+            let doc;
+            try {
+                doc = parser.parseFromString(xmlContent, 'text/xml');
+            } catch (e) {
+                return { result: null, error: 'Failed to parse XML: ' + e.message };
+            }
+
+            // Check for parser errors
+            const parseError = doc.querySelector('parsererror');
+            if (parseError) {
+                // Try wrapping in a root element for fragments
+                const wrappedContent = '<__root__>' + xmlContent + '</__root__>';
+                try {
+                    doc = parser.parseFromString(wrappedContent, 'text/xml');
+                } catch (e2) {
+                    return { result: null, error: 'Invalid XML: ' + (parseError.textContent || 'Parse error') };
+                }
+                const wrappedError = doc.querySelector('parsererror');
+                if (wrappedError) {
+                    return {
+                        result: null,
+                        error: 'Invalid XML: ' + (wrappedError.textContent || 'Parse error').replace(
+                            /__root__/g, '')
+                    };
+                }
+                // Format the wrapped document
+                const formatted = formatXMLNode(doc.documentElement, 0);
+                const lines = formatted.split('\n');
+                // Remove the wrapper tags and de-indent
+                const innerLines = lines.slice(1, -1).map(l => l.replace(/^  /, ''));
+                const result = innerLines.join('\n');
+                return {
+                    result: declaration ? declaration + '\n' + result : result,
+                    error: null
+                };
+            }
+
+            let result = formatXMLNode(doc.documentElement, 0);
+            if (declaration) {
+                result = declaration + '\n' + result;
+            }
+            return { result, error: null };
+        }
+
+        function formatXMLNode(node, depth) {
+            const indent = '  '.repeat(depth);
+            let result = '';
+
+            // Document node - process children
+            if (node.nodeType === Node.DOCUMENT_NODE || node.nodeType === Node.DOCUMENT_FRAGMENT_NODE) {
+                const children = node.childNodes;
+                const parts = [];
+                for (let i = 0; i < children.length; i++) {
+                    const child = children[i];
+                    const formatted = formatXMLNode(child, depth);
+                    if (formatted) parts.push(formatted);
+                }
+                return parts.join('\n');
+            }
+
+            // Element node
+            if (node.nodeType === Node.ELEMENT_NODE) {
+                const tagName = node.tagName || node.nodeName;
+                const attributes = [];
+                if (node.attributes && node.attributes.length > 0) {
+                    for (let i = 0; i < node.attributes.length; i++) {
+                        const attr = node.attributes[i];
+                        attributes.push(attr.name + '="' + escapeXMLAttr(attr.value) + '"');
+                    }
+                }
+                const attrStr = attributes.length > 0 ? ' ' + attributes.join(' ') : '';
+                const children = node.childNodes;
+                const hasChildren = children && children.length > 0;
+
+                if (!hasChildren) {
+                    // Self-closing or empty element
+                    return indent + '<' + tagName + attrStr + ' />';
+                }
+
+                // Check if all children are text nodes (including CDATA)
+                let allText = true;
+                let textContent = '';
+                for (let i = 0; i < children.length; i++) {
+                    const child = children[i];
+                    if (child.nodeType === Node.TEXT_NODE || child.nodeType === Node.CDATA_SECTION_NODE) {
+                        textContent += child.nodeType === Node.CDATA_SECTION_NODE ?
+                            '<![CDATA[' + child.nodeValue + ']]>' :
+                            child.nodeValue;
+                    } else if (child.nodeType === Node.COMMENT_NODE) {
+                        // Comments are fine, treat as text
+                        textContent += '<!--' + child.nodeValue + '-->';
+                    } else {
+                        allText = false;
+                        break;
+                    }
+                }
+
+                if (allText) {
+                    const trimmedText = textContent.trim();
+                    if (trimmedText.length === 0) {
+                        return indent + '<' + tagName + attrStr + '></' + tagName + '>';
+                    }
+                    // If text is short, keep inline
+                    if (trimmedText.length < 60 && !trimmedText.includes('\n') && !trimmedText.includes('<![CDATA[')) {
+                        return indent + '<' + tagName + attrStr + '>' + trimmedText + '</' + tagName + '>';
+                    }
+                    // Longer text - put on own lines
+                    return indent + '<' + tagName + attrStr + '>\n' +
+                        indent + '  ' + trimmedText + '\n' +
+                        indent + '</' + tagName + '>';
+                }
+
+                // Mixed or element children
+                result = indent + '<' + tagName + attrStr + '>';
+                const childParts = [];
+                for (let i = 0; i < children.length; i++) {
+                    const child = children[i];
+                    const formatted = formatXMLNode(child, depth + 1);
+                    if (formatted) childParts.push(formatted);
+                }
+                if (childParts.length > 0) {
+                    result += '\n' + childParts.join('\n') + '\n' + indent;
+                }
+                result += '</' + tagName + '>';
+                return result;
+            }
+
+            // Text node
+            if (node.nodeType === Node.TEXT_NODE) {
+                const text = node.nodeValue.trim();
+                if (text) {
+                    return indent + escapeXMLText(text);
+                }
+                return '';
+            }
+
+            // CDATA section
+            if (node.nodeType === Node.CDATA_SECTION_NODE) {
+                return indent + '<![CDATA[' + node.nodeValue + ']]>';
+            }
+
+            // Comment node
+            if (node.nodeType === Node.COMMENT_NODE) {
+                return indent + '<!--' + node.nodeValue + '-->';
+            }
+
+            // Processing instruction
+            if (node.nodeType === Node.PROCESSING_INSTRUCTION_NODE) {
+                return indent + '<?' + node.nodeName + ' ' + node.nodeValue + '?>';
+            }
+
+            return '';
+        }
+
+        function escapeXMLAttr(value) {
+            return value
+                .replace(/&/g, '&amp;')
+                .replace(/"/g, '&quot;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;');
+        }
+
+        function escapeXMLText(text) {
+            return text
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;');
+        }
+
+        function formatSQL(input) {
+            const trimmed = input.trim();
+            if (!trimmed) return { result: '', error: null };
+
+            // Step 1: Protect string literals and comments
+            const protectedItems = [];
+            let protectedInput = trimmed;
+
+            // Protect single-line comments
+            protectedInput = protectedInput.replace(/--[^\n]*/g, (match) => {
+                protectedItems.push(match);
+                return '___PROTECTED_' + (protectedItems.length - 1) + '___';
+            });
+
+            // Protect multi-line comments
+            protectedInput = protectedInput.replace(/\/\*[\s\S]*?\*\//g, (match) => {
+                protectedItems.push(match);
+                return '___PROTECTED_' + (protectedItems.length - 1) + '___';
+            });
+
+            // Protect single-quoted strings (handling escaped quotes)
+            protectedInput = protectedInput.replace(/'([^']|'')*'/g, (match) => {
+                protectedItems.push(match);
+                return '___PROTECTED_' + (protectedItems.length - 1) + '___';
+            });
+
+            // Protect double-quoted identifiers
+            protectedInput = protectedInput.replace(/"([^"]|"")*"/g, (match) => {
+                protectedItems.push(match);
+                return '___PROTECTED_' + (protectedItems.length - 1) + '___';
+            });
+
+            // Protect backtick-quoted identifiers
+            protectedInput = protectedInput.replace(/`[^`]*`/g, (match) => {
+                protectedItems.push(match);
+                return '___PROTECTED_' + (protectedItems.length - 1) + '___';
+            });
+
+            // Step 2: Normalize whitespace
+            protectedInput = protectedInput.replace(/\s+/g, ' ').trim();
+
+            // Step 3: Add spaces around parentheses for easier processing
+            protectedInput = protectedInput.replace(/\(/g, ' ( ').replace(/\)/g, ' ) ');
+            protectedInput = protectedInput.replace(/,/g, ' , ');
+            protectedInput = protectedInput.replace(/;/g, ' ; ');
+
+            // Step 4: Normalize whitespace again
+            protectedInput = protectedInput.replace(/\s+/g, ' ').trim();
+
+            // Step 5: Uppercase keywords
+            const tokens = protectedInput.split(/\s+/);
+            const processedTokens = tokens.map(token => {
+                if (token.startsWith('___PROTECTED_') && token.endsWith('___')) {
+                    return token;
+                }
+                const upper = token.toUpperCase();
+                if (SQL_RESERVED.has(upper)) {
+                    return upper;
+                }
+                return token;
+            });
+
+            let sql = processedTokens.join(' ');
+
+            // Step 6: Fix spacing around parentheses and commas
+            sql = sql.replace(/\s*\(\s*/g, ' ('); // Space before open paren
+            sql = sql.replace(/\s*\)\s*/g, ') '); // Space after close paren
+            sql = sql.replace(/\s*,\s*/g, ', '); // Normalize comma spacing
+            sql = sql.replace(/\(\s+/g, '('); // No space after open paren
+            sql = sql.replace(/\s+\)/g, ')'); // No space before close paren
+            sql = sql.replace(/\)\s+\(/g, ') ('); // Between close and open paren
+            sql = sql.replace(/\s*;\s*$/, ';'); // Trailing semicolon
+
+            // Step 7: Insert newlines before clause-starting keywords
+            // Build regex for clause starters (longer phrases first to avoid partial matches)
+            const sortedClauseStarters = [...SQL_CLAUSE_STARTERS].sort((a, b) => b.length - a.length);
+            const clausePattern = sortedClauseStarters.map(k => k.replace(/\s+/g, '\\s+')).join('|');
+            const clauseRegex = new RegExp('\\b(' + clausePattern + ')\\b', 'gi');
+
+            // We'll process the SQL and insert newlines with proper indentation
+            // Use a simpler approach: split at clause boundaries and rebuild
+            const markerReplacements = [];
+            let markerIndex = 0;
+
+            // Replace clause starters with marked versions
+            sql = sql.replace(clauseRegex, (match) => {
+                const marker = '___NL___' + markerIndex + '___';
+                markerReplacements.push({ marker, keyword: match.toUpperCase().replace(/\s+/g, ' ') });
+                markerIndex++;
+                return marker;
+            });
+
+            // Split by newline markers
+            const segments = sql.split(/___NL___\d+___/);
+            // The first segment is before any clause keyword
+            let formattedSQL = '';
+            let currentIndent = 0;
+            const baseIndent = 0;
+
+            if (segments[0] && segments[0].trim()) {
+                formattedSQL = segments[0].trim();
+            }
+
+            for (let i = 0; i < markerReplacements.length; i++) {
+                const kw = markerReplacements[i].keyword;
+                const segment = (segments[i + 1] || '').trim();
+
+                // Determine indent behavior
+                const upperKW = kw.toUpperCase();
+
+                // These keywords start a new major clause - reset indent
+                const majorClauses = ['SELECT', 'INSERT', 'INSERT INTO', 'UPDATE', 'DELETE', 'DELETE FROM',
+                    'CREATE', 'CREATE TABLE', 'ALTER', 'ALTER TABLE', 'DROP', 'DROP TABLE',
+                    'TRUNCATE', 'WITH', 'MERGE', 'BEGIN', 'COMMIT', 'ROLLBACK', 'DECLARE',
+                    'UNION', 'UNION ALL', 'INTERSECT', 'EXCEPT', 'RETURNING', 'VALUES'
+                ];
+
+                const joinClauses = ['LEFT JOIN', 'RIGHT JOIN', 'INNER JOIN', 'OUTER JOIN', 'FULL JOIN',
+                    'CROSS JOIN', 'JOIN'
+                ];
+
+                const midClauses = ['FROM', 'WHERE', 'SET', 'ON', 'HAVING', 'ORDER BY', 'GROUP BY',
+                    'LIMIT', 'OFFSET'
+                ];
+
+                if (majorClauses.includes(upperKW)) {
+                    currentIndent = baseIndent;
+                    if (formattedSQL && !formattedSQL.endsWith('\n')) {
+                        formattedSQL += '\n';
+                    }
+                    formattedSQL += kw;
+                    if (upperKW === 'SELECT' || upperKW === 'INSERT INTO' || upperKW === 'INSERT') {
+                        currentIndent = 1;
+                    } else if (upperKW === 'VALUES') {
+                        currentIndent = 1;
+                    } else if (upperKW === 'UNION' || upperKW === 'UNION ALL' || upperKW === 'INTERSECT' ||
+                        upperKW === 'EXCEPT') {
+                        currentIndent = 1;
+                    }
+                } else if (joinClauses.includes(upperKW)) {
+                    currentIndent = baseIndent;
+                    formattedSQL += '\n' + '  '.repeat(Math.max(0, currentIndent)) + kw;
+                    currentIndent = 1;
+                } else if (midClauses.includes(upperKW)) {
+                    currentIndent = baseIndent + 1;
+                    formattedSQL += '\n' + '  '.repeat(Math.max(0, baseIndent)) + kw;
+                    if (upperKW === 'WHERE' || upperKW === 'ON' || upperKW === 'HAVING') {
+                        currentIndent = baseIndent + 2;
+                    } else {
+                        currentIndent = baseIndent + 1;
+                    }
+                } else if (upperKW === 'AND' || upperKW === 'OR') {
+                    formattedSQL += '\n' + '  '.repeat(Math.max(0, currentIndent)) + kw;
+                } else if (upperKW === 'WHEN' || upperKW === 'THEN' || upperKW === 'ELSE') {
+                    formattedSQL += '\n' + '  '.repeat(Math.max(0, currentIndent)) + kw;
+                    if (upperKW === 'WHEN' || upperKW === 'ELSE') currentIndent += 1;
+                    if (upperKW === 'THEN') currentIndent = Math.max(0, currentIndent);
+                } else if (upperKW === 'END') {
+                    currentIndent = Math.max(0, currentIndent - 1);
+                    formattedSQL += '\n' + '  '.repeat(Math.max(0, currentIndent)) + kw;
+                } else {
+                    formattedSQL += '\n' + '  '.repeat(Math.max(0, currentIndent)) + kw;
+                }
+
+                if (segment) {
+                    if (upperKW === 'SELECT') {
+                        // Format column list - split on top-level commas
+                        const formattedSegment = formatColumnList(segment, currentIndent);
+                        formattedSQL += '\n' + formattedSegment;
+                    } else if (upperKW === 'ORDER BY' || upperKW === 'GROUP BY') {
+                        const formattedSegment = formatColumnList(segment, currentIndent);
+                        formattedSQL += '\n' + formattedSegment;
+                    } else if (upperKW === 'VALUES') {
+                        const formattedSegment = formatColumnList(segment, currentIndent);
+                        formattedSQL += '\n' + formattedSegment;
+                    } else {
+                        formattedSQL += '\n' + '  '.repeat(Math.max(0, currentIndent)) + segment;
+                    }
+                }
+            }
+
+            // Step 8: Clean up - restore protected items
+            for (let i = 0; i < protectedItems.length; i++) {
+                formattedSQL = formattedSQL.replace('___PROTECTED_' + i + '___', protectedItems[i]);
+            }
+
+            // Step 9: Clean up extra whitespace
+            formattedSQL = formattedSQL.replace(/[ \t]+$/gm, ''); // Trailing spaces
+            formattedSQL = formattedSQL.replace(/\n{3,}/g, '\n\n'); // Multiple blank lines
+            formattedSQL = formattedSQL.trim();
+
+            // Fix: remove space before semicolons
+            formattedSQL = formattedSQL.replace(/\s+;/g, ';');
+
+            // Fix: proper spacing for CASE expressions
+            formattedSQL = formattedSQL.replace(/CASE\s+WHEN/g, 'CASE\n' + '  '.repeat(Math.max(0, currentIndent)) +
+                'WHEN');
+
+            return { result: formattedSQL, error: null };
+        }
+
+        function formatColumnList(segment, indentLevel) {
+            // Split on top-level commas (not inside parentheses)
+            const indent = '  '.repeat(Math.max(0, indentLevel));
+            const parts = splitTopLevelCommas(segment);
+            if (parts.length <= 1) {
+                return indent + segment.trim();
+            }
+            return parts.map((p, i) => {
+                const trimmed = p.trim();
+                if (i === 0) return indent + trimmed;
+                return indent + ', ' + trimmed;
+            }).join('\n');
+        }
+
+        function splitTopLevelCommas(str) {
+            const parts = [];
+            let depth = 0;
+            let current = '';
+            for (let i = 0; i < str.length; i++) {
+                const ch = str[i];
+                if (ch === '(') depth++;
+                if (ch === ')') depth--;
+                if (ch === ',' && depth === 0) {
+                    parts.push(current);
+                    current = '';
+                } else {
+                    current += ch;
+                }
+            }
+            if (current.trim()) parts.push(current);
+            return parts;
+        }
+
+        // ==================== AUTO-DETECTION ====================
+        function detectLanguage(input) {
+            const trimmed = input.trim();
+            if (!trimmed) return 'json';
+
+            // Check for XML
+            if (/^\s*</.test(trimmed)) {
+                if (/^\s*<\?xml/i.test(trimmed)) return 'xml';
+                if (/^\s*<[a-zA-Z_][\w.-]*[\s>]/.test(trimmed) && />\s*$/.test(trimmed) || />[\s\S]*</.test(
+                        trimmed)) {
+                    // Check if it could be valid XML by looking for matching tags
+                    if (/<\/[a-zA-Z_][\w.-]*>\s*$/.test(trimmed) || /<[a-zA-Z_][\w.-]*[^>]*\/>/.test(trimmed)) {
+                        return 'xml';
+                    }
+                }
+                // If starts with < and has tag-like structure
+                if (/<[a-zA-Z_][\w.-]*[\s>]/.test(trimmed)) {
+                    return 'xml';
+                }
+            }
+
+            // Check for JSON
+            if (/^\s*[\{\[]/.test(trimmed)) {
+                try {
+                    JSON.parse(trimmed);
+                    return 'json';
+                } catch (e) {
+                    // Not valid JSON, fall through
+                }
+            }
+
+            // Check for SQL keywords
+            const upperTrimmed = trimmed.toUpperCase();
+            const sqlPatterns = [
+                /\bSELECT\b/,
+                /\bINSERT\s+INTO\b/,
+                /\bUPDATE\b.*\bSET\b/,
+                /\bDELETE\s+FROM\b/,
+                /\bCREATE\s+TABLE\b/,
+                /\bALTER\s+TABLE\b/,
+                /\bDROP\s+TABLE\b/,
+                /\bFROM\b.*\bWHERE\b/,
+                /\bORDER\s+BY\b/,
+                /\bGROUP\s+BY\b/,
+                /\bLEFT\s+JOIN\b/,
+                /\bINNER\s+JOIN\b/,
+            ];
+            for (const pattern of sqlPatterns) {
+                if (pattern.test(upperTrimmed)) {
+                    return 'sql';
+                }
+            }
+
+            // Default to JSON if it looks like an object/array
+            if (/^\s*[\{\[]/.test(trimmed)) return 'json';
+            // Default to SQL if it has SQL-like structure
+            if (/\bFROM\b/i.test(trimmed) || /\bWHERE\b/i.test(trimmed)) return 'sql';
+            // Fallback
+            return 'json';
+        }
+
+        // ==================== SYNTAX HIGHLIGHTING ====================
+        function highlightJSON(text) {
+            // Escape HTML first
+            let html = escapeHTML(text);
+            // Highlight strings (both keys and values)
+            html = html.replace(/(&quot;(?:[^&]|&(?!quot;))*&quot;)/g,
+                '<span class="hl-string">$1</span>');
+            // Highlight numbers
+            html = html.replace(/\b(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)\b/g,
+                '<span class="hl-number">$1</span>');
+            // Highlight booleans and null
+            html = html.replace(/\b(true|false|null)\b/g,
+                '<span class="hl-bool-null">$1</span>');
+            return html;
+        }
+
+        function highlightXML(text) {
+            let html = escapeHTML(text);
+            // Highlight comments
+            html = html.replace(/(&lt;!--[\s\S]*?--&gt;)/g,
+                '<span class="hl-comment">$1</span>');
+            // Highlight CDATA
+            html = html.replace(/(&lt;!\[CDATA\[[\s\S]*?\]\]&gt;)/g,
+                '<span class="hl-string">$1</span>');
+            // Highlight processing instructions
+            html = html.replace(/(&lt;\?[\s\S]*?\?&gt;)/g,
+                '<span class="hl-comment">$1</span>');
+            // Highlight full tags with attributes
+            html = html.replace(/(&lt;\/?)([\w:.-]+)([\s\S]*?)(\/?&gt;)/g, function(match, open, tagName, rest,
+            close) {
+                let result = open;
+                result += '<span class="hl-tag">' + tagName + '</span>';
+                // Highlight attributes and their values
+                const attrRest = rest.replace(
+                    /([\w:.-]+)(=)(&quot;)([^&]*(?:&(?!quot;)[^&]*)*)(&quot;)/g,
+                    '<span class="hl-attr">$1</span>$2<span class="hl-string">$3$4$5</span>'
+                );
+                result += attrRest + close;
+                return result;
+            });
+            return html;
+        }
+
+        function highlightSQL(text) {
+            let html = escapeHTML(text);
+            // Highlight single-line comments
+            html = html.replace(/(--[^\n]*)/g,
+                '<span class="hl-comment">$1</span>');
+            // Highlight multi-line comments
+            html = html.replace(/(\/\*[\s\S]*?\*\/)/g,
+                '<span class="hl-comment">$1</span>');
+            // Highlight strings
+            html = html.replace(/(&#39;(?:[^&]|&(?!#39;))*&#39;)/g,
+                '<span class="hl-string">$1</span>');
+            // Highlight SQL keywords
+            const keywordsSet = SQL_RESERVED;
+            const keywordList = Array.from(keywordsSet).sort((a, b) => b.length - a.length);
+            const keywordPattern = '\\b(' + keywordList.map(k => k.replace(/\s+/g, '\\s+')).join('|') + ')\\b';
+            const keywordRegex = new RegExp(keywordPattern, 'gi');
+            html = html.replace(keywordRegex, (match) => {
+                return '<span class="hl-keyword">' + match + '</span>';
+            });
+            // Highlight numbers
+            html = html.replace(/\b(\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)\b/g,
+                '<span class="hl-number">$1</span>');
+            return html;
+        }
+
+        function escapeHTML(text) {
+            return text
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
+        // ==================== MAIN FORMAT FUNCTION ====================
+        function formatCode(input, language) {
+            const trimmed = input.trim();
+            if (!trimmed) {
+                return { result: '', error: null, detectedLanguage: language };
+            }
+
+            let detectedLanguage = language;
+            if (language === 'auto') {
+                detectedLanguage = detectLanguage(trimmed);
+            }
+
+            let formatResult;
+            switch (detectedLanguage) {
+                case 'json':
+                    formatResult = formatJSON(trimmed);
+                    break;
+                case 'xml':
+                    formatResult = formatXML(trimmed);
+                    break;
+                case 'sql':
+                    formatResult = formatSQL(trimmed);
+                    break;
+                default:
+                    // Try JSON first, then XML, then SQL
+                    try {
+                        formatResult = formatJSON(trimmed);
+                        detectedLanguage = 'json';
+                    } catch (e1) {
+                        try {
+                            formatResult = formatXML(trimmed);
+                            if (!formatResult.error) {
+                                detectedLanguage = 'xml';
+                            } else {
+                                throw new Error('Not XML');
+                            }
+                        } catch (e2) {
+                            formatResult = formatSQL(trimmed);
+                            detectedLanguage = 'sql';
+                        }
+                    }
+            }
+
+            return {
+                result: formatResult.result || '',
+                error: formatResult.error || null,
+                detectedLanguage: detectedLanguage,
+            };
+        }
+
+        function applyHighlighting(text, language) {
+            switch (language) {
+                case 'json':
+                    return highlightJSON(text);
+                case 'xml':
+                    return highlightXML(text);
+                case 'sql':
+                    return highlightSQL(text);
+                default:
+                    return escapeHTML(text);
+            }
+        }
+
+        // ==================== UI HANDLERS ====================
+        function updateStats(inputText, outputText, detectedLang) {
+            statInput.textContent = 'Input: ' + inputText.length + ' chars';
+            statOutput.textContent = 'Output: ' + outputText.length + ' chars';
+            if (detectedLang && detectedLang !== 'auto') {
+                statDetected.style.display = 'inline';
+                const langLabels = { json: 'JSON', xml: 'XML', sql: 'SQL' };
+                statDetected.textContent = 'Detected: ' + (langLabels[detectedLang] || detectedLang);
+            } else {
+                statDetected.style.display = 'none';
+            }
+        }
+
+        function showError(message) {
+            errorMsg.textContent = '❌ ' + message;
+            errorMsg.classList.add('visible');
+            successMsg.classList.remove('visible');
+            setTimeout(() => {
+                errorMsg.classList.remove('visible');
+            }, 6000);
+        }
+
+        function showSuccess(message) {
+            successMsg.textContent = '✅ ' + message;
+            successMsg.classList.add('visible');
+            errorMsg.classList.remove('visible');
+            setTimeout(() => {
+                successMsg.classList.remove('visible');
+            }, 3000);
+        }
+
+        function hideMessages() {
+            errorMsg.classList.remove('visible');
+            successMsg.classList.remove('visible');
+        }
+
+        function handleFormat() {
+            hideMessages();
+            const input = inputArea.value;
+            const language = languageSelect.value;
+
+            if (!input.trim()) {
+                outputArea.innerHTML = '<span class="placeholder">Formatted code will appear here...</span>';
+                outputArea.classList.remove('has-content');
+                updateStats('', '', null);
+                return;
+            }
+
+            const formatResult = formatCode(input, language);
+
+            if (formatResult.error) {
+                showError(formatResult.error);
+                outputArea.innerHTML = '<span class="placeholder">Formatted code will appear here...</span>';
+                outputArea.classList.remove('has-content');
+                updateStats(input, '', null);
+                return;
+            }
+
+            const highlightedHTML = applyHighlighting(formatResult.result, formatResult.detectedLanguage);
+            outputArea.innerHTML = '<code>' + highlightedHTML + '</code>';
+            outputArea.classList.add('has-content');
+            updateStats(input, formatResult.result, formatResult.detectedLanguage);
+
+            // Update language select if auto-detected
+            if (language === 'auto' && formatResult.detectedLanguage) {
+                // Don't change the select value, but show detected in stats
+            }
+        }
+
+        function handleCopy() {
+            hideMessages();
+            // Get plain text from the output area
+            const codeElement = outputArea.querySelector('code');
+            if (!codeElement || !codeElement.textContent.trim()) {
+                showError('Nothing to copy. Format some code first.');
+                return;
+            }
+            const plainText = codeElement.textContent;
+            navigator.clipboard.writeText(plainText).then(() => {
+                showSuccess('Copied to clipboard! (' + plainText.length + ' characters)');
+            }).catch(() => {
+                // Fallback for older browsers
+                const textarea = document.createElement('textarea');
+                textarea.value = plainText;
+                textarea.style.position = 'fixed';
+                textarea.style.opacity = '0';
+                document.body.appendChild(textarea);
+                textarea.select();
+                try {
+                    document.execCommand('copy');
+                    showSuccess('Copied to clipboard!');
+                } catch (e) {
+                    showError('Failed to copy. Please try again.');
+                }
+                document.body.removeChild(textarea);
+            });
+        }
+
+        function handleClear() {
+            inputArea.value = '';
+            outputArea.innerHTML = '<span class="placeholder">Formatted code will appear here...</span>';
+            outputArea.classList.remove('has-content');
+            hideMessages();
+            updateStats('', '', null);
+            inputArea.focus();
+        }
+
+        // ==================== EVENT LISTENERS ====================
+        btnFormat.addEventListener('click', handleFormat);
+        btnCopy.addEventListener('click', handleCopy);
+        btnClear.addEventListener('click', handleClear);
+
+        // Keyboard shortcut: Ctrl+Enter to format
+        inputArea.addEventListener('keydown', function(e) {
+            if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+                e.preventDefault();
+                handleFormat();
+            }
+        });
+
+        // Auto-format on language change if there's input
+        languageSelect.addEventListener('change', function() {
+            if (inputArea.value.trim()) {
+                handleFormat();
+            }
+        });
+
+        // Update stats on input change
+        inputArea.addEventListener('input', function() {
+            const inputText = inputArea.value;
+            const codeElement = outputArea.querySelector('code');
+            const outputText = codeElement ? codeElement.textContent : '';
+            statInput.textContent = 'Input: ' + inputText.length + ' chars';
+            statOutput.textContent = 'Output: ' + outputText.length + ' chars';
+        });
+
+        // ==================== INITIALIZATION ====================
+        // Focus the input area on load
+        inputArea.focus();
+
+        // Set initial stats
+        updateStats('', '', null);
+
+        // Log that everything is ready
+        console.log('✨ Code Pretty Printer ready!');
+        console.log('  Supported formats: XML, JSON, SQL');
+        console.log('  Shortcut: Ctrl+Enter to format');
+        console.log('  All processing is done locally in your browser.');
+    })();
+</script>
+</body>
+</html>
