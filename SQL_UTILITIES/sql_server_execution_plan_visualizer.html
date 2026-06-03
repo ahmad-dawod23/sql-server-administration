@@ -1,0 +1,975 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SQL Server Execution Plan Visualizer</title>
+  <style>
+    :root {
+      --bg: #0b1020;
+      --panel: #121a2f;
+      --panel-2: #17213a;
+      --panel-3: #1f2b49;
+      --text: #e7edf7;
+      --muted: #9fb0cb;
+      --accent: #60a5fa;
+      --accent-2: #22c55e;
+      --warn: #f59e0b;
+      --danger: #ef4444;
+      --purple: #a78bfa;
+      --border: #2b385a;
+      --shadow: rgba(0,0,0,.35);
+      --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      --sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      background: radial-gradient(circle at top left, #172554 0, transparent 38%), var(--bg);
+      color: var(--text);
+      font-family: var(--sans);
+    }
+
+    header {
+      padding: 22px 28px 16px;
+      border-bottom: 1px solid var(--border);
+      background: rgba(11,16,32,.82);
+      backdrop-filter: blur(12px);
+      position: sticky;
+      top: 0;
+      z-index: 10;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 25px;
+      letter-spacing: -.02em;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .subtitle {
+      margin: 7px 0 0;
+      color: var(--muted);
+      font-size: 13px;
+      max-width: 1100px;
+      line-height: 1.45;
+    }
+
+    .shell {
+      display: grid;
+      grid-template-columns: 380px 1fr 420px;
+      gap: 16px;
+      padding: 16px;
+      min-height: calc(100vh - 90px);
+    }
+
+    .card {
+      background: linear-gradient(180deg, rgba(18,26,47,.96), rgba(15,23,42,.96));
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      box-shadow: 0 18px 42px var(--shadow);
+      overflow: hidden;
+      min-height: 0;
+    }
+
+    .card-title {
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--border);
+      background: rgba(23,33,58,.85);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+
+    .card-title h2 {
+      margin: 0;
+      font-size: 14px;
+      text-transform: uppercase;
+      letter-spacing: .08em;
+      color: #dbeafe;
+    }
+
+    .card-body {
+      padding: 14px;
+      height: calc(100% - 52px);
+      overflow: auto;
+    }
+
+    textarea {
+      width: 100%;
+      height: 260px;
+      resize: vertical;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      background: #060b18;
+      color: var(--text);
+      padding: 12px;
+      font-family: var(--mono);
+      font-size: 12px;
+      line-height: 1.45;
+      outline: none;
+    }
+
+    textarea:focus, input:focus, select:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(96,165,250,.15);
+    }
+
+    input[type="text"], input[type="file"], select {
+      width: 100%;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: #060b18;
+      color: var(--text);
+      padding: 10px 11px;
+      font-size: 13px;
+      outline: none;
+    }
+
+    input[type="file"] { font-size: 12px; }
+
+    label {
+      display: block;
+      margin: 12px 0 6px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .06em;
+    }
+
+    .button-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 12px;
+    }
+
+    button {
+      border: 0;
+      border-radius: 12px;
+      padding: 10px 12px;
+      color: white;
+      background: var(--panel-3);
+      cursor: pointer;
+      font-weight: 700;
+      font-size: 13px;
+      transition: transform .08s ease, filter .15s ease, background .15s ease;
+    }
+    button:hover { filter: brightness(1.13); }
+    button:active { transform: translateY(1px); }
+    button.primary { background: linear-gradient(135deg, #2563eb, #7c3aed); }
+    button.good { background: linear-gradient(135deg, #16a34a, #059669); }
+    button.warn { background: linear-gradient(135deg, #d97706, #ea580c); }
+    button.ghost { background: transparent; border: 1px solid var(--border); color: var(--muted); }
+
+    .hint {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.5;
+      margin-top: 10px;
+    }
+
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+      margin-bottom: 14px;
+    }
+
+    .stat {
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 12px;
+      background: rgba(31,43,73,.55);
+    }
+    .stat .value { font-size: 22px; font-weight: 850; }
+    .stat .label { margin-top: 4px; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 4px 8px;
+      font-size: 11px;
+      color: var(--muted);
+      background: rgba(6,11,24,.8);
+      white-space: nowrap;
+    }
+    .pill.blue { color: #bfdbfe; border-color: #1d4ed8; background: rgba(30,64,175,.25); }
+    .pill.green { color: #bbf7d0; border-color: #15803d; background: rgba(21,128,61,.22); }
+    .pill.yellow { color: #fde68a; border-color: #b45309; background: rgba(180,83,9,.2); }
+    .pill.red { color: #fecaca; border-color: #b91c1c; background: rgba(185,28,28,.2); }
+    .pill.purple { color: #ddd6fe; border-color: #7c3aed; background: rgba(124,58,237,.18); }
+
+    .toolbar {
+      display: grid;
+      grid-template-columns: 1fr 150px;
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+
+    .tree {
+      font-size: 13px;
+      line-height: 1.35;
+      padding-bottom: 80px;
+    }
+
+    .node {
+      margin: 6px 0 6px 0;
+      border-left: 1px dashed rgba(159,176,203,.25);
+      padding-left: 10px;
+    }
+
+    .node-card {
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      background: rgba(23,33,58,.74);
+      padding: 10px;
+      cursor: pointer;
+      transition: background .12s ease, border-color .12s ease, transform .08s ease;
+    }
+    .node-card:hover { background: rgba(31,43,73,.95); border-color: #3b82f6; }
+    .node-card.selected { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(96,165,250,.12); }
+    .node-card.issue { border-color: rgba(245,158,11,.9); }
+    .node-card.danger { border-color: rgba(239,68,68,.9); }
+
+    .node-title {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 8px;
+    }
+    .node-op { font-weight: 850; color: #f8fafc; }
+    .node-sub { color: var(--muted); font-size: 12px; margin-top: 3px; }
+    .node-meta { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
+    .children { margin-left: 14px; }
+
+    .toggle {
+      color: var(--accent);
+      font-family: var(--mono);
+      font-weight: 900;
+      min-width: 18px;
+      user-select: none;
+    }
+
+    .empty {
+      color: var(--muted);
+      text-align: center;
+      padding: 38px 18px;
+      border: 1px dashed var(--border);
+      border-radius: 16px;
+      background: rgba(6,11,24,.35);
+    }
+
+    .details h3 {
+      margin: 4px 0 8px;
+      font-size: 19px;
+    }
+    .details .section {
+      margin-top: 14px;
+      border-top: 1px solid var(--border);
+      padding-top: 13px;
+    }
+    .details .section h4 {
+      margin: 0 0 8px;
+      font-size: 13px;
+      text-transform: uppercase;
+      letter-spacing: .08em;
+      color: #dbeafe;
+    }
+
+    .kv {
+      display: grid;
+      grid-template-columns: 160px 1fr;
+      gap: 7px 10px;
+      font-size: 12px;
+      align-items: start;
+    }
+    .key { color: var(--muted); overflow-wrap: anywhere; }
+    .val { font-family: var(--mono); overflow-wrap: anywhere; color: #f8fafc; }
+
+    .issues-list, .top-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .issue-item, .top-item {
+      border: 1px solid var(--border);
+      border-radius: 13px;
+      padding: 10px;
+      background: rgba(31,43,73,.42);
+      cursor: pointer;
+    }
+    .issue-item:hover, .top-item:hover { border-color: var(--accent); }
+    .issue-title { font-weight: 850; font-size: 13px; }
+    .issue-text { color: var(--muted); font-size: 12px; margin-top: 4px; line-height: 1.4; }
+
+    .progress {
+      height: 7px;
+      border-radius: 999px;
+      background: #020617;
+      overflow: hidden;
+      margin-top: 8px;
+      border: 1px solid var(--border);
+    }
+    .progress span { display: block; height: 100%; background: linear-gradient(90deg, #22c55e, #f59e0b, #ef4444); }
+
+    .error {
+      margin-top: 10px;
+      color: #fecaca;
+      background: rgba(185,28,28,.15);
+      border: 1px solid rgba(239,68,68,.4);
+      padding: 10px;
+      border-radius: 12px;
+      font-size: 12px;
+      display: none;
+      white-space: pre-wrap;
+    }
+
+    .footer-note {
+      margin-top: 14px;
+      padding: 12px;
+      border-radius: 14px;
+      background: rgba(2,6,23,.4);
+      border: 1px solid var(--border);
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+    mark {
+      background: rgba(245,158,11,.35);
+      color: #fff7ed;
+      padding: 0 2px;
+      border-radius: 3px;
+    }
+
+    @media (max-width: 1250px) {
+      .shell { grid-template-columns: 350px 1fr; }
+      .right { grid-column: 1 / -1; min-height: 500px; }
+    }
+    @media (max-width: 850px) {
+      .shell { grid-template-columns: 1fr; }
+      header { position: static; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>🧠 SQL Server Execution Plan Visualizer</h1>
+    <p class="subtitle">
+      Paste or upload a SQL Server Showplan XML / <code>.sqlplan</code> file. Everything is parsed locally in your browser. No network calls, no backend, no storage.
+    </p>
+  </header>
+
+  <main class="shell">
+    <section class="card left">
+      <div class="card-title"><h2>Input</h2><span class="pill green">Local only</span></div>
+      <div class="card-body">
+        <label for="fileInput">Upload .sqlplan / .xml</label>
+        <input id="fileInput" type="file" accept=".sqlplan,.xml,.txt,text/xml,application/xml" />
+
+        <label for="xmlInput">Or paste Showplan XML</label>
+        <textarea id="xmlInput" spellcheck="false" placeholder="Paste SQL Server execution plan XML here..."></textarea>
+
+        <div class="button-row">
+          <button class="primary" id="parseBtn">Parse plan</button>
+          <button class="ghost" id="sampleBtn">Load sample</button>
+          <button class="ghost" id="clearBtn">Clear</button>
+        </div>
+        <div id="errorBox" class="error"></div>
+
+        <div class="footer-note">
+          <strong>Security note:</strong> this file does not use external libraries, does not call APIs, and does not send your plan anywhere. Still avoid pasting secrets, connection strings, tokens, or customer-sensitive values unless your policy allows local browser tooling.
+        </div>
+
+        <label>Detected Statement</label>
+        <div id="statementBox" class="hint">No plan loaded yet.</div>
+      </div>
+    </section>
+
+    <section class="card middle">
+      <div class="card-title"><h2>Operator Tree</h2><span id="treeCount" class="pill">0 operators</span></div>
+      <div class="card-body">
+        <div class="toolbar">
+          <input id="searchBox" type="text" placeholder="Search operator, object, index, warning..." />
+          <select id="filterSelect">
+            <option value="all">All operators</option>
+            <option value="issues">Only flagged</option>
+            <option value="scans">Scans</option>
+            <option value="lookups">Lookups</option>
+            <option value="warnings">Warnings</option>
+            <option value="topcost">Cost > 10%</option>
+          </select>
+        </div>
+        <div id="tree" class="tree"><div class="empty">Load a Showplan XML file to visualize the operator tree.</div></div>
+      </div>
+    </section>
+
+    <section class="card right">
+      <div class="card-title"><h2>Summary & Details</h2><span id="planKind" class="pill blue">No plan</span></div>
+      <div class="card-body details">
+        <div class="stats-grid">
+          <div class="stat"><div id="statOps" class="value">0</div><div class="label">Operators</div></div>
+          <div class="stat"><div id="statCost" class="value">0</div><div class="label">Root cost</div></div>
+          <div class="stat"><div id="statIssues" class="value">0</div><div class="label">Flags</div></div>
+          <div class="stat"><div id="statWarnings" class="value">0</div><div class="label">Warnings</div></div>
+        </div>
+
+        <div class="section">
+          <h4>Top cost operators</h4>
+          <div id="topCostList" class="top-list"><div class="empty">No data yet.</div></div>
+        </div>
+
+        <div class="section">
+          <h4>Detected flags</h4>
+          <div id="issuesList" class="issues-list"><div class="empty">No flags yet.</div></div>
+        </div>
+
+        <div class="section">
+          <h4>Selected operator</h4>
+          <div id="detailsPane" class="empty">Select an operator to inspect its properties.</div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+<script>
+(() => {
+  "use strict";
+
+  const state = {
+    xmlDoc: null,
+    roots: [],
+    nodes: [],
+    selectedId: null,
+    collapsed: new Set(),
+    search: "",
+    filter: "all"
+  };
+
+  const el = id => document.getElementById(id);
+  const xmlInput = el("xmlInput");
+  const fileInput = el("fileInput");
+  const errorBox = el("errorBox");
+  const treeEl = el("tree");
+  const detailsPane = el("detailsPane");
+
+  function safeText(node, selector) {
+    const found = node.querySelector(selector);
+    return found ? (found.textContent || "").trim() : "";
+  }
+
+  function attr(node, name, fallback = "") {
+    return node && node.hasAttribute(name) ? node.getAttribute(name) : fallback;
+  }
+
+  function num(value) {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : 0;
+  }
+
+  function fmt(n, digits = 2) {
+    if (!Number.isFinite(Number(n))) return "";
+    n = Number(n);
+    if (Math.abs(n) >= 1000000) return n.toExponential(2);
+    if (Math.abs(n) >= 1000) return n.toLocaleString(undefined, { maximumFractionDigits: 0 });
+    if (Math.abs(n) >= 10) return n.toLocaleString(undefined, { maximumFractionDigits: 1 });
+    return n.toLocaleString(undefined, { maximumFractionDigits: digits });
+  }
+
+  function directChildrenByTag(parent, tagName) {
+    return Array.from(parent.children).filter(c => c.localName === tagName);
+  }
+
+  function firstDirect(parent, tagName) {
+    return directChildrenByTag(parent, tagName)[0] || null;
+  }
+
+  function showError(message) {
+    errorBox.style.display = "block";
+    errorBox.textContent = message;
+  }
+
+  function clearError() {
+    errorBox.style.display = "none";
+    errorBox.textContent = "";
+  }
+
+  function parseXml(text) {
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(text, "application/xml");
+    const parserError = doc.querySelector("parsererror");
+    if (parserError) throw new Error(parserError.textContent.trim().slice(0, 1200));
+    return doc;
+  }
+
+  function getObjectName(relOp) {
+    const obj = relOp.querySelector("Object");
+    if (!obj) return "";
+    const parts = ["Database", "Schema", "Table", "Index"].map(a => attr(obj, a)).filter(Boolean);
+    return parts.join(".").replaceAll("[", "").replaceAll("]", "");
+  }
+
+  function getWarnings(relOp) {
+    const warnings = [];
+    relOp.querySelectorAll("Warnings *").forEach(w => {
+      warnings.push(w.localName + Array.from(w.attributes || []).map(a => ` ${a.name}=${a.value}`).join(""));
+    });
+    if (relOp.querySelector("Warnings")) {
+      const warnNode = relOp.querySelector("Warnings");
+      Array.from(warnNode.attributes || []).forEach(a => warnings.push(`${a.name}=${a.value}`));
+    }
+    return [...new Set(warnings)].filter(Boolean);
+  }
+
+  function getMissingIndexes(doc) {
+    return Array.from(doc.querySelectorAll("MissingIndexGroup MissingIndex")).map(mi => ({
+      impact: attr(mi.parentElement, "Impact"),
+      database: attr(mi, "Database"),
+      schema: attr(mi, "Schema"),
+      table: attr(mi, "Table")
+    }));
+  }
+
+  function findChildRelOps(relOp) {
+    const result = [];
+    Array.from(relOp.children).forEach(child => {
+      if (child.localName === "RelOp") result.push(child);
+      else {
+        Array.from(child.children).forEach(grand => {
+          if (grand.localName === "RelOp") result.push(grand);
+        });
+      }
+    });
+    return result;
+  }
+
+  function buildNode(relOp, parentId = null, depth = 0) {
+    const id = state.nodes.length;
+    const physical = attr(relOp, "PhysicalOp", "Unknown");
+    const logical = attr(relOp, "LogicalOp", "");
+    const cost = num(attr(relOp, "EstimatedTotalSubtreeCost", "0"));
+    const rows = num(attr(relOp, "EstimateRows", attr(relOp, "EstimatedRows", "0")));
+    const actualRows = num(attr(relOp, "ActualRows", "0"));
+    const nodeId = attr(relOp, "NodeId", String(id));
+    const objectName = getObjectName(relOp);
+    const warnings = getWarnings(relOp);
+    const scalarString = attr(relOp.querySelector("ScalarOperator"), "ScalarString", "");
+    const predicate = safeText(relOp, "Predicate") || scalarString;
+    const outputList = Array.from(relOp.querySelectorAll("OutputList ColumnReference")).slice(0, 20).map(c => {
+      return [attr(c,"Database"), attr(c,"Schema"), attr(c,"Table"), attr(c,"Column")].filter(Boolean).join(".");
+    });
+
+    const node = {
+      id, parentId, depth, relOp, nodeId, physical, logical, cost, rows, actualRows,
+      objectName, warnings, predicate, outputList, flags: [], children: []
+    };
+
+    detectFlags(node);
+    state.nodes.push(node);
+
+    const childRelOps = findChildRelOps(relOp);
+    node.children = childRelOps.map(child => buildNode(child, id, depth + 1));
+    return node;
+  }
+
+  function detectFlags(node) {
+    const op = `${node.physical} ${node.logical}`.toLowerCase();
+    const flags = node.flags;
+
+    if (op.includes("table scan")) flags.push({ level: "warn", type: "Table Scan", text: "Table scan detected. Validate whether this is expected for table size, predicates, and available indexes." });
+    if (op.includes("clustered index scan") || op.includes("index scan")) flags.push({ level: "info", type: "Index Scan", text: "Index scan detected. This can be fine, but check predicate selectivity and row counts." });
+    if (op.includes("key lookup") || op.includes("rid lookup")) flags.push({ level: "warn", type: "Lookup", text: "Lookup operator detected. If executed many times, consider covering index options." });
+    if (op.includes("sort")) flags.push({ level: "info", type: "Sort", text: "Sort operator detected. Check memory grant and whether ordering can be supported by an index." });
+    if (op.includes("hash match")) flags.push({ level: "info", type: "Hash Match", text: "Hash Match detected. Check row estimates, join inputs, memory grant, and spill warnings." });
+    if (op.includes("parallelism")) flags.push({ level: "info", type: "Parallelism", text: "Parallelism operator detected. Validate CX waits only with runtime evidence, not from the plan alone." });
+    if (node.warnings.length) flags.push({ level: "danger", type: "Plan Warning", text: node.warnings.join("; ") });
+    if (node.rows > 0 && node.actualRows > 0) {
+      const ratio = Math.max(node.rows, node.actualRows) / Math.max(1, Math.min(node.rows, node.actualRows));
+      if (ratio >= 10) flags.push({ level: "warn", type: "Estimate Skew", text: `Estimated vs actual rows differ by ~${fmt(ratio,1)}x. Investigate statistics, predicates, parameters, or data skew.` });
+    }
+  }
+
+  function parsePlan() {
+    clearError();
+    const text = xmlInput.value.trim();
+    if (!text) { showError("Paste or upload a SQL Server Showplan XML first."); return; }
+
+    try {
+      const doc = parseXml(text);
+      state.xmlDoc = doc;
+      state.roots = [];
+      state.nodes = [];
+      state.selectedId = null;
+      state.collapsed.clear();
+
+      const stmt = doc.querySelector("StmtSimple, StmtCond, StmtCursor, StmtUseDb");
+      const stmtText = stmt ? attr(stmt, "StatementText", "") : "";
+      el("statementBox").textContent = stmtText || "Statement text was not found in this plan.";
+
+      const planRoots = Array.from(doc.querySelectorAll("QueryPlan > RelOp"));
+      if (!planRoots.length) {
+        const fallback = Array.from(doc.querySelectorAll("RelOp")).filter(r => !r.parentElement.closest("RelOp"));
+        planRoots.push(...fallback);
+      }
+      if (!planRoots.length) throw new Error("No RelOp nodes were found. Is this a SQL Server Showplan XML / .sqlplan file?");
+
+      state.roots = planRoots.map(r => buildNode(r));
+      updateSummary();
+      renderTree();
+      renderDetails(null);
+    } catch (err) {
+      showError("Could not parse plan:\n" + (err.message || String(err)));
+    }
+  }
+
+  function updateSummary() {
+    const rootCost = state.roots.reduce((sum, n) => sum + n.cost, 0);
+    const issueCount = state.nodes.reduce((sum, n) => sum + n.flags.length, 0);
+    const warningCount = state.nodes.reduce((sum, n) => sum + n.warnings.length, 0);
+    el("statOps").textContent = state.nodes.length;
+    el("statCost").textContent = fmt(rootCost, 3);
+    el("statIssues").textContent = issueCount;
+    el("statWarnings").textContent = warningCount;
+    el("treeCount").textContent = `${state.nodes.length} operators`;
+
+    const hasActual = state.nodes.some(n => n.actualRows > 0 || n.relOp.querySelector("RunTimeInformation"));
+    el("planKind").textContent = hasActual ? "Actual/Runtime data present" : "Estimated-style data";
+
+    renderTopCosts(rootCost);
+    renderIssues();
+  }
+
+  function renderTopCosts(rootCost) {
+    const list = el("topCostList");
+    list.textContent = "";
+    const top = [...state.nodes].sort((a,b) => b.cost - a.cost).slice(0, 7);
+    if (!top.length) { list.innerHTML = '<div class="empty">No data yet.</div>'; return; }
+    top.forEach(n => {
+      const pct = rootCost ? Math.min(100, (n.cost / rootCost) * 100) : 0;
+      const item = document.createElement("div");
+      item.className = "top-item";
+      item.addEventListener("click", () => selectNode(n.id));
+      const title = document.createElement("div");
+      title.className = "issue-title";
+      title.textContent = `${n.physical} — cost ${fmt(n.cost,3)} (${fmt(pct,1)}%)`;
+      const text = document.createElement("div");
+      text.className = "issue-text";
+      text.textContent = n.objectName || n.logical || `NodeId ${n.nodeId}`;
+      const progress = document.createElement("div");
+      progress.className = "progress";
+      const bar = document.createElement("span");
+      bar.style.width = `${pct}%`;
+      progress.appendChild(bar);
+      item.append(title, text, progress);
+      list.appendChild(item);
+    });
+  }
+
+  function renderIssues() {
+    const list = el("issuesList");
+    list.textContent = "";
+    const flagged = state.nodes.flatMap(n => n.flags.map(f => ({ node: n, flag: f })));
+    const missing = state.xmlDoc ? getMissingIndexes(state.xmlDoc) : [];
+
+    if (!flagged.length && !missing.length) {
+      const empty = document.createElement("div");
+      empty.className = "empty";
+      empty.textContent = "No flags detected by the basic heuristics.";
+      list.appendChild(empty);
+      return;
+    }
+
+    missing.forEach(mi => {
+      const item = document.createElement("div");
+      item.className = "issue-item";
+      const t = document.createElement("div");
+      t.className = "issue-title";
+      t.textContent = `Missing index hint — impact ${mi.impact || "unknown"}`;
+      const d = document.createElement("div");
+      d.className = "issue-text";
+      d.textContent = [mi.database, mi.schema, mi.table].filter(Boolean).join(".") || "Missing index details found in plan XML.";
+      item.append(t, d);
+      list.appendChild(item);
+    });
+
+    flagged.slice(0, 40).forEach(({ node, flag }) => {
+      const item = document.createElement("div");
+      item.className = "issue-item";
+      item.addEventListener("click", () => selectNode(node.id));
+      const t = document.createElement("div");
+      t.className = "issue-title";
+      t.textContent = `${flag.type} — ${node.physical}`;
+      const d = document.createElement("div");
+      d.className = "issue-text";
+      d.textContent = flag.text;
+      item.append(t, d);
+      list.appendChild(item);
+    });
+  }
+
+  function matchesFilter(n, rootCost) {
+    const q = state.search.toLowerCase();
+    const haystack = [n.physical, n.logical, n.objectName, n.predicate, n.warnings.join(" "), n.outputList.join(" ")].join(" ").toLowerCase();
+    const searchOk = !q || haystack.includes(q);
+    if (!searchOk) return false;
+
+    const op = `${n.physical} ${n.logical}`.toLowerCase();
+    switch (state.filter) {
+      case "issues": return n.flags.length > 0;
+      case "scans": return op.includes("scan");
+      case "lookups": return op.includes("lookup");
+      case "warnings": return n.warnings.length > 0;
+      case "topcost": return rootCost && (n.cost / rootCost) > 0.10;
+      default: return true;
+    }
+  }
+
+  function subtreeHasMatch(n, rootCost) {
+    return matchesFilter(n, rootCost) || n.children.some(c => subtreeHasMatch(c, rootCost));
+  }
+
+  function renderTree() {
+    treeEl.textContent = "";
+    if (!state.nodes.length) {
+      const empty = document.createElement("div");
+      empty.className = "empty";
+      empty.textContent = "Load a Showplan XML file to visualize the operator tree.";
+      treeEl.appendChild(empty);
+      return;
+    }
+    const rootCost = state.roots.reduce((sum, n) => sum + n.cost, 0);
+    let rendered = 0;
+    state.roots.forEach(root => {
+      if (subtreeHasMatch(root, rootCost)) {
+        treeEl.appendChild(renderNode(root, rootCost));
+        rendered++;
+      }
+    });
+    if (!rendered) {
+      const empty = document.createElement("div");
+      empty.className = "empty";
+      empty.textContent = "No operators matched the current search/filter.";
+      treeEl.appendChild(empty);
+    }
+  }
+
+  function renderNode(n, rootCost) {
+    const wrapper = document.createElement("div");
+    wrapper.className = "node";
+
+    const card = document.createElement("div");
+    card.className = "node-card";
+    if (n.flags.some(f => f.level === "danger")) card.classList.add("danger");
+    else if (n.flags.length) card.classList.add("issue");
+    if (state.selectedId === n.id) card.classList.add("selected");
+
+    card.addEventListener("click", e => {
+      e.stopPropagation();
+      selectNode(n.id);
+    });
+
+    const title = document.createElement("div");
+    title.className = "node-title";
+
+    const left = document.createElement("div");
+    const op = document.createElement("div");
+    op.className = "node-op";
+    op.textContent = n.physical;
+    const sub = document.createElement("div");
+    sub.className = "node-sub";
+    sub.textContent = [n.logical, n.objectName].filter(Boolean).join(" • ") || `NodeId ${n.nodeId}`;
+    left.append(op, sub);
+
+    const toggle = document.createElement("div");
+    toggle.className = "toggle";
+    toggle.textContent = n.children.length ? (state.collapsed.has(n.id) ? "+" : "−") : "";
+    toggle.addEventListener("click", e => {
+      e.stopPropagation();
+      if (state.collapsed.has(n.id)) state.collapsed.delete(n.id); else state.collapsed.add(n.id);
+      renderTree();
+    });
+    title.append(left, toggle);
+
+    const meta = document.createElement("div");
+    meta.className = "node-meta";
+    const pct = rootCost ? (n.cost / rootCost) * 100 : 0;
+    meta.append(pill(`Cost ${fmt(n.cost,3)} / ${fmt(pct,1)}%`, pct > 25 ? "red" : pct > 10 ? "yellow" : "blue"));
+    if (n.rows) meta.append(pill(`Est rows ${fmt(n.rows,1)}`, "green"));
+    if (n.actualRows) meta.append(pill(`Actual rows ${fmt(n.actualRows,1)}`, "purple"));
+    if (n.flags.length) meta.append(pill(`${n.flags.length} flag${n.flags.length === 1 ? "" : "s"}`, n.flags.some(f => f.level === "danger") ? "red" : "yellow"));
+    card.append(title, meta);
+    wrapper.appendChild(card);
+
+    if (!state.collapsed.has(n.id) && n.children.length) {
+      const children = document.createElement("div");
+      children.className = "children";
+      n.children.forEach(c => {
+        if (subtreeHasMatch(c, rootCost)) children.appendChild(renderNode(c, rootCost));
+      });
+      wrapper.appendChild(children);
+    }
+    return wrapper;
+  }
+
+  function pill(text, cls = "") {
+    const p = document.createElement("span");
+    p.className = `pill ${cls}`.trim();
+    p.textContent = text;
+    return p;
+  }
+
+  function selectNode(id) {
+    state.selectedId = id;
+    renderTree();
+    renderDetails(state.nodes[id]);
+  }
+
+  function renderDetails(n) {
+    detailsPane.textContent = "";
+    if (!n) {
+      const empty = document.createElement("div");
+      empty.className = "empty";
+      empty.textContent = "Select an operator to inspect its properties.";
+      detailsPane.appendChild(empty);
+      return;
+    }
+    const h = document.createElement("h3");
+    h.textContent = n.physical;
+    const meta = document.createElement("div");
+    meta.className = "node-meta";
+    meta.append(pill(n.logical || "No logical op", "blue"));
+    meta.append(pill(`NodeId ${n.nodeId}`, ""));
+    if (n.objectName) meta.append(pill(n.objectName, "green"));
+    detailsPane.append(h, meta);
+
+    const core = {
+      "PhysicalOp": n.physical,
+      "LogicalOp": n.logical,
+      "NodeId": n.nodeId,
+      "EstimatedTotalSubtreeCost": fmt(n.cost, 6),
+      "EstimateRows": fmt(n.rows, 2),
+      "ActualRows": n.actualRows ? fmt(n.actualRows, 2) : "",
+      "Object": n.objectName,
+      "Predicate / ScalarString": n.predicate
+    };
+    detailsPane.appendChild(section("Core properties", kv(core)));
+
+    if (n.flags.length) {
+      const box = document.createElement("div");
+      box.className = "issues-list";
+      n.flags.forEach(f => {
+        const item = document.createElement("div");
+        item.className = "issue-item";
+        const t = document.createElement("div");
+        t.className = "issue-title";
+        t.textContent = f.type;
+        const d = document.createElement("div");
+        d.className = "issue-text";
+        d.textContent = f.text;
+        item.append(t, d);
+        box.appendChild(item);
+      });
+      detailsPane.appendChild(section("Flags", box));
+    }
+
+    if (n.outputList.length) {
+      const out = document.createElement("div");
+      out.className = "val";
+      out.textContent = n.outputList.join("\n");
+      detailsPane.appendChild(section("Output columns", out));
+    }
+
+    const attrs = {};
+    Array.from(n.relOp.attributes || []).forEach(a => attrs[a.name] = a.value);
+    detailsPane.appendChild(section("All RelOp attributes", kv(attrs)));
+  }
+
+  function section(title, content) {
+    const s = document.createElement("div");
+    s.className = "section";
+    const h = document.createElement("h4");
+    h.textContent = title;
+    s.append(h, content);
+    return s;
+  }
+
+  function kv(obj) {
+    const wrap = document.createElement("div");
+    wrap.className = "kv";
+    Object.entries(obj).forEach(([k, v]) => {
+      if (v === undefined || v === null || v === "") return;
+      const key = document.createElement("div");
+      key.className = "key";
+      key.textContent = k;
+      const val = document.createElement("div");
+      val.className = "val";
+      val.textContent = String(v);
+      wrap.append(key, val);
+    });
+    return wrap;
+  }
+
+  function loadSample() {
+    xmlInput.value = `<?xml version="1.0" encoding="utf-16"?>
+<ShowPlanXML xmlns="http://schemas.microsoft.com/sqlserver/2004/07/showplan" Version="1.6" Build="16.0.1000.6">
+  <BatchSequence><Batch><Statements>
+    <StmtSimple StatementText="SELECT c.CustomerID, o.OrderID FROM dbo.Customers c JOIN dbo.Orders o ON c.CustomerID = o.CustomerID WHERE c.City = 'Amman'" StatementType="SELECT">
+      <QueryPlan CachedPlanSize="32" CompileTime="4" CompileCPU="4" CompileMemory="320">
+        <MissingIndexes>
+          <MissingIndexGroup Impact="72.5"><MissingIndex Database="[DemoDB]" Schema="[dbo]" Table="[Customers]"></MissingIndex></MissingIndexGroup>
+        </MissingIndexes>
+        <RelOp NodeId="0" PhysicalOp="Nested Loops" LogicalOp="Inner Join" EstimateRows="12" EstimatedTotalSubtreeCost="1.22">
+          <NestedLoops>
+            <OuterReferences><ColumnReference Database="[DemoDB]" Schema="[dbo]" Table="[Customers]" Column="CustomerID" /></OuterReferences>
+            <RelOp NodeId="1" PhysicalOp="Clustered Index Scan" LogicalOp="Clustered Index Scan" EstimateRows="25000" EstimatedTotalSubtreeCost="0.84">
+              <OutputList><ColumnReference Database="[DemoDB]" Schema="[dbo]" Table="[Customers]" Column="CustomerID" /></OutputList>
+              <IndexScan Ordered="false" ForcedIndex="false"><Object Database="[DemoDB]" Schema="[dbo]" Table="[Customers]" Index="[PK_Customers]" /></IndexScan>
+              <Predicate><ScalarOperator ScalarString="[DemoDB].[dbo].[Customers].[City]=N'Amman'" /></Predicate>
+            </RelOp>
+            <RelOp NodeId="2" PhysicalOp="Key Lookup" LogicalOp="Key Lookup" EstimateRows="1" EstimatedTotalSubtreeCost="0.34">
+              <IndexScan Lookup="true"><Object Database="[DemoDB]" Schema="[dbo]" Table="[Orders]" Index="[PK_Orders]" /></IndexScan>
+              <Warnings><SpillToTempDb SpillLevel="1" /></Warnings>
+            </RelOp>
+          </NestedLoops>
+        </RelOp>
+      </QueryPlan>
+    </StmtSimple>
+  </Statements></Batch></BatchSequence>
+</ShowPlanXML>`;
+    parsePlan();
+  }
+
+  fileInput.addEventListener("change", async () => {
+    const file = fileInput.files && fileInput.files[0];
+    if (!file) return;
+    const text = await file.text();
+    xmlInput.value = text;
+    parsePlan();
+  });
+
+  el("parseBtn").addEventListener("click", parsePlan);
+  el("sampleBtn").addEventListener("click", loadSample);
+  el("clearBtn").addEventListener("click", () => {
+    xmlInput.value = "";
+    fileInput.value = "";
+    state.xmlDoc = null; state.roots = []; state.nodes = []; state.selectedId = null; state.collapsed.clear();
+    clearError(); updateSummary(); renderTree(); renderDetails(null);
+    el("statementBox").textContent = "No plan loaded yet.";
+    el("planKind").textContent = "No plan";
+  });
+  el("searchBox").addEventListener("input", e => { state.search = e.target.value || ""; renderTree(); });
+  el("filterSelect").addEventListener("change", e => { state.filter = e.target.value; renderTree(); });
+})();
+</script>
+</body>
+</html>
