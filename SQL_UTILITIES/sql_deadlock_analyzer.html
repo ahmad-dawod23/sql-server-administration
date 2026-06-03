@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SQL Server Deadlock Analyzer</title>
+  <style>
+    :root{
+      --bg:#08111f;--bg2:#0f1b2e;--panel:#111d31;--panel2:#172641;--panel3:#1e3357;
+      --text:#e8f1ff;--muted:#9db1cf;--border:#2c4268;--accent:#60a5fa;--green:#22c55e;
+      --yellow:#f59e0b;--red:#ef4444;--purple:#a78bfa;--cyan:#22d3ee;--shadow:rgba(0,0,0,.38);
+      --mono:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono","Courier New",monospace;
+      --sans:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+    }
+    *{box-sizing:border-box} html,body{height:100%}
+    body{margin:0;background:radial-gradient(circle at top right,#1e3a8a 0,transparent 35%),linear-gradient(180deg,var(--bg),#030712);color:var(--text);font-family:var(--sans)}
+    header{padding:22px 28px 16px;border-bottom:1px solid var(--border);background:rgba(8,17,31,.86);backdrop-filter:blur(12px);position:sticky;top:0;z-index:20}
+    h1{margin:0;font-size:25px;letter-spacing:-.02em;display:flex;gap:10px;align-items:center}.subtitle{margin:7px 0 0;color:var(--muted);font-size:13px;line-height:1.45;max-width:1200px}
+    code{font-family:var(--mono);color:#bfdbfe}.shell{display:grid;grid-template-columns:390px 1fr 460px;gap:16px;padding:16px;min-height:calc(100vh - 92px)}
+    .card{background:linear-gradient(180deg,rgba(17,29,49,.96),rgba(10,18,32,.96));border:1px solid var(--border);border-radius:18px;box-shadow:0 18px 42px var(--shadow);overflow:hidden;min-height:0}.card-title{padding:14px 16px;border-bottom:1px solid var(--border);background:rgba(23,38,65,.88);display:flex;justify-content:space-between;gap:10px;align-items:center}.card-title h2{margin:0;font-size:13px;text-transform:uppercase;letter-spacing:.09em;color:#dbeafe}.card-body{padding:14px;height:calc(100% - 51px);overflow:auto}
+    label{display:block;margin:12px 0 6px;color:var(--muted);font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:.06em}
+    textarea,input[type="file"],input[type="text"],select{width:100%;border:1px solid var(--border);border-radius:13px;background:#050b16;color:var(--text);padding:10px 11px;font-size:13px;outline:none}textarea{height:270px;resize:vertical;font-family:var(--mono);font-size:12px;line-height:1.45}textarea:focus,input:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(96,165,250,.14)}
+    button{border:0;border-radius:12px;padding:10px 12px;color:white;background:var(--panel3);cursor:pointer;font-weight:800;font-size:13px;transition:.12s ease}button:hover{filter:brightness(1.13)}button:active{transform:translateY(1px)}button.primary{background:linear-gradient(135deg,#2563eb,#7c3aed)}button.good{background:linear-gradient(135deg,#16a34a,#0891b2)}button.ghost{background:transparent;border:1px solid var(--border);color:var(--muted)}.button-row{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
+    .pill{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--border);border-radius:999px;padding:4px 8px;font-size:11px;color:var(--muted);background:rgba(5,11,22,.78);white-space:nowrap}.blue{color:#bfdbfe;border-color:#1d4ed8;background:rgba(30,64,175,.24)}.green{color:#bbf7d0;border-color:#15803d;background:rgba(21,128,61,.22)}.yellow{color:#fde68a;border-color:#b45309;background:rgba(180,83,9,.2)}.red{color:#fecaca;border-color:#b91c1c;background:rgba(185,28,28,.2)}.purple{color:#ddd6fe;border-color:#7c3aed;background:rgba(124,58,237,.18)}.cyan{color:#cffafe;border-color:#0891b2;background:rgba(8,145,178,.18)}
+    .hint,.note{color:var(--muted);font-size:12px;line-height:1.48}.note{margin-top:14px;padding:12px;border-radius:14px;background:rgba(2,6,23,.42);border:1px solid var(--border)}.error{display:none;margin-top:10px;color:#fecaca;background:rgba(185,28,28,.15);border:1px solid rgba(239,68,68,.42);padding:10px;border-radius:12px;font-size:12px;white-space:pre-wrap}
+    .stats-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-bottom:14px}.stat{border:1px solid var(--border);border-radius:14px;padding:12px;background:rgba(30,51,87,.45)}.stat .value{font-size:22px;font-weight:900}.stat .label{margin-top:4px;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.06em}
+    .toolbar{display:grid;grid-template-columns:1fr 155px;gap:10px;margin-bottom:12px}.grid-list{display:flex;flex-direction:column;gap:10px;padding-bottom:60px}.item{border:1px solid var(--border);border-radius:15px;background:rgba(23,38,65,.68);padding:12px;cursor:pointer}.item:hover{border-color:var(--accent);background:rgba(30,51,87,.86)}.item.selected{border-color:var(--accent);box-shadow:0 0 0 3px rgba(96,165,250,.13)}.item.victim{border-color:rgba(239,68,68,.85)}.item-title{display:flex;justify-content:space-between;gap:8px;align-items:flex-start}.main-title{font-weight:900;color:#f8fafc}.sub-title{color:var(--muted);font-size:12px;margin-top:4px;line-height:1.35}.meta{display:flex;flex-wrap:wrap;gap:5px;margin-top:8px}
+    .section{margin-top:15px;border-top:1px solid var(--border);padding-top:13px}.section h3,.section h4{margin:0 0 9px;font-size:13px;text-transform:uppercase;letter-spacing:.08em;color:#dbeafe}.empty{color:var(--muted);text-align:center;padding:36px 16px;border:1px dashed var(--border);border-radius:16px;background:rgba(5,11,22,.35)}.kv{display:grid;grid-template-columns:160px 1fr;gap:7px 10px;font-size:12px;align-items:start}.key{color:var(--muted);overflow-wrap:anywhere}.val{font-family:var(--mono);overflow-wrap:anywhere;white-space:pre-wrap;color:#f8fafc}.sqlbox{font-family:var(--mono);font-size:12px;line-height:1.45;white-space:pre-wrap;overflow:auto;max-height:220px;padding:11px;border-radius:13px;border:1px solid var(--border);background:#050b16;color:#e5eefc}.copyout{height:190px}.resource-table{width:100%;border-collapse:separate;border-spacing:0 8px;font-size:12px}.resource-table th{text-align:left;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.06em;padding:0 8px}.resource-table td{background:rgba(30,51,87,.45);border-top:1px solid var(--border);border-bottom:1px solid var(--border);padding:10px 8px;vertical-align:top}.resource-table td:first-child{border-left:1px solid var(--border);border-radius:12px 0 0 12px}.resource-table td:last-child{border-right:1px solid var(--border);border-radius:0 12px 12px 0}.arrow{color:var(--yellow);font-weight:900}.mini{font-size:11px;color:var(--muted);margin-top:2px}.diagram{display:flex;flex-direction:column;gap:8px}.edge{border:1px solid var(--border);border-radius:14px;background:rgba(2,6,23,.35);padding:10px;font-size:12px}.edge strong{color:#fff}.warnline{border-left:3px solid var(--yellow);padding:8px 10px;background:rgba(180,83,9,.1);border-radius:10px;color:#fde68a;font-size:12px;line-height:1.45}.dangerline{border-left:3px solid var(--red);padding:8px 10px;background:rgba(185,28,28,.13);border-radius:10px;color:#fecaca;font-size:12px;line-height:1.45}.successline{border-left:3px solid var(--green);padding:8px 10px;background:rgba(21,128,61,.12);border-radius:10px;color:#bbf7d0;font-size:12px;line-height:1.45}
+    @media(max-width:1280px){.shell{grid-template-columns:370px 1fr}.right{grid-column:1/-1;min-height:520px}}@media(max-width:860px){header{position:static}.shell{grid-template-columns:1fr}.toolbar{grid-template-columns:1fr}.kv{grid-template-columns:1fr}}
+  </style>
+</head>
+<body>
+<header>
+  <h1>🧩 SQL Server Deadlock Analyzer</h1>
+  <p class="subtitle">Paste or upload a SQL Server deadlock graph XML / <code>.xdl</code>. The analyzer extracts victims, sessions, applications, SQL text, lock owners/waiters, resources, and generates a customer-ready summary. Everything runs locally in your browser.</p>
+</header>
+<main class="shell">
+  <section class="card left">
+    <div class="card-title"><h2>Input</h2><span class="pill green">Local only</span></div>
+    <div class="card-body">
+      <label for="fileInput">Upload .xdl / .xml / .txt</label>
+      <input id="fileInput" type="file" accept=".xdl,.xml,.txt,text/xml,application/xml" />
+      <label for="xmlInput">Or paste deadlock XML</label>
+      <textarea id="xmlInput" spellcheck="false" placeholder="Paste deadlock XML here. Supports <deadlock>, <deadlock-list>, or Extended Events <event> wrapper..."></textarea>
+      <div class="button-row">
+        <button id="parseBtn" class="primary">Analyze deadlock</button>
+        <button id="sampleBtn" class="ghost">Load sample</button>
+        <button id="clearBtn" class="ghost">Clear</button>
+      </div>
+      <div id="errorBox" class="error"></div>
+      <div class="note"><strong>Security note:</strong> this file has no external libraries, no API calls, and no storage. It uses safe DOM rendering via <code>textContent</code>. Avoid pasting credentials, tokens, or customer-sensitive values unless your handling policy allows local browser tooling.</div>
+      <label>Detected shape</label><div id="shapeBox" class="hint">No XML loaded yet.</div>
+    </div>
+  </section>
+
+  <section class="card middle">
+    <div class="card-title"><h2>Processes</h2><span id="processCount" class="pill">0 processes</span></div>
+    <div class="card-body">
+      <div class="toolbar"><input id="searchBox" type="text" placeholder="Search SPID, app, host, login, SQL, resource..." /><select id="filterSelect"><option value="all">All processes</option><option value="victims">Victims only</option><option value="owners">Lock owners</option><option value="waiters">Lock waiters</option></select></div>
+      <div id="processList" class="grid-list"><div class="empty">Load a deadlock graph to see process cards.</div></div>
+    </div>
+  </section>
+
+  <section class="card right">
+    <div class="card-title"><h2>Summary & Details</h2><span id="victimBadge" class="pill blue">No deadlock</span></div>
+    <div class="card-body">
+      <div class="stats-grid">
+        <div class="stat"><div id="statProcesses" class="value">0</div><div class="label">Processes</div></div>
+        <div class="stat"><div id="statVictims" class="value">0</div><div class="label">Victims</div></div>
+        <div class="stat"><div id="statResources" class="value">0</div><div class="label">Resources</div></div>
+        <div class="stat"><div id="statEdges" class="value">0</div><div class="label">Owner/Waiter edges</div></div>
+      </div>
+      <div class="section"><h3>Quick assessment</h3><div id="assessment"><div class="empty">No deadlock loaded yet.</div></div></div>
+      <div class="section"><h3>Conflict map</h3><div id="diagram" class="diagram"><div class="empty">No conflicts yet.</div></div></div>
+      <div class="section"><h3>Resource conflicts</h3><div id="resourceTableWrap"><div class="empty">No resource data yet.</div></div></div>
+      <div class="section"><h3>Selected process</h3><div id="detailsPane"><div class="empty">Select a process to inspect SQL text and attributes.</div></div></div>
+      <div class="section"><h3>Customer-ready summary</h3><textarea id="summaryBox" class="copyout" readonly placeholder="Generated summary will appear here..."></textarea><div class="button-row"><button id="copySummaryBtn" class="good">Copy summary</button></div></div>
+    </div>
+  </section>
+</main>
+<script>
+(() => {
+  "use strict";
+  const state={doc:null,deadlock:null,processes:[],resources:[],victimIds:new Set(),selected:null,search:"",filter:"all"};
+  const el=id=>document.getElementById(id);
+  const xmlInput=el("xmlInput"), fileInput=el("fileInput"), errorBox=el("errorBox");
+  const localName=n=>n?String(n.localName||n.nodeName).replace(/^.*:/,""):"";
+  const qsa=(root,name)=>Array.from(root.getElementsByTagName("*")).filter(n=>localName(n)===name);
+  const first=(root,name)=>qsa(root,name)[0]||null;
+  const attr=(n,a,f="")=>n&&n.hasAttribute(a)?n.getAttribute(a):f;
+  const text=n=>n?(n.textContent||"").trim():"";
+  const clean=s=>String(s||"").replace(/\s+\n/g,"\n").replace(/\n\s+/g,"\n").trim();
+  function showError(m){errorBox.style.display="block";errorBox.textContent=m} function clearError(){errorBox.style.display="none";errorBox.textContent=""}
+  function parseXml(s){const d=new DOMParser().parseFromString(s,"application/xml");const pe=d.getElementsByTagName("parsererror")[0];if(pe)throw new Error(text(pe).slice(0,1400));return d}
+  function findDeadlock(doc){
+    const direct=qsa(doc,"deadlock");
+    if(direct.length)return direct[0];
+    const val=qsa(doc,"value").find(v=>qsa(v,"deadlock").length);
+    if(val)return qsa(val,"deadlock")[0];
+    return null;
+  }
+  function processSql(p){
+    const frames=qsa(p.node,"frame").map(f=>({proc:attr(f,"procname"),line:attr(f,"line"),stmt:clean(text(f)),sqlhandle:attr(f,"sqlhandle")}));
+    const input=clean(text(first(p.node,"inputbuf")));
+    const topFrame=frames.find(f=>f.stmt&&f.stmt.toLowerCase()!=="unknown")||frames[0]||null;
+    return {frames,input,primary:(topFrame&&topFrame.stmt)||input||""};
+  }
+  function parseDeadlock(){
+    clearError(); const raw=xmlInput.value.trim(); if(!raw){showError("Paste or upload deadlock XML first.");return}
+    try{
+      const doc=parseXml(raw); const deadlock=findDeadlock(doc); if(!deadlock)throw new Error("No <deadlock> element found. Paste the deadlock graph XML or the Extended Events xml_deadlock_report payload.");
+      state.doc=doc; state.deadlock=deadlock; state.processes=[]; state.resources=[]; state.victimIds=new Set(); state.selected=null;
+      qsa(deadlock,"victimProcess").forEach(v=>state.victimIds.add(attr(v,"id"))); if(attr(deadlock,"victim"))state.victimIds.add(attr(deadlock,"victim"));
+      const pList=first(deadlock,"process-list"); const rList=first(deadlock,"resource-list");
+      if(!pList)throw new Error("No <process-list> found in deadlock XML.");
+      qsa(pList,"process").forEach((node,i)=>{
+        const p={idx:i,id:attr(node,"id"),node,spid:attr(node,"spid"),ecid:attr(node,"ecid"),sbid:attr(node,"sbid"),status:attr(node,"status"),taskpriority:attr(node,"taskpriority"),priority:attr(node,"priority"),logused:attr(node,"logused"),waitresource:attr(node,"waitresource"),waittime:attr(node,"waittime"),lockMode:attr(node,"lockMode"),transactionname:attr(node,"transactionname"),lasttranstarted:attr(node,"lasttranstarted"),trancount:attr(node,"trancount"),clientapp:attr(node,"clientapp"),hostname:attr(node,"hostname"),hostpid:attr(node,"hostpid"),loginname:attr(node,"loginname"),isolationlevel:attr(node,"isolationlevel"),currentdb:attr(node,"currentdb"),xactid:attr(node,"xactid"),isVictim:false,owns:[],waits:[],sql:null};
+        p.isVictim=state.victimIds.has(p.id); p.sql=processSql(p); state.processes.push(p);
+      });
+      const byId=Object.fromEntries(state.processes.map(p=>[p.id,p]));
+      if(rList){Array.from(rList.children).forEach((resNode,i)=>{
+        const res={idx:i,type:localName(resNode),id:attr(resNode,"id"),dbid:attr(resNode,"dbid"),objectname:attr(resNode,"objectname"),indexname:attr(resNode,"indexname"),hobtid:attr(resNode,"hobtid"),associatedObjectId:attr(resNode,"associatedObjectId"),mode:attr(resNode,"mode"),subresource:attr(resNode,"subresource"),rawAttrs:{},owners:[],waiters:[]};
+        Array.from(resNode.attributes||[]).forEach(a=>res.rawAttrs[a.name]=a.value);
+        qsa(first(resNode,"owner-list")||resNode,"owner").forEach(o=>{const edge={processId:attr(o,"id"),mode:attr(o,"mode"),requestType:attr(o,"requestType"),resource:res};res.owners.push(edge); if(byId[edge.processId])byId[edge.processId].owns.push(edge)});
+        qsa(first(resNode,"waiter-list")||resNode,"waiter").forEach(w=>{const edge={processId:attr(w,"id"),mode:attr(w,"mode"),requestType:attr(w,"requestType"),resource:res};res.waiters.push(edge); if(byId[edge.processId])byId[edge.processId].waits.push(edge)});
+        state.resources.push(res);
+      })}
+      el("shapeBox").textContent=`Found deadlock with ${state.processes.length} process(es), ${state.victimIds.size} victim id(s), and ${state.resources.length} resource node(s).`;
+      renderAll();
+    }catch(e){showError("Could not analyze deadlock XML:\n"+(e.message||String(e)))}
+  }
+  function pill(t,c=""){const s=document.createElement("span");s.className=`pill ${c}`.trim();s.textContent=t;return s}
+  function processLabel(p){return `SPID ${p.spid||"?"}${p.ecid&&p.ecid!=="0"?" / ECID "+p.ecid:""}`}
+  function resourceLabel(r){return [r.type, r.objectname, r.indexname].filter(Boolean).join(" • ") || [r.type,r.id,r.hobtid].filter(Boolean).join(" • ") || `Resource ${r.idx+1}`}
+  function matches(p){const q=state.search.toLowerCase(); const hay=[p.id,p.spid,p.clientapp,p.hostname,p.loginname,p.waitresource,p.lockMode,p.sql.primary,p.sql.input,...p.sql.frames.map(f=>`${f.proc} ${f.stmt}`)].join(" ").toLowerCase(); if(q&&!hay.includes(q))return false; if(state.filter==="victims")return p.isVictim; if(state.filter==="owners")return p.owns.length>0; if(state.filter==="waiters")return p.waits.length>0; return true}
+  function renderAll(){updateStats();renderProcesses();renderAssessment();renderDiagram();renderResources();renderDetails(null);generateSummary()}
+  function updateStats(){
+    const edgeCount=state.resources.reduce((s,r)=>s+r.owners.length+r.waiters.length,0);
+    el("statProcesses").textContent=state.processes.length; el("statVictims").textContent=state.victimIds.size; el("statResources").textContent=state.resources.length; el("statEdges").textContent=edgeCount; el("processCount").textContent=`${state.processes.length} processes`;
+    const victims=state.processes.filter(p=>p.isVictim).map(processLabel).join(", "); el("victimBadge").textContent=victims?`Victim: ${victims}`:"Victim not identified";
+  }
+  function renderProcesses(){const wrap=el("processList");wrap.textContent="";const ps=state.processes.filter(matches); if(!ps.length){wrap.append(empty("No processes matched the current search/filter."));return} ps.forEach(p=>{const item=document.createElement("div");item.className=`item ${p.isVictim?"victim":""} ${state.selected===p.id?"selected":""}`;item.onclick=()=>{state.selected=p.id;renderProcesses();renderDetails(p)};const title=document.createElement("div");title.className="item-title";const left=document.createElement("div");const mt=document.createElement("div");mt.className="main-title";mt.textContent=processLabel(p);const st=document.createElement("div");st.className="sub-title";st.textContent=[p.clientapp,p.hostname,p.loginname].filter(Boolean).join(" • ")||"No app/host/login in XML";left.append(mt,st);title.append(left,p.isVictim?pill("Victim","red"):pill("Participant","blue"));const meta=document.createElement("div");meta.className="meta";if(p.lockMode)meta.append(pill(`Waiting ${p.lockMode}`,"yellow"));if(p.owns.length)meta.append(pill(`Owns ${p.owns.length}`,"green"));if(p.waits.length)meta.append(pill(`Waits ${p.waits.length}`,"yellow"));if(p.isolationlevel)meta.append(pill(p.isolationlevel,"purple"));if(p.waittime)meta.append(pill(`Wait ${p.waittime}ms`,"cyan"));item.append(title,meta);wrap.append(item)})}
+  function empty(t){const d=document.createElement("div");d.className="empty";d.textContent=t;return d}
+  function renderAssessment(){const a=el("assessment");a.textContent="";if(!state.processes.length){a.append(empty("No deadlock loaded yet."));return}const victims=state.processes.filter(p=>p.isVictim); if(victims.length){const d=document.createElement("div");d.className="dangerline";d.textContent=`Victim process(es): ${victims.map(p=>`${processLabel(p)}${p.clientapp?" from "+p.clientapp:""}`).join("; ")}. The victim is not automatically the root cause; it is the session SQL Server selected to roll back to break the cycle.`;a.append(d)}else{const d=document.createElement("div");d.className="warnline";d.textContent="No victim process was explicitly identified in the XML. Some formats place the victim differently, or the payload may be incomplete.";a.append(d)}
+    const apps=[...new Set(state.processes.map(p=>p.clientapp).filter(Boolean))];const hosts=[...new Set(state.processes.map(p=>p.hostname).filter(Boolean))];const modes=[...new Set(state.resources.flatMap(r=>[...r.owners,...r.waiters].map(e=>e.mode)).filter(Boolean))]; const info=document.createElement("div");info.className="successline";info.textContent=`Participants: ${state.processes.length}. Applications seen: ${apps.length?apps.join(", "):"not specified"}. Hosts seen: ${hosts.length?hosts.join(", "):"not specified"}. Lock modes seen: ${modes.length?modes.join(", "):"not specified"}.`;a.append(info);
+    const caveat=document.createElement("div");caveat.className="warnline";caveat.textContent="Interpretation guardrail: this graph proves the lock conflict cycle at capture time. It does not by itself prove the business root cause, transaction design issue, or best fix without validating schema, indexes, transaction order, isolation level, and workload behavior.";a.append(caveat)}
+  function renderDiagram(){const d=el("diagram");d.textContent="";if(!state.resources.length){d.append(empty("No conflicts yet."));return}const byId=Object.fromEntries(state.processes.map(p=>[p.id,p]));let count=0;state.resources.forEach(r=>{r.waiters.forEach(w=>{r.owners.forEach(o=>{count++;const e=document.createElement("div");e.className="edge";const wp=byId[w.processId], op=byId[o.processId];e.textContent="";const line=document.createElement("div");line.innerHTML="";const s1=document.createElement("strong");s1.textContent=wp?processLabel(wp):w.processId;const s2=document.createElement("span");s2.className="arrow";s2.textContent=`  waits ${w.mode||"?"}  →  `;const s3=document.createElement("strong");s3.textContent=resourceLabel(r);const s4=document.createElement("span");s4.className="arrow";s4.textContent=`  owned ${o.mode||"?"} by  `;const s5=document.createElement("strong");s5.textContent=op?processLabel(op):o.processId;line.append(s1,s2,s3,s4,s5);const mini=document.createElement("div");mini.className="mini";mini.textContent=[r.objectname,r.indexname,r.hobtid?"hobtid "+r.hobtid:""].filter(Boolean).join(" • ");e.append(line,mini);d.append(e)})})});if(!count)d.append(empty("Resource nodes were found, but owner/waiter edges were not present."))}
+  function renderResources(){const w=el("resourceTableWrap");w.textContent="";if(!state.resources.length){w.append(empty("No resource data yet."));return}const table=document.createElement("table");table.className="resource-table";table.innerHTML="<thead><tr><th>Resource</th><th>Owners</th><th>Waiters</th><th>Details</th></tr></thead>";const tb=document.createElement("tbody");const byId=Object.fromEntries(state.processes.map(p=>[p.id,p]));state.resources.forEach(r=>{const tr=document.createElement("tr");[resourceLabel(r),r.owners.map(o=>`${byId[o.processId]?processLabel(byId[o.processId]):o.processId} (${o.mode||"?"})`).join("\n")||"-",r.waiters.map(x=>`${byId[x.processId]?processLabel(byId[x.processId]):x.processId} (${x.mode||"?"})`).join("\n")||"-",Object.entries(r.rawAttrs).map(([k,v])=>`${k}: ${v}`).join("\n")].forEach(v=>{const td=document.createElement("td");td.textContent=v;tr.append(td)});tb.append(tr)});table.append(tb);w.append(table)}
+  function renderDetails(p){const pane=el("detailsPane");pane.textContent="";if(!p){pane.append(empty("Select a process to inspect SQL text and attributes."));return}const top=document.createElement("div");top.className="meta";top.append(pill(processLabel(p),"blue"));if(p.isVictim)top.append(pill("Deadlock victim","red"));if(p.clientapp)top.append(pill(p.clientapp,"green"));if(p.hostname)top.append(pill(p.hostname,"cyan"));pane.append(top);const core={"Process id":p.id,"SPID":p.spid,"ECID":p.ecid,"Status":p.status,"Application":p.clientapp,"Host":p.hostname,"Host PID":p.hostpid,"Login":p.loginname,"Isolation level":p.isolationlevel,"Transaction name":p.transactionname,"Transaction count":p.trancount,"Last transaction started":p.lasttranstarted,"Wait resource":p.waitresource,"Requested lock mode":p.lockMode,"Wait time ms":p.waittime,"Deadlock priority":p.taskpriority||p.priority,"Log used":p.logused,"Current DB id":p.currentdb,"XACT id":p.xactid};pane.append(section("Process attributes",kv(core)));pane.append(section("Primary SQL text",sqlbox(p.sql.primary||"No SQL text found in inputbuf/executionStack.")));if(p.sql.input&&p.sql.input!==p.sql.primary)pane.append(section("Input buffer",sqlbox(p.sql.input)));if(p.sql.frames.length){const frames=document.createElement("div");frames.className="grid-list";p.sql.frames.forEach((f,i)=>{const it=document.createElement("div");it.className="item";const t=document.createElement("div");t.className="main-title";t.textContent=`Frame ${i+1}${f.proc?" — "+f.proc:""}${f.line?" line "+f.line:""}`;const s=document.createElement("div");s.className="sqlbox";s.textContent=f.stmt||"unknown";it.append(t,s);frames.append(it)});pane.append(section("Execution stack",frames))}const rel={"Owns":p.owns.map(e=>`${resourceLabel(e.resource)} (${e.mode||"?"})`).join("\n"),"Waits for":p.waits.map(e=>`${resourceLabel(e.resource)} (${e.mode||"?"})`).join("\n")};pane.append(section("Lock relationships",kv(rel)))}
+  function section(title,content){const s=document.createElement("div");s.className="section";const h=document.createElement("h4");h.textContent=title;s.append(h,content);return s}
+  function kv(obj){const w=document.createElement("div");w.className="kv";Object.entries(obj).forEach(([k,v])=>{if(v===undefined||v===null||v==="")return;const a=document.createElement("div");a.className="key";a.textContent=k;const b=document.createElement("div");b.className="val";b.textContent=String(v);w.append(a,b)});return w}
+  function sqlbox(s){const b=document.createElement("div");b.className="sqlbox";b.textContent=s;return b}
+  function generateSummary(){const out=el("summaryBox");if(!state.processes.length){out.value="";return}const byId=Object.fromEntries(state.processes.map(p=>[p.id,p]));const victims=state.processes.filter(p=>p.isVictim);let lines=[];lines.push(`Deadlock analysis summary:`);if(victims.length){lines.push(`- Victim process(es): ${victims.map(p=>`${processLabel(p)}${p.clientapp?` from ${p.clientapp}`:""}${p.hostname?` on ${p.hostname}`:""}`).join("; ")}.`)}else lines.push(`- Victim process was not explicitly identified in the XML.`);lines.push(`- Participants: ${state.processes.length}; Resources involved: ${state.resources.length}.`);state.processes.forEach(p=>{lines.push(`- ${processLabel(p)}${p.isVictim?" [victim]":""}: app=${p.clientapp||"not specified"}; host=${p.hostname||"not specified"}; login=${p.loginname||"not specified"}; isolation=${p.isolationlevel||"not specified"}; waiting lock mode=${p.lockMode||"not specified"}; waitresource=${p.waitresource||"not specified"}.`);if(p.sql.primary)lines.push(`  SQL text: ${p.sql.primary.replace(/\s+/g," ").slice(0,500)}${p.sql.primary.length>500?"...":""}`)});if(state.resources.length){lines.push(`- Resource conflict details:`);state.resources.forEach(r=>{const owners=r.owners.map(o=>`${byId[o.processId]?processLabel(byId[o.processId]):o.processId} owning ${o.mode||"?"}`).join(", ")||"no owner listed";const waiters=r.waiters.map(w=>`${byId[w.processId]?processLabel(byId[w.processId]):w.processId} waiting ${w.mode||"?"}`).join(", ")||"no waiter listed";lines.push(`  - ${resourceLabel(r)}: ${owners}; ${waiters}.`)})}lines.push(`- Guardrail: the graph identifies the deadlock cycle and conflicting locks. Treat conclusions about root cause or remediation as hypotheses until validated against query plans, indexes, transaction order, isolation level, and workload evidence.`);out.value=lines.join("\n")}
+  function loadSample(){xmlInput.value=`<deadlock>
+ <victim-list><victimProcess id="processA" /></victim-list>
+ <process-list>
+  <process id="processA" taskpriority="0" logused="120" waitresource="KEY: 5:72057594000000000 (abc123)" waittime="1421" lockMode="X" status="suspended" spid="87" ecid="0" trancount="2" clientapp=".Net SqlClient Data Provider" hostname="APP01" hostpid="4321" loginname="customer_user" isolationlevel="read committed (2)" currentdb="5" transactionname="user_transaction" lasttranstarted="2026-05-31T18:12:10.123">
+   <executionStack><frame procname="DemoDB.dbo.usp_UpdateOrder" line="18">UPDATE dbo.Orders SET Status = @Status WHERE OrderId = @OrderId</frame></executionStack>
+   <inputbuf>EXEC dbo.usp_UpdateOrder @OrderId = 42, @Status = 'Paid'</inputbuf>
+  </process>
+  <process id="processB" taskpriority="0" logused="300" waitresource="KEY: 5:72057594000000001 (def456)" waittime="1421" lockMode="S" status="suspended" spid="61" ecid="0" trancount="1" clientapp="Microsoft JDBC Driver for SQL Server" hostname="APP02" hostpid="9876" loginname="report_user" isolationlevel="read committed (2)" currentdb="5" transactionname="SELECT" lasttranstarted="2026-05-31T18:12:10.120">
+   <executionStack><frame procname="adhoc" line="1">SELECT OrderId, Status FROM dbo.Orders WHERE CustomerId = @CustomerId</frame></executionStack>
+   <inputbuf>SELECT OrderId, Status FROM dbo.Orders WHERE CustomerId = 1001</inputbuf>
+  </process>
+ </process-list>
+ <resource-list>
+  <keylock hobtid="72057594000000000" dbid="5" objectname="DemoDB.dbo.Orders" indexname="IX_Orders_CustomerId" id="lock1" mode="S" associatedObjectId="72057594000000000">
+   <owner-list><owner id="processB" mode="S" /></owner-list>
+   <waiter-list><waiter id="processA" mode="X" requestType="wait" /></waiter-list>
+  </keylock>
+  <keylock hobtid="72057594000000001" dbid="5" objectname="DemoDB.dbo.Orders" indexname="PK_Orders" id="lock2" mode="X" associatedObjectId="72057594000000001">
+   <owner-list><owner id="processA" mode="X" /></owner-list>
+   <waiter-list><waiter id="processB" mode="S" requestType="wait" /></waiter-list>
+  </keylock>
+ </resource-list>
+</deadlock>`;parseDeadlock()}
+  fileInput.addEventListener("change",async()=>{const f=fileInput.files&&fileInput.files[0];if(!f)return;xmlInput.value=await f.text();parseDeadlock()});
+  el("parseBtn").onclick=parseDeadlock; el("sampleBtn").onclick=loadSample; el("clearBtn").onclick=()=>{xmlInput.value="";fileInput.value="";Object.assign(state,{doc:null,deadlock:null,processes:[],resources:[],victimIds:new Set(),selected:null});clearError();el("shapeBox").textContent="No XML loaded yet.";renderAll();el("victimBadge").textContent="No deadlock"};
+  el("searchBox").oninput=e=>{state.search=e.target.value||"";renderProcesses()}; el("filterSelect").onchange=e=>{state.filter=e.target.value;renderProcesses()};
+  el("copySummaryBtn").onclick=async()=>{try{await navigator.clipboard.writeText(el("summaryBox").value||""); el("copySummaryBtn").textContent="Copied"; setTimeout(()=>el("copySummaryBtn").textContent="Copy summary",900)}catch{el("summaryBox").select();document.execCommand("copy")}};
+})();
+</script>
+</body>
+</html>
