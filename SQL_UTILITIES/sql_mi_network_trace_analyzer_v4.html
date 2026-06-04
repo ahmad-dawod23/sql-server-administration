@@ -27,6 +27,7 @@
 </div></section>
 </div>
 <script>
+
 (function(){
 'use strict';
 var $ = function(id){ return document.getElementById(id); };
@@ -348,8 +349,102 @@ function ephemeralWarning(convs){
   return 'No clients appear to be running out of ephemeral ports.';
 }
 function pad(n,w){ return String(n).padStart(w); }
+
+function splitEndpoint(ep){ var i = ep.lastIndexOf(':'); return {ip: ep.slice(0,i), port: parseInt(ep.slice(i+1),10)}; }
+function serverEndpointForPort(c, ports){
+  var a = splitEndpoint(c.a); var b = splitEndpoint(c.b);
+  if(ports.indexOf(a.port) >= 0) return c.a;
+  if(ports.indexOf(b.port) >= 0) return c.b;
+  return null;
+}
+function serverEndpointForPortRange(c, start, end){
+  var a = splitEndpoint(c.a); var b = splitEndpoint(c.b);
+  if(a.port >= start && a.port <= end) return c.a;
+  if(b.port >= start && b.port <= end) return c.b;
+  return null;
+}
+function remoteClientForServerEndpoint(c, serverEp){ return c.a === serverEp ? splitEndpoint(c.b).ip : splitEndpoint(c.a).ip; }
+function conversationHasServerPort(c, ports){ return !!serverEndpointForPort(c, ports); }
+function summarizeByServerEndpoint(convs, matcher){
+  var map = new Map();
+  convs.forEach(function(c){
+    var ep = matcher(c);
+    if(!ep) return;
+    if(!map.has(ep)) map.set(ep,{endpoint:ep,clients:new Set(),conversations:0,frames:0,bytes:0,resets:0,retrans:0});
+    var row = map.get(ep);
+    row.clients.add(remoteClientForServerEndpoint(c,ep));
+    row.conversations += 1;
+    row.frames += c.frames;
+    row.bytes += c.bytes;
+    row.resets += c.rst;
+    row.retrans += estimateRetransmits(c);
+  });
+  return Array.from(map.values()).sort(function(a,b){ return b.bytes - a.bytes; });
+}
+function estimateRetransmits(c){
+  var seen = new Set(); var count = 0;
+  c.packets.forEach(function(p){
+    if(p.proto !== 'TCP' || !p.payloadLen) return;
+    var key = [p.src,p.sport,p.dst,p.dport,p.seq,p.payloadLen].join('|');
+    if(seen.has(key)) count += 1; else seen.add(key);
+  });
+  return count;
+}
+function renderSummaryTable(rows, headers, fields){
+  if(!rows.length) return [];
+  var widths = headers.map(function(h){ return h.length; });
+  rows.forEach(function(r){ fields.forEach(function(f,i){ widths[i] = Math.max(widths[i], String(f(r)).length); }); });
+  var lines = [];
+  lines.push('    ' + headers.map(function(h,i){ return h.padEnd(widths[i]); }).join('  '));
+  lines.push('    ' + headers.map(function(h,i){ return ''.padEnd(widths[i], '-'); }).join('  '));
+  rows.forEach(function(r){ lines.push('    ' + fields.map(function(f,i){ var val=String(f(r)); return i===0 ? val.padEnd(widths[i]) : val.padStart(widths[i]); }).join('  ')); });
+  return lines;
+}
+function domainControllerRows(convs){
+  var dcPorts = [53,88,389,636,3268,3269,135];
+  var map = new Map();
+  convs.forEach(function(c){
+    var ep = serverEndpointForPort(c, dcPorts);
+    if(!ep) return;
+    var e = splitEndpoint(ep);
+    var ip = e.ip;
+    if(!map.has(ip)) map.set(ip,{ip:ip,clients:new Set(),conversations:0,kerb:0,dns:0,ldap:0,msrpc:0,msrpcPort:null,frames:0,bytes:0});
+    var row = map.get(ip);
+    row.clients.add(remoteClientForServerEndpoint(c,ep));
+    row.conversations += 1;
+    row.frames += c.frames;
+    row.bytes += c.bytes;
+    if(e.port === 53) row.dns += 1;
+    if(e.port === 88) row.kerb += 1;
+    if([389,636,3268,3269].indexOf(e.port) >= 0) row.ldap += 1;
+    if(e.port === 135) { row.msrpc += 1; row.msrpcPort = 135; }
+  });
+  return Array.from(map.values()).sort(function(a,b){ return b.conversations - a.conversations; });
+}
+function sqlEndpointRows(convs){
+  return summarizeByServerEndpoint(convs, function(c){ return serverEndpointForPort(c,[1433]); });
+}
+function miLinkRows(convs){
+  return summarizeByServerEndpoint(convs, function(c){ return serverEndpointForPort(c,[5022]); });
+}
+function miRedirectRows(convs){
+  return summarizeByServerEndpoint(convs, function(c){ return serverEndpointForPortRange(c,MI_START,MI_END); });
+}
+function sqlRelatedServerEndpoints(convs){
+  var eps = [];
+  sqlEndpointRows(convs).forEach(function(r){ eps.push(r.endpoint); });
+  miLinkRows(convs).forEach(function(r){ eps.push(r.endpoint); });
+  miRedirectRows(convs).forEach(function(r){ eps.push(r.endpoint); });
+  return Array.from(new Set(eps));
+}
+
 function buildReport(convs,s,name,unsupported){
   var lines = [];
+  var sqlRows = sqlEndpointRows(convs);
+  var mi5022Rows = miLinkRows(convs);
+  var miRedirect = miRedirectRows(convs);
+  var dcRows = domainControllerRows(convs);
+  var serverEndpoints = sqlRelatedServerEndpoints(convs);
   lines.push('SQL MI Network Trace Analyzer Report');
   lines.push('Input file: ' + (name || 'synthetic sample'));
   lines.push('Profile: ' + $('profile').selectedOptions[0].textContent);
@@ -363,11 +458,52 @@ function buildReport(convs,s,name,unsupported){
   lines.push('    SQL Traffic  ' + pad(fmt(s.sql.bytes),12) + '  ' + pad(fmt(s.sql.payload),13) + '  ' + pad(fmt(s.sql.frames),6) + '  ' + pad(fmt(s.sql.convs),13));
   lines.push('');
   lines.push(s.dup ? s.dup + ' possible duplicated IPv4 packet(s) were detected in the network trace.' : 'There were no duplicated IPV4 packets detected in the network trace.');
-  var endpoints = Array.from(new Set(convs.filter(function(c){ return c.focus || c.tds; }).reduce(function(a,c){ return a.concat([c.a,c.b]); },[])));
-  lines.push(endpoints.length ? 'SQL-related endpoints found: ' + endpoints.join(', ') + '.' : 'There were no SQL Servers found in the network trace.');
-  var other1433 = convs.filter(function(c){ return (c.a.endsWith(':1433') || c.b.endsWith(':1433')) && !c.focus && !c.tds; });
-  lines.push(other1433.length ? other1433.length + ' other conversation(s) used port 1433 but no TDS heuristic was detected.' : 'There were no other Servers listening on port 1433 found in the network trace.');
-  lines.push(s.krb.length ? s.krb.length + ' Kerberos conversation(s) were found.' : 'There were no Domain Controllers found in the network trace.');
+  lines.push('');
+
+  if(sqlRows.length){
+    lines.push('The following servers listening on port 1433 might be SQL Servers:');
+    lines = lines.concat(renderSummaryTable(sqlRows, ['IP Address,Port','Files','Clients','Conversations','Frames','Bytes','Resets','Retransmits'], [
+      function(r){ return r.endpoint.replace(':', ','); }, function(){ return 0; }, function(r){ return r.clients.size; }, function(r){ return r.conversations; }, function(r){ return fmt(r.frames); }, function(r){ return fmt(r.bytes); }, function(r){ return r.resets; }, function(r){ return r.retrans; }
+    ]));
+  } else {
+    lines.push('There were no SQL Servers found in the network trace.');
+  }
+  lines.push('');
+
+  if(mi5022Rows.length){
+    lines.push('The following servers listening on port 5022 might be HADR / SQL MI Link endpoints:');
+    lines = lines.concat(renderSummaryTable(mi5022Rows, ['IP Address,Port','Files','Clients','Conversations','Frames','Bytes','Resets','Retransmits'], [
+      function(r){ return r.endpoint.replace(':', ','); }, function(){ return 0; }, function(r){ return r.clients.size; }, function(r){ return r.conversations; }, function(r){ return fmt(r.frames); }, function(r){ return fmt(r.bytes); }, function(r){ return r.resets; }, function(r){ return r.retrans; }
+    ]));
+  } else {
+    lines.push('There were no HADR / SQL MI Link servers listening on port 5022 found in the network trace.');
+  }
+  lines.push('');
+
+  if(miRedirect.length){
+    lines.push('The following endpoints in SQL MI redirect range 11000-11999 were found:');
+    lines = lines.concat(renderSummaryTable(miRedirect, ['IP Address,Port','Files','Clients','Conversations','Frames','Bytes','Resets','Retransmits'], [
+      function(r){ return r.endpoint.replace(':', ','); }, function(){ return 0; }, function(r){ return r.clients.size; }, function(r){ return r.conversations; }, function(r){ return fmt(r.frames); }, function(r){ return fmt(r.bytes); }, function(r){ return r.resets; }, function(r){ return r.retrans; }
+    ]));
+  } else {
+    lines.push('No SQL MI redirect-range endpoints were found.');
+  }
+  lines.push('');
+
+  if(serverEndpoints.length) lines.push('SQL-related server endpoints found: ' + serverEndpoints.join(', ') + '.');
+  else lines.push('No SQL-related server endpoints were found.');
+
+  if(dcRows.length){
+    lines.push('');
+    lines.push('The following Domain Controllers were visible in the network trace:');
+    lines = lines.concat(renderSummaryTable(dcRows, ['IP Address','Files','Clients','Conversations','Kerb Conv','DNS Conv','LDAP Conv','MSRPC Conv','MSRPC Port','Frames','Bytes'], [
+      function(r){ return r.ip; }, function(){ return 0; }, function(r){ return r.clients.size; }, function(r){ return r.conversations; }, function(r){ return r.kerb; }, function(r){ return r.dns; }, function(r){ return r.ldap; }, function(r){ return r.msrpc; }, function(r){ return r.msrpcPort === null ? 'None' : r.msrpcPort; }, function(r){ return fmt(r.frames); }, function(r){ return fmt(r.bytes); }
+    ]));
+  } else {
+    lines.push('');
+    lines.push('There were no Domain Controllers found in the network trace.');
+  }
+  lines.push('');
   lines.push(s.rst.length ? s.rst.length + ' reset connection(s) were found.' : 'No reset connections were found.');
   lines.push(s.closed.length ? s.closed.length + ' SQL-focused connection(s) had FIN/server-closed style closure evidence.' : 'No server-closed connections were found.');
   lines.push(s.zero.length ? s.zero.length + ' Zero-Window SQL conversation(s) found.' : 'No Zero-Window SQL conversations found.');
@@ -376,12 +512,12 @@ function buildReport(convs,s,name,unsupported){
   lines.push('No login timeouts were conclusively detected.');
   lines.push(loginDurations(convs).length ? loginDurations(convs).length + ' login candidate(s) exceeded 2 seconds before first server response.' : 'No logins of over 2 seconds duration were found.');
   lines.push('No Pktmon trace events were decoded for delay reporting.');
-  lines.push('No Domain Controller connection failures were conclusively detected.');
+  lines.push(dcRows.length ? 'Domain Controller traffic was found; inspect DNS/Kerberos/LDAP/MSRPC rows above for failures.' : 'No Domain Controller connection failures were conclusively detected.');
   var namedPipes = convs.filter(function(c){ return c.a.endsWith(':445') || c.b.endsWith(':445'); });
   lines.push(namedPipes.length ? namedPipes.length + ' SMB/445 conversation(s) found. Review manually for possible Named Pipes context.' : 'No Named Pipes conversations found.');
   lines.push(s.att.length ? s.att.length + ' Attention packet conversation(s) found.' : 'No Attention packets were found.');
   lines.push(s.tls.length ? 'TLS evidence observed: ' + s.tls.join(', ') + '.' : 'No TLS version could be determined from visible packet payloads.');
-  lines.push(s.redirect.length ? s.redirect.length + ' redirected SQL MI connection candidate(s) were found on 11000-11999 after/with 1433 traffic.' : 'No redirected connections were found.');
+  lines.push(miRedirect.length ? miRedirect.length + ' SQL MI redirect-range endpoint candidate(s) were found.' : 'No redirected connections were found.');
   lines.push('The maximum payload size observed was ' + fmt(s.maxPayload) + '.');
   lines.push(s.maxPayload >= 1400 ? 'MTU maximum payload size may be near Ethernet MTU; validate with path MTU evidence if needed.' : 'MTU maximum payload size was not determined.');
   lines.push(ephemeralWarning(convs));
@@ -390,9 +526,9 @@ function buildReport(convs,s,name,unsupported){
   lines.push(s.dns.length ? s.dns.length + ' DNS conversation(s) found.' : 'No DNS traffic was found in the network trace.');
   lines.push('');
   lines.push('SQL MI focus notes:');
-  lines.push('- Port 1433 is treated as SQL data endpoint / gateway traffic.');
-  lines.push('- Port 5022 is treated as HADR / SQL MI Link traffic.');
-  lines.push('- Ports 11000-11999 are treated as SQL MI redirect candidates.');
+  lines.push('- Port 1433 table only reports the endpoint whose port is 1433, not the client ephemeral side.');
+  lines.push('- Domain Controller detection is endpoint-based from DNS/Kerberos/LDAP/MSRPC server ports, not only Kerberos.');
+  lines.push('- Ports 11000-11999 are treated as SQL MI redirect candidates only when that port appears on one side of the conversation.');
   lines.push('- Findings are heuristic because browser parsing does not perform full TCP stream reassembly or TLS decryption.');
   lines.push('');
   lines.push('End of Report');
@@ -467,6 +603,7 @@ $('sort').addEventListener('change', renderConvs);
 $('copy').addEventListener('click', function(){ if(!lastReport) return; navigator.clipboard.writeText(lastReport).then(function(){ $('copy').textContent='Copied'; setTimeout(function(){ $('copy').textContent='Copy report'; },900); }).catch(function(){ showError('Clipboard copy failed. Select and copy the report manually.'); }); });
 $('download').addEventListener('click', function(){ var blob = new Blob([lastReport || reportEl.textContent],{type:'text/plain'}); var a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='sql-mi-network-trace-analysis.txt'; a.click(); URL.revokeObjectURL(a.href); });
 })();
+
 </script>
 </body>
 </html>
