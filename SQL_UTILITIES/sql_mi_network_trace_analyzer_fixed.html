@@ -1,0 +1,472 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>SQL MI Network Trace Analyzer</title>
+<style>
+:root{--bg:#07101e;--panel:#101b2f;--ink:#e8f1ff;--muted:#9fb2d0;--line:#2c4268;--accent:#60a5fa;--good:#22c55e;--warn:#f59e0b;--bad:#ef4444;--mono:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono","Courier New",monospace;--sans:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at top right,#1d4ed8 0,transparent 35%),linear-gradient(180deg,#07101e,#020617);color:var(--ink);font-family:var(--sans)}header{padding:22px 28px 16px;border-bottom:1px solid var(--line);background:rgba(7,16,30,.88);position:sticky;top:0;z-index:5;backdrop-filter:blur(12px)}h1{margin:0;font-size:25px}.sub{margin:7px 0 0;color:var(--muted);font-size:13px;line-height:1.45;max-width:1200px}.wrap{display:grid;grid-template-columns:395px 1fr;gap:16px;padding:16px}.card{border:1px solid var(--line);border-radius:18px;background:linear-gradient(180deg,rgba(16,27,47,.97),rgba(8,14,26,.97));box-shadow:0 20px 50px rgba(0,0,0,.38);overflow:hidden}.title{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:14px 16px;border-bottom:1px solid var(--line);background:rgba(22,37,66,.88)}.title h2{margin:0;font-size:13px;letter-spacing:.09em;text-transform:uppercase;color:#dbeafe}.body{padding:14px}.pill{display:inline-flex;border:1px solid var(--line);border-radius:999px;padding:4px 8px;font-size:11px;color:var(--muted);background:#050b16}.green{color:#bbf7d0;border-color:#15803d;background:rgba(21,128,61,.20)}.blue{color:#bfdbfe;border-color:#1d4ed8;background:rgba(29,78,216,.20)}label{display:block;margin:12px 0 6px;font-size:12px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}input,select{width:100%;border:1px solid var(--line);border-radius:13px;background:#050b16;color:var(--ink);padding:10px 11px;font-size:13px;outline:none}input:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(96,165,250,.14)}button{border:0;border-radius:12px;padding:10px 12px;color:#fff;background:#1e3357;font-weight:800;font-size:13px;cursor:pointer}button:hover{filter:brightness(1.12)}button.primary{background:linear-gradient(135deg,#2563eb,#7c3aed)}button.good{background:linear-gradient(135deg,#16a34a,#0891b2)}button.ghost{background:transparent;border:1px solid var(--line);color:var(--muted)}.btns{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}.note{color:var(--muted);font-size:12px;line-height:1.48;margin-top:14px;padding:12px;border-radius:14px;background:rgba(2,6,23,.42);border:1px solid var(--line)}.err{display:none;margin-top:10px;color:#fecaca;background:rgba(185,28,28,.14);border:1px solid rgba(239,68,68,.45);padding:10px;border-radius:12px;font-size:12px;white-space:pre-wrap}.grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-bottom:14px}.stat{border:1px solid var(--line);border-radius:14px;padding:12px;background:rgba(30,51,87,.45)}.stat .v{font-size:22px;font-weight:900}.stat .l{margin-top:4px;color:var(--muted);font-size:11px;letter-spacing:.06em;text-transform:uppercase}.section{margin-top:15px;border-top:1px solid var(--line);padding-top:13px}.section h3{margin:0 0 9px;font-size:13px;letter-spacing:.08em;text-transform:uppercase;color:#dbeafe}.empty{padding:28px 14px;text-align:center;border:1px dashed var(--line);border-radius:16px;color:var(--muted);background:rgba(5,11,22,.34)}pre{margin:0;white-space:pre;overflow:auto;font-family:var(--mono);font-size:12px;line-height:1.45;color:#e5eefc;background:#050b16;border:1px solid var(--line);border-radius:14px;padding:13px;max-height:520px}.report{max-height:none;min-height:455px}.toolbar{display:grid;grid-template-columns:1fr 155px 155px;gap:10px;margin-bottom:12px}.table{width:100%;border-collapse:separate;border-spacing:0 8px;font-size:12px}.table th{text-align:left;color:var(--muted);font-size:11px;letter-spacing:.06em;text-transform:uppercase;padding:0 8px}.table td{background:rgba(30,51,87,.45);border-top:1px solid var(--line);border-bottom:1px solid var(--line);padding:10px 8px;vertical-align:top;white-space:pre-wrap}.table td:first-child{border-left:1px solid var(--line);border-radius:12px 0 0 12px}.table td:last-child{border-right:1px solid var(--line);border-radius:0 12px 12px 0}.small{font-size:11px;color:var(--muted);line-height:1.45}.warnbox{border-left:3px solid var(--warn);padding:8px 10px;background:rgba(180,83,9,.10);border-radius:10px;color:#fde68a;font-size:12px;line-height:1.45}@media(max-width:1050px){.wrap{grid-template-columns:1fr}.grid{grid-template-columns:repeat(2,1fr)}header{position:static}.toolbar{grid-template-columns:1fr}}@media(max-width:620px){.grid{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<header><h1>🌐 SQL MI Network Trace Analyzer</h1><p class="sub">Browser-only PCAP / PCAPNG analyzer focused on SQL Server and Azure SQL Managed Instance networking: TCP 1433, HADR/MI Link 5022, and MI redirect range 11000-11999. No upload. No external libraries. No installer.</p></header>
+<div class="wrap">
+<section class="card"><div class="title"><h2>Trace input</h2><span class="pill green">Local only</span></div><div class="body">
+<label>Upload network trace</label><input id="file" type="file" accept=".pcap,.pcapng,.cap,.etl,.pktmon,application/octet-stream">
+<label>Analyzer profile</label><select id="profile"><option value="mi">SQL MI focus: 1433, 5022, 11000-11999</option><option value="sql">SQL Server focus: 1433 + custom ports</option><option value="all">Broad TCP summary</option></select>
+<label>Additional SQL ports, comma-separated</label><input id="extraPorts" value="" placeholder="Example: 3342,5150">
+<div class="btns"><button id="analyze" class="primary">Analyze trace</button><button id="sample" class="ghost">Load synthetic sample</button><button id="clear" class="ghost">Clear</button></div>
+<div id="err" class="err"></div><div class="note"><strong>Supported:</strong> Ethernet PCAP and PCAPNG with IPv4/IPv6, TCP/UDP basics. <strong>Not supported:</strong> native ETL/PKTMON event decoding, decryption, full TDS semantic parsing, TCP reassembly, NIC offload correction.</div>
+<label>Detected file / parsing notes</label><div id="notes" class="small">No trace loaded yet.</div></div></section>
+<section class="card"><div class="title"><h2>Report</h2><span id="badge" class="pill blue">Ready</span></div><div class="body">
+<div class="grid"><div class="stat"><div id="frames" class="v">0</div><div class="l">Frames</div></div><div class="stat"><div id="convs" class="v">0</div><div class="l">Conversations</div></div><div class="stat"><div id="sqlConvs" class="v">0</div><div class="l">SQL-focused conversations</div></div><div class="stat"><div id="issues" class="v">0</div><div class="l">Potential issues</div></div></div>
+<div class="section"><h3>Console-style output</h3><pre id="report" class="report">Upload a .pcap or .pcapng file and click Analyze trace.</pre><div class="btns"><button id="copy" class="good">Copy report</button><button id="download" class="ghost">Download .txt report</button></div></div>
+<div class="section"><h3>Conversations</h3><div class="toolbar"><input id="search" placeholder="Search IP, port, label, flags..."><select id="filter"><option value="focus">SQL/MI focus only</option><option value="all">All conversations</option><option value="issues">Potential issues only</option></select><select id="sort"><option value="bytes">Sort by bytes</option><option value="frames">Sort by frames</option><option value="start">Sort by first seen</option></select></div><div id="convTable"><div class="empty">No conversations yet.</div></div></div>
+<div class="section"><h3>Interpretation guardrails</h3><div class="warnbox">This is a triage helper, not a replacement for the official SQL Network Analyzer. It can highlight TCP symptoms and SQL/MI port patterns, but it cannot prove root cause by itself. Validate with both client/server captures, SQL logs, driver logs, and environment evidence.</div></div>
+</div></section>
+</div>
+<script>
+(function(){
+'use strict';
+var $ = function(id){ return document.getElementById(id); };
+var fileInput = $('file');
+var reportEl = $('report');
+var errEl = $('err');
+var notesEl = $('notes');
+var packets = [];
+var conversations = new Map();
+var parsed = null;
+var lastReport = '';
+var MI_START = 11000;
+var MI_END = 11999;
+
+function showError(msg){ errEl.style.display = 'block'; errEl.textContent = msg; }
+function clearError(){ errEl.style.display = 'none'; errEl.textContent = ''; }
+function fmt(n){ return Number(n || 0).toLocaleString('en-US'); }
+function rd16(d,o,le){ return d.getUint16(o,le); }
+function rd32(d,o,le){ return d.getUint32(o,le); }
+function ip4(d,o){ return d.getUint8(o)+'.'+d.getUint8(o+1)+'.'+d.getUint8(o+2)+'.'+d.getUint8(o+3); }
+function ip6(d,o){ var p=[]; for(var i=0;i<16;i+=2){ p.push(d.getUint16(o+i,false).toString(16)); } return p.join(':').replace(/(^|:)0(:0)+(:|$)/,'::'); }
+function extraPorts(){ return $('extraPorts').value.split(',').map(function(x){ return parseInt(x.trim(),10); }).filter(function(x){ return x>0 && x<65536; }); }
+function isMiPort(p){ return p>=MI_START && p<=MI_END; }
+function isFocusPort(p){ return p===1433 || p===5022 || isMiPort(p) || extraPorts().indexOf(p)>=0; }
+function portLabel(p){
+  if(p===1433) return 'SQL default 1433';
+  if(p===5022) return 'HADR/MI Link 5022';
+  if(isMiPort(p)) return 'SQL MI redirect 11000-11999';
+  if(extraPorts().indexOf(p)>=0) return 'custom SQL port';
+  if(p===1434) return 'SSRP 1434';
+  if(p===53) return 'DNS';
+  if(p===88) return 'Kerberos';
+  if(p===445) return 'SMB/Named Pipes candidate';
+  return '';
+}
+function endpoint(ip,port){ return ip + ':' + port; }
+function convKey(x){ var a=endpoint(x.src,x.sport); var b=endpoint(x.dst,x.dport); return a < b ? a+'|'+b : b+'|'+a; }
+
+function parseClassicPcap(ab){
+  var d = new DataView(ab);
+  if(d.byteLength < 24) throw new Error('File too small for PCAP.');
+  var magic = d.getUint32(0,false);
+  var le = false, ns = false;
+  if(magic === 0xa1b2c3d4) le = false;
+  else if(magic === 0xd4c3b2a1) le = true;
+  else if(magic === 0xa1b23c4d){ le = false; ns = true; }
+  else if(magic === 0x4d3cb2a1){ le = true; ns = true; }
+  else throw new Error('Not classic PCAP.');
+  var link = rd32(d,20,le);
+  var off = 24, idx = 0, list = [];
+  while(off + 16 <= d.byteLength){
+    var sec = rd32(d,off,le);
+    var frac = rd32(d,off+4,le);
+    var caplen = rd32(d,off+8,le);
+    var origlen = rd32(d,off+12,le);
+    off += 16;
+    if(caplen <= 0 || off + caplen > d.byteLength) break;
+    var ts = sec*1000 + (ns ? frac/1000000 : frac/1000);
+    list.push({idx:++idx, ts:ts, caplen:caplen, origlen:origlen, link:link, off:off});
+    off += caplen;
+  }
+  return {kind:'pcap', view:d, packets:list, notes:'Classic PCAP detected. LinkType='+link+'. Frames parsed='+list.length+'.'};
+}
+
+function parsePcapng(ab){
+  var d = new DataView(ab);
+  var off = 0, link = 1, ifaces = [], idx = 0, list = [];
+  if(d.byteLength < 12) throw new Error('File too small for PCAPNG.');
+  while(off + 12 <= d.byteLength){
+    var blockType = d.getUint32(off,true);
+    var le = true;
+    var blockLen = d.getUint32(off+4,true);
+    if(blockType === 0x0a0d0d0a){
+      var bomLE = d.getUint32(off+8,true);
+      le = (bomLE === 0x1a2b3c4d);
+      blockLen = d.getUint32(off+4,le);
+    }
+    if(blockLen < 12 || off + blockLen > d.byteLength) break;
+    if(blockType === 1){
+      link = rd16(d,off+8,le);
+      ifaces.push({link:link, tsres:0.000001});
+    } else if(blockType === 6){
+      var iface = rd32(d,off+8,le);
+      var tsHi = rd32(d,off+12,le);
+      var tsLo = rd32(d,off+16,le);
+      var caplen = rd32(d,off+20,le);
+      var origlen = rd32(d,off+24,le);
+      var foff = off + 28;
+      var inf = ifaces[iface] || {link:link, tsres:0.000001};
+      if(caplen > 0 && foff + caplen <= d.byteLength){
+        var ts = (tsHi * 4294967296 + tsLo) * inf.tsres * 1000;
+        list.push({idx:++idx, ts:ts, caplen:caplen, origlen:origlen, link:inf.link, off:foff});
+      }
+    } else if(blockType === 3){
+      var olen = rd32(d,off+8,le);
+      var clen = blockLen - 16;
+      list.push({idx:++idx, ts:0, caplen:clen, origlen:olen, link:link, off:off+12});
+    }
+    off += blockLen;
+  }
+  return {kind:'pcapng', view:d, packets:list, notes:'PCAPNG detected. Interfaces='+(ifaces.length || 1)+'. Frames parsed='+list.length+'.'};
+}
+
+function parseTrace(ab,name){
+  var lower = (name || '').toLowerCase();
+  if(lower.endsWith('.etl') || lower.endsWith('.pktmon')) throw new Error('ETL/PKTMON native files are not decoded by this browser tool. Convert to PCAPNG first, then upload the .pcapng.');
+  var d = new DataView(ab,0,Math.min(ab.byteLength,16));
+  if(d.byteLength >= 4){
+    var be = d.getUint32(0,false);
+    var le = d.getUint32(0,true);
+    if([0xa1b2c3d4,0xd4c3b2a1,0xa1b23c4d,0x4d3cb2a1].indexOf(be)>=0) return parseClassicPcap(ab);
+    if(le === 0x0a0d0d0a) return parsePcapng(ab);
+  }
+  throw new Error('Unsupported trace format. Expected .pcap or .pcapng.');
+}
+
+function decodeFrame(frame,view){
+  var off = frame.off;
+  var link = frame.link;
+  if(link === 1){
+    if(off + 14 > view.byteLength) return null;
+    var ether = view.getUint16(off+12,false);
+    off += 14;
+    if(ether === 0x8100 || ether === 0x88a8){
+      if(off + 4 > view.byteLength) return null;
+      ether = view.getUint16(off+2,false);
+      off += 4;
+    }
+    if(ether !== 0x0800 && ether !== 0x86dd) return null;
+  } else if(link === 113){
+    off += 16;
+  } else if(link === 276){
+    off += 20;
+  } else if(link === 101){
+    // Raw IP
+  } else {
+    return {unsupported:true, idx:frame.idx, link:link};
+  }
+  if(off >= view.byteLength) return null;
+  var ver = view.getUint8(off) >> 4;
+  if(ver === 4) return decodeIPv4(frame,view,off);
+  if(ver === 6) return decodeIPv6(frame,view,off);
+  return null;
+}
+
+function decodeIPv4(frame,view,off){
+  if(off + 20 > view.byteLength) return null;
+  var ihl = (view.getUint8(off) & 15) * 4;
+  var total = view.getUint16(off+2,false);
+  var id = view.getUint16(off+4,false);
+  var flagsFrag = view.getUint16(off+6,false);
+  var proto = view.getUint8(off+9);
+  var src = ip4(view,off+12);
+  var dst = ip4(view,off+16);
+  var payloadOff = off + ihl;
+  var available = Math.min(total || frame.caplen, frame.off + frame.caplen - off);
+  var payloadLen = Math.max(0, available - ihl);
+  return decodeL4(frame,view,payloadOff,payloadLen,proto,src,dst,'IPv4',{id:id,flagsFrag:flagsFrag});
+}
+function decodeIPv6(frame,view,off){
+  if(off + 40 > view.byteLength) return null;
+  var plen = view.getUint16(off+4,false);
+  var proto = view.getUint8(off+6);
+  var src = ip6(view,off+8);
+  var dst = ip6(view,off+24);
+  return decodeL4(frame,view,off+40,plen,proto,src,dst,'IPv6',{});
+}
+function decodeL4(frame,view,off,len,proto,src,dst,ipver,meta){
+  if(proto === 6){
+    if(off + 20 > view.byteLength) return null;
+    var sport = view.getUint16(off,false);
+    var dport = view.getUint16(off+2,false);
+    var seq = view.getUint32(off+4,false);
+    var ack = view.getUint32(off+8,false);
+    var dataOff = (view.getUint8(off+12) >> 4) * 4;
+    var flags = view.getUint8(off+13);
+    var win = view.getUint16(off+14,false);
+    var payloadOff = off + dataOff;
+    var payloadLen = Math.max(0, Math.min(len - dataOff, frame.off + frame.caplen - payloadOff));
+    var info = payloadLen > 0 ? classifyPayload(view,payloadOff,payloadLen) : {};
+    var obj = {idx:frame.idx,ts:frame.ts,caplen:frame.caplen,origlen:frame.origlen,ipver:ipver,proto:'TCP',src:src,dst:dst,sport:sport,dport:dport,seq:seq,ack:ack,flags:flags,win:win,payloadLen:payloadLen,payloadOff:payloadOff,meta:meta};
+    Object.keys(info).forEach(function(k){ obj[k] = info[k]; });
+    return obj;
+  }
+  if(proto === 17){
+    if(off + 8 > view.byteLength) return null;
+    var usport = view.getUint16(off,false);
+    var udport = view.getUint16(off+2,false);
+    var ulen = view.getUint16(off+4,false);
+    return {idx:frame.idx,ts:frame.ts,caplen:frame.caplen,origlen:frame.origlen,ipver:ipver,proto:'UDP',src:src,dst:dst,sport:usport,dport:udport,payloadLen:Math.max(0,ulen-8),meta:meta};
+  }
+  return {idx:frame.idx,ts:frame.ts,caplen:frame.caplen,origlen:frame.origlen,ipver:ipver,proto:'IP'+proto,src:src,dst:dst,sport:0,dport:0,payloadLen:len,meta:meta};
+}
+function classifyPayload(view,off,len){
+  var b0 = view.getUint8(off);
+  var b1 = len > 1 ? view.getUint8(off+1) : 0;
+  var b2 = len > 2 ? view.getUint8(off+2) : 0;
+  var tds = {1:'SQL Batch',2:'Pre-TDS/Login?',3:'RPC',4:'Tabular Result',6:'Attention',7:'Bulk Load',14:'Transaction Manager',16:'Login7',17:'SSPI',18:'PreLogin'};
+  var r = {};
+  if(tds[b0] && len >= 8){
+    var tdsLen = view.getUint16(off+2,false);
+    if(tdsLen >= 8 && tdsLen <= len + 8){ r.tdsType = b0; r.tdsName = tds[b0]; r.tdsLength = tdsLen; }
+  }
+  if(b0 === 0x16 && b1 === 0x03){
+    r.tls = 'Handshake';
+    if(b2 === 1) r.tlsVersion = 'TLS 1.0'; else if(b2 === 2) r.tlsVersion = 'TLS 1.1'; else if(b2 === 3) r.tlsVersion = 'TLS 1.2'; else if(b2 === 4) r.tlsVersion = 'TLS 1.3'; else r.tlsVersion = 'TLS 1.x';
+  } else if(b0 === 0x14 && b1 === 0x03){ r.tls = 'ChangeCipherSpec'; }
+  else if(b0 === 0x15 && b1 === 0x03){ r.tls = 'Alert'; }
+  else if(b0 === 0x17 && b1 === 0x03){ r.tls = 'ApplicationData'; }
+  return r;
+}
+
+function addPacket(x){
+  if(x.proto !== 'TCP' && x.proto !== 'UDP') return;
+  var key = convKey(x);
+  if(!conversations.has(key)){
+    conversations.set(key,{key:key,proto:x.proto,a:endpoint(x.src,x.sport),b:endpoint(x.dst,x.dport),src:x.src,dst:x.dst,sport:x.sport,dport:x.dport,frames:0,bytes:0,payload:0,start:x.ts||0,end:x.ts||0,packets:[],rst:0,fin:0,syn:0,synack:0,zero:0,tds:0,attention:0,tlsVersions:new Set(),focus:false,labels:new Set(),issues:[]});
+  }
+  var c = conversations.get(key);
+  c.frames += 1;
+  c.bytes += x.caplen || 0;
+  c.payload += x.payloadLen || 0;
+  c.start = Math.min(c.start, x.ts || 0);
+  c.end = Math.max(c.end, x.ts || 0);
+  c.packets.push(x);
+  if(x.proto === 'TCP'){
+    if(x.flags & 4) c.rst += 1;
+    if(x.flags & 1) c.fin += 1;
+    if(x.flags & 2){ c.syn += 1; if(x.flags & 16) c.synack += 1; }
+    if(x.win === 0) c.zero += 1;
+  }
+  if(x.tdsType){ c.tds += 1; c.labels.add(x.tdsName); if(x.tdsType === 6) c.attention += 1; }
+  if(x.tlsVersion) c.tlsVersions.add(x.tlsVersion);
+  [x.sport,x.dport].forEach(function(p){ var label = portLabel(p); if(label) c.labels.add(label); if(isFocusPort(p)) c.focus = true; });
+}
+
+function runAnalysis(ab,name){
+  parsed = parseTrace(ab,name);
+  packets = [];
+  conversations = new Map();
+  var unsupported = 0;
+  parsed.packets.forEach(function(frame){
+    var x = decodeFrame(frame,parsed.view);
+    if(!x) return;
+    if(x.unsupported){ unsupported += 1; return; }
+    packets.push(x);
+    addPacket(x);
+  });
+  finish(name,unsupported);
+}
+
+function finish(name,unsupported){
+  var convs = Array.from(conversations.values());
+  convs.forEach(function(c){
+    if(c.rst) c.issues.push('RST');
+    if(c.zero) c.issues.push('Zero window');
+    if(c.syn > 0 && c.synack === 0 && c.frames <= 3) c.issues.push('SYN failure/probe');
+    if(c.fin && c.focus) c.issues.push('Closed');
+    if(c.focus && c.payload === 0 && c.frames > 0) c.issues.push('No payload observed');
+  });
+  var s = buildStats(convs);
+  lastReport = buildReport(convs,s,name,unsupported);
+  reportEl.textContent = lastReport;
+  $('frames').textContent = fmt(packets.length);
+  $('convs').textContent = fmt(convs.length);
+  $('sqlConvs').textContent = fmt(convs.filter(function(c){ return c.focus || c.tds; }).length);
+  $('issues').textContent = fmt(s.issueCount);
+  $('badge').textContent = 'Analyzed';
+  notesEl.textContent = parsed.notes + (unsupported ? ' Unsupported link-layer packets skipped=' + unsupported + '.' : '');
+  renderConvs();
+}
+
+function sumConvs(list){
+  return list.reduce(function(a,c){ a.bytes += c.bytes; a.payload += c.payload; a.frames += c.frames; a.convs += 1; return a; },{bytes:0,payload:0,frames:0,convs:0});
+}
+function detectRedirect(convs){
+  var byPair = {};
+  convs.filter(function(c){ return c.focus; }).forEach(function(c){ var ips=[c.src,c.dst].sort().join('|'); if(!byPair[ips]) byPair[ips]=[]; byPair[ips].push(c); });
+  var out = [];
+  Object.keys(byPair).forEach(function(k){ var list=byPair[k]; var has1433=list.some(function(c){ return c.a.endsWith(':1433') || c.b.endsWith(':1433'); }); var mi=list.filter(function(c){ var pa=parseInt(c.a.split(':').pop(),10); var pb=parseInt(c.b.split(':').pop(),10); return isMiPort(pa) || isMiPort(pb); }); if(has1433 && mi.length) out = out.concat(mi); });
+  return out;
+}
+function detectDupes(){
+  var seen = new Set(); var dup = 0;
+  packets.filter(function(p){ return p.ipver === 'IPv4'; }).forEach(function(p){ var key=[p.src,p.dst,p.proto,p.sport,p.dport,p.meta && p.meta.id,p.payloadLen,p.seq].join('|'); if(seen.has(key)) dup += 1; else seen.add(key); });
+  return dup;
+}
+function buildStats(convs){
+  var tcp = convs.filter(function(c){ return c.proto === 'TCP'; });
+  var sql = convs.filter(function(c){ return c.focus || c.tds; });
+  var rst = convs.filter(function(c){ return c.rst; });
+  var closed = convs.filter(function(c){ return c.fin && c.focus; });
+  var zero = convs.filter(function(c){ return c.zero && c.focus; });
+  var synFail = convs.filter(function(c){ return c.issues.indexOf('SYN failure/probe') >= 0; });
+  var att = convs.filter(function(c){ return c.attention; });
+  var ssrp = convs.filter(function(c){ return c.a.endsWith(':1434') || c.b.endsWith(':1434'); });
+  var dns = convs.filter(function(c){ return c.a.endsWith(':53') || c.b.endsWith(':53'); });
+  var krb = convs.filter(function(c){ return c.a.endsWith(':88') || c.b.endsWith(':88'); });
+  var redirect = detectRedirect(convs);
+  var tls = Array.from(new Set(sql.reduce(function(a,c){ return a.concat(Array.from(c.tlsVersions)); },[])));
+  var maxPayload = packets.reduce(function(m,p){ return Math.max(m,p.payloadLen || 0); },0);
+  return {tcp:sumConvs(tcp),sql:sumConvs(sql),rst:rst,closed:closed,zero:zero,synFail:synFail,att:att,ssrp:ssrp,dns:dns,krb:krb,redirect:redirect,tls:tls,dup:detectDupes(),maxPayload:maxPayload,issueCount:rst.length+zero.length+synFail.length+att.length+redirect.length};
+}
+function loginDurations(convs){
+  var out = [];
+  convs.filter(function(c){ return c.focus || c.tds; }).forEach(function(c){
+    var pk = c.packets.slice().sort(function(a,b){ return (a.ts||0)-(b.ts||0); });
+    var start = null, client = null;
+    for(var i=0;i<pk.length;i++){ if(pk[i].tdsType === 18 || pk[i].tdsType === 16){ start = pk[i].ts; client = endpoint(pk[i].src,pk[i].sport); break; } }
+    if(start !== null){ var resp = pk.find(function(p){ return p.ts > start && endpoint(p.src,p.sport) !== client && p.payloadLen > 0; }); if(resp && resp.ts - start > 2000) out.push({conv:c,duration:resp.ts-start}); }
+  });
+  return out;
+}
+function ephemeralWarning(convs){
+  var byClient = {};
+  convs.filter(function(c){ return c.focus; }).forEach(function(c){ [c.a,c.b].forEach(function(x){ var parts=x.split(':'); var ip=parts[0]; var p=parseInt(parts[parts.length-1],10); if(p>49151){ if(!byClient[ip]) byClient[ip]=new Set(); byClient[ip].add(p); } }); });
+  var hot = Object.keys(byClient).filter(function(ip){ return byClient[ip].size > 1000; });
+  if(hot.length) return hot.map(function(ip){ return ip + ' used ' + byClient[ip].size + ' high ephemeral ports'; }).join('; ') + '. Review for ephemeral port pressure.';
+  return 'No clients appear to be running out of ephemeral ports.';
+}
+function pad(n,w){ return String(n).padStart(w); }
+function buildReport(convs,s,name,unsupported){
+  var lines = [];
+  lines.push('SQL MI Network Trace Analyzer Report');
+  lines.push('Input file: ' + (name || 'synthetic sample'));
+  lines.push('Profile: ' + $('profile').selectedOptions[0].textContent);
+  lines.push('Focus ports: 1433, 5022, 11000-11999' + (extraPorts().length ? ', ' + extraPorts().join(', ') : ''));
+  lines.push('');
+  lines.push('PKTMON events were not decoded by this browser analyzer.');
+  lines.push('');
+  lines.push('    Statistic    Packet Bytes  Payload Bytes  Frames  Conversations');
+  lines.push('    -----------  ------------  -------------  ------  -------------');
+  lines.push('    TCP Traffic  ' + pad(fmt(s.tcp.bytes),12) + '  ' + pad(fmt(s.tcp.payload),13) + '  ' + pad(fmt(s.tcp.frames),6) + '  ' + pad(fmt(s.tcp.convs),13));
+  lines.push('    SQL Traffic  ' + pad(fmt(s.sql.bytes),12) + '  ' + pad(fmt(s.sql.payload),13) + '  ' + pad(fmt(s.sql.frames),6) + '  ' + pad(fmt(s.sql.convs),13));
+  lines.push('');
+  lines.push(s.dup ? s.dup + ' possible duplicated IPv4 packet(s) were detected in the network trace.' : 'There were no duplicated IPV4 packets detected in the network trace.');
+  var endpoints = Array.from(new Set(convs.filter(function(c){ return c.focus || c.tds; }).reduce(function(a,c){ return a.concat([c.a,c.b]); },[])));
+  lines.push(endpoints.length ? 'SQL-related endpoints found: ' + endpoints.join(', ') + '.' : 'There were no SQL Servers found in the network trace.');
+  var other1433 = convs.filter(function(c){ return (c.a.endsWith(':1433') || c.b.endsWith(':1433')) && !c.focus && !c.tds; });
+  lines.push(other1433.length ? other1433.length + ' other conversation(s) used port 1433 but no TDS heuristic was detected.' : 'There were no other Servers listening on port 1433 found in the network trace.');
+  lines.push(s.krb.length ? s.krb.length + ' Kerberos conversation(s) were found.' : 'There were no Domain Controllers found in the network trace.');
+  lines.push(s.rst.length ? s.rst.length + ' reset connection(s) were found.' : 'No reset connections were found.');
+  lines.push(s.closed.length ? s.closed.length + ' SQL-focused connection(s) had FIN/server-closed style closure evidence.' : 'No server-closed connections were found.');
+  lines.push(s.zero.length ? s.zero.length + ' Zero-Window SQL conversation(s) found.' : 'No Zero-Window SQL conversations found.');
+  lines.push('No Pktmon trace events were decoded for drop reporting.');
+  lines.push(s.synFail.length ? s.synFail.length + ' SYN failure/probe connection candidate(s) found.' : 'No SYN failures or probe connections found.');
+  lines.push('No login timeouts were conclusively detected.');
+  lines.push(loginDurations(convs).length ? loginDurations(convs).length + ' login candidate(s) exceeded 2 seconds before first server response.' : 'No logins of over 2 seconds duration were found.');
+  lines.push('No Pktmon trace events were decoded for delay reporting.');
+  lines.push('No Domain Controller connection failures were conclusively detected.');
+  var namedPipes = convs.filter(function(c){ return c.a.endsWith(':445') || c.b.endsWith(':445'); });
+  lines.push(namedPipes.length ? namedPipes.length + ' SMB/445 conversation(s) found. Review manually for possible Named Pipes context.' : 'No Named Pipes conversations found.');
+  lines.push(s.att.length ? s.att.length + ' Attention packet conversation(s) found.' : 'No Attention packets were found.');
+  lines.push(s.tls.length ? 'TLS evidence observed: ' + s.tls.join(', ') + '.' : 'No TLS version could be determined from visible packet payloads.');
+  lines.push(s.redirect.length ? s.redirect.length + ' redirected SQL MI connection candidate(s) were found on 11000-11999 after/with 1433 traffic.' : 'No redirected connections were found.');
+  lines.push('The maximum payload size observed was ' + fmt(s.maxPayload) + '.');
+  lines.push(s.maxPayload >= 1400 ? 'MTU maximum payload size may be near Ethernet MTU; validate with path MTU evidence if needed.' : 'MTU maximum payload size was not determined.');
+  lines.push(ephemeralWarning(convs));
+  lines.push(s.ssrp.length ? s.ssrp.length + ' SSRP/UDP 1434 conversation(s) found.' : 'No SSRP traffic was found in the network trace.');
+  lines.push(s.krb.length ? s.krb.length + ' Kerberos conversation(s) found; inspect manually for TGS/SPN details.' : 'No Kerberos TGS SPN traffic was found in the network trace.');
+  lines.push(s.dns.length ? s.dns.length + ' DNS conversation(s) found.' : 'No DNS traffic was found in the network trace.');
+  lines.push('');
+  lines.push('SQL MI focus notes:');
+  lines.push('- Port 1433 is treated as SQL data endpoint / gateway traffic.');
+  lines.push('- Port 5022 is treated as HADR / SQL MI Link traffic.');
+  lines.push('- Ports 11000-11999 are treated as SQL MI redirect candidates.');
+  lines.push('- Findings are heuristic because browser parsing does not perform full TCP stream reassembly or TLS decryption.');
+  lines.push('');
+  lines.push('End of Report');
+  return lines.join('\n');
+}
+
+function renderConvs(){
+  var wrap = $('convTable');
+  var q = $('search').value.toLowerCase();
+  var filt = $('filter').value;
+  var sort = $('sort').value;
+  var arr = Array.from(conversations.values());
+  if(filt === 'focus') arr = arr.filter(function(c){ return c.focus || c.tds; });
+  if(filt === 'issues') arr = arr.filter(function(c){ return c.issues.length; });
+  if(q) arr = arr.filter(function(c){ return [c.a,c.b,c.proto,Array.from(c.labels).join(' '),c.issues.join(' ')].join(' ').toLowerCase().indexOf(q) >= 0; });
+  if(sort === 'bytes') arr.sort(function(a,b){ return b.bytes - a.bytes; });
+  if(sort === 'frames') arr.sort(function(a,b){ return b.frames - a.frames; });
+  if(sort === 'start') arr.sort(function(a,b){ return a.start - b.start; });
+  wrap.textContent = '';
+  if(!arr.length){ wrap.appendChild(empty('No conversations matched.')); return; }
+  var table = document.createElement('table'); table.className = 'table';
+  table.innerHTML = '<thead><tr><th>Conversation</th><th>Traffic</th><th>Labels</th><th>Signals</th></tr></thead>';
+  var tbody = document.createElement('tbody');
+  arr.slice(0,500).forEach(function(c){
+    var tr = document.createElement('tr');
+    var vals = [c.a + ' ⇄ ' + c.b + '\n' + c.proto, 'Frames: ' + fmt(c.frames) + '\nBytes: ' + fmt(c.bytes) + '\nPayload: ' + fmt(c.payload), Array.from(c.labels).join('\n') || '-', 'RST=' + c.rst + ', FIN=' + c.fin + ', SYN=' + c.syn + ', SYN-ACK=' + c.synack + '\nZeroWin=' + c.zero + '\nTDS=' + c.tds + '\nTLS=' + (Array.from(c.tlsVersions).join(', ') || '-') + '\nIssues=' + (c.issues.join(', ') || '-')];
+    vals.forEach(function(v){ var td = document.createElement('td'); td.textContent = v; tr.appendChild(td); });
+    tbody.appendChild(tr);
+  });
+  table.appendChild(tbody); wrap.appendChild(table);
+}
+function empty(text){ var d = document.createElement('div'); d.className = 'empty'; d.textContent = text; return d; }
+function loadSample(){
+  parsed = {kind:'synthetic',notes:'Synthetic sample loaded.'}; packets = []; conversations = new Map();
+  var sample = [
+    {idx:1,ts:0,caplen:66,origlen:66,ipver:'IPv4',proto:'TCP',src:'10.0.0.10',dst:'10.0.1.4',sport:51000,dport:1433,flags:2,win:64240,payloadLen:0},
+    {idx:2,ts:15,caplen:66,origlen:66,ipver:'IPv4',proto:'TCP',src:'10.0.1.4',dst:'10.0.0.10',sport:1433,dport:51000,flags:18,win:65535,payloadLen:0},
+    {idx:3,ts:40,caplen:150,origlen:150,ipver:'IPv4',proto:'TCP',src:'10.0.0.10',dst:'10.0.1.4',sport:51000,dport:1433,flags:24,win:64240,payloadLen:84,tdsType:18,tdsName:'PreLogin'},
+    {idx:4,ts:90,caplen:120,origlen:120,ipver:'IPv4',proto:'TCP',src:'10.0.1.4',dst:'10.0.0.10',sport:1433,dport:51000,flags:24,win:65535,payloadLen:54,tdsType:18,tdsName:'PreLogin'},
+    {idx:5,ts:120,caplen:66,origlen:66,ipver:'IPv4',proto:'TCP',src:'10.0.0.10',dst:'10.0.1.4',sport:51001,dport:11433,flags:2,win:64240,payloadLen:0},
+    {idx:6,ts:135,caplen:66,origlen:66,ipver:'IPv4',proto:'TCP',src:'10.0.1.4',dst:'10.0.0.10',sport:11433,dport:51001,flags:18,win:65535,payloadLen:0},
+    {idx:7,ts:160,caplen:99,origlen:99,ipver:'IPv4',proto:'TCP',src:'10.0.0.10',dst:'10.0.1.4',sport:51001,dport:11433,flags:24,win:64240,payloadLen:33,tls:'Handshake',tlsVersion:'TLS 1.2'},
+    {idx:8,ts:180,caplen:66,origlen:66,ipver:'IPv4',proto:'TCP',src:'10.0.1.4',dst:'10.0.0.10',sport:11433,dport:51001,flags:20,win:0,payloadLen:0},
+    {idx:9,ts:210,caplen:66,origlen:66,ipver:'IPv4',proto:'TCP',src:'10.0.1.4',dst:'10.0.0.10',sport:11433,dport:51001,flags:4,win:0,payloadLen:0},
+    {idx:10,ts:250,caplen:90,origlen:90,ipver:'IPv4',proto:'UDP',src:'10.0.0.10',dst:'10.0.0.53',sport:54000,dport:53,payloadLen:50}
+  ];
+  sample.forEach(function(x){ packets.push(x); addPacket(x); });
+  finish('synthetic-sample',0);
+}
+function analyzeFile(){
+  clearError();
+  var f = fileInput.files && fileInput.files[0];
+  if(!f){ showError('Choose a .pcap or .pcapng file first, or load the synthetic sample.'); return; }
+  var reader = new FileReader();
+  reader.onload = function(){ try { runAnalysis(reader.result,f.name); } catch(e) { showError(e && e.message ? e.message : String(e)); } };
+  reader.onerror = function(){ showError('Failed to read file.'); };
+  reader.readAsArrayBuffer(f);
+}
+function clearAll(){
+  packets = []; conversations = new Map(); parsed = null; lastReport = '';
+  reportEl.textContent = 'Upload a .pcap or .pcapng file and click Analyze trace.';
+  $('frames').textContent = '0'; $('convs').textContent = '0'; $('sqlConvs').textContent = '0'; $('issues').textContent = '0';
+  $('convTable').textContent = ''; $('convTable').appendChild(empty('No conversations yet.'));
+  notesEl.textContent = 'No trace loaded yet.'; $('badge').textContent = 'Ready'; clearError(); fileInput.value = '';
+}
+$('analyze').addEventListener('click', analyzeFile);
+$('sample').addEventListener('click', loadSample);
+$('clear').addEventListener('click', clearAll);
+$('search').addEventListener('input', renderConvs);
+$('filter').addEventListener('change', renderConvs);
+$('sort').addEventListener('change', renderConvs);
+$('copy').addEventListener('click', function(){ if(!lastReport) return; navigator.clipboard.writeText(lastReport).then(function(){ $('copy').textContent='Copied'; setTimeout(function(){ $('copy').textContent='Copy report'; },900); }).catch(function(){ showError('Clipboard copy failed. Select and copy the report manually.'); }); });
+$('download').addEventListener('click', function(){ var blob = new Blob([lastReport || reportEl.textContent],{type:'text/plain'}); var a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='sql-mi-network-trace-analysis.txt'; a.click(); URL.revokeObjectURL(a.href); });
+})();
+</script>
+</body>
+</html>
