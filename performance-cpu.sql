@@ -1,13 +1,74 @@
 -----------------------------------------------------------------------
 -- CPU PERFORMANCE ANALYSIS
--- Purpose: Identify top CPU-consuming queries (active and cached),
---          CPU utilization trends, and scheduler pressure.
--- Safety: All queries are read-only.
+-- Purpose: Diagnose CPU pressure end to end - identify top CPU-consuming
+--          queries (active and cached), compilation overhead, scheduler
+--          pressure, kernel vs user CPU time, and the parallelism/ad hoc
+--          workload settings most commonly responsible for high CPU.
+-- Safety: All queries are read-only except the commented-out example in
+--         Section 8.2, which is disabled by default.
 -- Applies to: On-prem / Azure SQL MI / Both
 -----------------------------------------------------------------------
 
 SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
 GO
+
+-----------------------------------------------------------------------
+-- OVERVIEW: CPU PRESSURE CONCEPTS & DIAGNOSTIC METHODOLOGY
+-----------------------------------------------------------------------
+-- SQL Server hitting sustained high CPU is usually an imbalance between
+-- workload demand and available processing power. A high value is only
+-- a "problem" when it persists long enough to affect query response times.
+--
+-- Common causes of high CPU consumption:
+--   * Non-optimized queries - scans instead of seeks (missing indexes,
+--     stale statistics) force the CPU to process far more data than needed.
+--   * Excessive compilations/recompilations - ad hoc, non-parameterized
+--     queries flood the plan cache with single-use plans; every unique
+--     query must be compiled at least once, which is CPU-intensive.
+--     Recompiles are also triggered by frequent schema/statistics changes.
+--   * Parallelism bottlenecks - a Cost Threshold for Parallelism that is
+--     too low (default 5) lets small queries go parallel unnecessarily,
+--     adding thread-coordination overhead and CXPACKET waits.
+--   * Inefficient T-SQL - cursors (row-by-row), scalar UDFs, and complex
+--     JSON/XML parsing burn CPU cycles because the engine interprets
+--     code instead of using set-based logic.
+--   * Resource contention - "death by a thousand cuts": a very high volume
+--     of small, individually-cheap requests cumulatively exhausts the CPU.
+--   * External factors - other processes on the host (AV, IIS), or in
+--     virtualized environments a "noisy neighbor" VM / host overcommitment.
+--
+-- Diagnostic approach (see the numbered sections below for the queries):
+--   1. Wait stats       - Section 6 (signal vs resource waits, CPU waits)
+--   2. Perf counters     - Section 3.2 (compiles/recompiles), Section 4
+--   3. Expensive queries  - Section 1 (real-time), Section 2 (historical)
+--   4. CPU history        - Section 4.1 (ring buffer)
+--   5. Scheduler pressure - Section 3.1 (runnable/pending task counts)
+--   6. Config/mitigation  - Section 8 (parallelism & ad hoc settings)
+--
+-- Rule-of-thumb thresholds:
+--   * Processor: % Processor Time sustained > 80-90% = bottleneck.
+--   * Processor Queue Length sustained > 2 per core = CPU can't keep up.
+--   * SQL Compilations/sec > 100/sec (relative to batch requests/sec)
+--     suggests an ad hoc workload problem.
+--   * Signal wait time > 15-25% of total wait time = CPU pressure.
+--   * Processor: % Privileged (kernel) Time consistently > 30% suggests
+--     memory pressure, driver issues, or an I/O subsystem problem rather
+--     than the SQL Server workload itself (see Section 4.2).
+--
+-- Mitigation strategies (cheapest/highest-impact first):
+--   * Query & index tuning - turn scans into seeks; this is the most
+--     cost-effective fix and should be tried before anything else.
+--   * Tune parallelism - raise Cost Threshold for Parallelism (e.g. 50)
+--     and set MAXDOP appropriately (Section 8).
+--   * Enable "optimize for ad hoc workloads" to avoid caching full plans
+--     for single-use ad hoc statements (Section 8).
+--   * Parameterize queries / use stored procs to encourage plan reuse.
+--   * Resource Governor (Enterprise) to cap CPU bandwidth per workload.
+--   * Scale up (faster cores, more cache) or add RAM to raise the buffer
+--     cache hit ratio, which indirectly reduces CPU spent on physical I/O.
+--   * Host optimization - Windows power plan = High Performance; use CPU
+--     reservations in virtualized environments to avoid noisy neighbors.
+-----------------------------------------------------------------------
 
 -----------------------------------------------------------------------
 -- SECTION 1: REAL-TIME ACTIVE CPU QUERIES
@@ -159,6 +220,36 @@ ORDER BY total_cpu_millisec DESC;
 GO
 
 -----------------------------------------------------------------------
+-- 2.2 TOP 15 CPU CONSUMING CACHED PLANS (CLASSIC DMV, NO QUERY STORE)
+--     Uses sys.dm_exec_query_stats so it works even when Query Store
+--     is not enabled. Plans age out of cache, so this only reflects
+--     activity since the last plan eviction/restart.
+-----------------------------------------------------------------------
+SELECT TOP 15
+    qs.query_hash,
+    DB_NAME(t.dbid) AS database_name,
+    qs.execution_count,
+    qs.total_worker_time AS total_cpu_time_microsec,
+    qs.total_worker_time / qs.execution_count AS avg_cpu_time_microsec,
+    qs.total_elapsed_time / qs.execution_count AS avg_elapsed_time_microsec,
+    qs.total_logical_reads,
+    qs.last_execution_time,
+    SUBSTRING(
+        REPLACE(REPLACE(
+            SUBSTRING(t.text, (qs.statement_start_offset/2) + 1,
+                ((CASE qs.statement_end_offset
+                    WHEN -1 THEN DATALENGTH(t.text)
+                    ELSE qs.statement_end_offset
+                END - qs.statement_start_offset)/2) + 1),
+            CHAR(10), ' '),
+        CHAR(13), ' '),
+    1, 256) AS statement_text
+FROM sys.dm_exec_query_stats AS qs
+    CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle) AS t
+ORDER BY qs.total_worker_time DESC;
+GO
+
+-----------------------------------------------------------------------
 -- SECTION 3: CPU SCHEDULER & TASK ANALYSIS
 -----------------------------------------------------------------------
 
@@ -177,6 +268,29 @@ FROM sys.dm_os_schedulers WITH (NOLOCK)
 WHERE scheduler_id < 255  -- Exclude hidden schedulers
 OPTION (RECOMPILE);
 GO
+
+-----------------------------------------------------------------------
+-- 3.2 COMPILATION / RECOMPILATION PRESSURE
+--     High SQL Compilations/sec or Re-Compilations/sec relative to Batch
+--     Requests/sec points to an ad hoc, non-parameterized workload flooding
+--     the plan cache (see Section 8 for the 'optimize for ad hoc workloads'
+--     mitigation). Values are cumulative since the last service restart -
+--     run twice a few seconds apart and diff them to get a rate.
+-----------------------------------------------------------------------
+SELECT 
+    object_name,
+    counter_name,
+    cntr_value,
+    GETDATE() AS sample_time
+FROM sys.dm_os_performance_counters
+WHERE counter_name IN (
+    'SQL Compilations/sec',
+    'SQL Re-Compilations/sec',
+    'Batch Requests/sec'
+)
+ORDER BY counter_name;
+GO
+
 -----------------------------------------------------------------------
 -- SECTION 4: SQL SERVER INSTANCE CPU UTILIZATION
 -----------------------------------------------------------------------
@@ -211,6 +325,22 @@ FROM (
     ) AS x 
 ) AS y 
 ORDER BY record_id DESC;
+GO
+
+-----------------------------------------------------------------------
+-- 4.2 KERNEL (PRIVILEGED) TIME VS USER TIME ACROSS SQL SERVER THREADS
+--     Kernel time = CPU spent servicing OS/kernel work (I/O requests,
+--     interrupts, paging); User time = CPU spent running SQL Server
+--     itself. If Percent_Kernel_Time is consistently > 30%, suspect
+--     memory pressure (heavy paging), a slow/overloaded I/O subsystem,
+--     or outdated device drivers rather than the SQL workload itself.
+-----------------------------------------------------------------------
+SELECT 
+    SUM(kernel_time) AS total_kernel_time_ms,
+    SUM(usermode_time) AS total_usermode_time_ms,
+    CAST(100.0 * SUM(kernel_time) / NULLIF(SUM(kernel_time) + SUM(usermode_time), 0) AS DECIMAL(5,2)) AS percent_kernel_time,
+    CAST(100.0 * SUM(usermode_time) / NULLIF(SUM(kernel_time) + SUM(usermode_time), 0) AS DECIMAL(5,2)) AS percent_usermode_time
+FROM sys.dm_os_threads;
 GO
 
 -----------------------------------------------------------------------
@@ -305,6 +435,31 @@ FROM sys.dm_os_wait_stats;
 GO
 
 -----------------------------------------------------------------------
+-- 6.2 TOP CPU-RELATED WAIT TYPES
+--     SOS_SCHEDULER_YIELD: workers voluntarily yielding the CPU but
+--       taking a long time to return from the runnable queue - classic
+--       CPU pressure signal.
+--     CXPACKET/CXCONSUMER: parallelism coordination overhead - review
+--       Cost Threshold for Parallelism / MAXDOP (Section 8) if excessive.
+--     THREADPOOL: worker thread exhaustion.
+--     RESOURCE_SEMAPHORE_QUERY_COMPILE: compilation throttling under
+--       memory/CPU pressure from too many concurrent compiles.
+-----------------------------------------------------------------------
+SELECT TOP 20
+    wait_type,
+    waiting_tasks_count,
+    wait_time_ms,
+    signal_wait_time_ms,
+    CAST(100.0 * signal_wait_time_ms / NULLIF(wait_time_ms, 0) AS DECIMAL(5,2)) AS percent_signal_wait
+FROM sys.dm_os_wait_stats
+WHERE wait_type IN (
+    'SOS_SCHEDULER_YIELD', 'CXPACKET', 'CXCONSUMER',
+    'THREADPOOL', 'RESOURCE_SEMAPHORE_QUERY_COMPILE'
+)
+ORDER BY wait_time_ms DESC;
+GO
+
+-----------------------------------------------------------------------
 -- SECTION 7: PERFMON/THREAD-LEVEL TROUBLESHOOTING
 -----------------------------------------------------------------------
 
@@ -357,6 +512,52 @@ STEP 6: Get Exact Query Text
 -- Run DBCC INPUTBUFFER to see the query:
 -- DBCC INPUTBUFFER({SPID_From_Step4});
 -- GO
+
+-----------------------------------------------------------------------
+-- SECTION 8: PARALLELISM & AD HOC WORKLOAD CONFIGURATION CHECKS
+-----------------------------------------------------------------------
+
+-----------------------------------------------------------------------
+-- 8.1 CURRENT PARALLELISM / AD HOC PLAN CACHE SETTINGS
+--     Review before changing them:
+--       * cost threshold for parallelism - raise from the default of 5
+--         (e.g. to 50) so small/cheap queries stay single-threaded.
+--       * max degree of parallelism - cap per-query worker threads so
+--         one query can't consume all schedulers.
+--       * optimize for ad hoc workloads - when enabled, only a small
+--         plan stub is cached on first execution of an ad hoc batch,
+--         reducing plan cache bloat and recompilation overhead.
+-----------------------------------------------------------------------
+SELECT 
+    name,
+    value,
+    value_in_use,
+    description
+FROM sys.configurations
+WHERE name IN (
+    'cost threshold for parallelism',
+    'max degree of parallelism',
+    'optimize for ad hoc workloads'
+)
+ORDER BY name;
+GO
+
+-----------------------------------------------------------------------
+-- 8.2 EXAMPLE: APPLY RECOMMENDED PARALLELISM / AD HOC SETTINGS
+--     Uncomment and adjust values for your workload before running.
+--     Requires sysadmin and RECONFIGURE to take effect.
+-----------------------------------------------------------------------
+/*
+EXEC sp_configure 'show advanced options', 1;
+RECONFIGURE;
+GO
+
+EXEC sp_configure 'cost threshold for parallelism', 50;  -- default is 5
+EXEC sp_configure 'max degree of parallelism', 8;         -- tune to workload/NUMA
+EXEC sp_configure 'optimize for ad hoc workloads', 1;     -- 0 = off, 1 = on
+RECONFIGURE;
+GO
+*/
 
 -----------------------------------------------------------------------
 -- END OF CPU PERFORMANCE ANALYSIS

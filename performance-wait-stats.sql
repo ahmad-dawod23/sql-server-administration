@@ -12,6 +12,17 @@ SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
 SET NOCOUNT ON;
 
 -----------------------------------------------------------------------
+-- OVERVIEW: ESTABLISH A BASELINE
+-----------------------------------------------------------------------
+-- Capture these wait stats (plus CPU/memory/disk metrics) during known
+-- "normal" operation and save the results. A baseline is what turns a
+-- one-off wait-stats snapshot into a diagnosis - without one, you can't
+-- tell whether today's numbers are anomalous or just normal for this
+-- workload. Section 4 below (delta measurement) is the easiest way to
+-- repeat the same capture over time for comparison.
+-----------------------------------------------------------------------
+
+-----------------------------------------------------------------------
 -- 1. TOP WAITS — FILTERED (exclude benign/idle waits)
 --    This is the most important query for performance triage.
 --    Shows the top waits by cumulative time, excluding waits that

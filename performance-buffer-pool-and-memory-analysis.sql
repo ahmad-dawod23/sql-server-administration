@@ -8,6 +8,41 @@
 -----------------------------------------------------------------------
 
 -----------------------------------------------------------------------
+-- OVERVIEW: MEMORY PRESSURE — CONCEPTS & TRIAGE WORKFLOW
+-----------------------------------------------------------------------
+-- Memory issues are best diagnosed holistically — hardware/OS metrics
+-- and internal SQL Server memory structures should all be reviewed.
+-- Pressure here often surfaces as secondary bottlenecks in I/O
+-- (paging) or CPU (management overhead).
+--
+-- Types of memory pressure:
+--   * External — the OS or other processes (SSIS, SSRS, antivirus,
+--     etc.) compete for physical RAM, signaling SQL Server to trim
+--     its usage.
+--   * Internal — SQL Server components (plan cache, query memory
+--     grants) compete for space within the buffer pool itself.
+--
+-- Key indicators, and where to find them below:
+--   * Page Life Expectancy (PLE)                  -> Section 5
+--   * Buffer Cache Hit Ratio (>=90%, ideally 99%)  -> 1.4
+--   * Target vs. Total Server Memory               -> 4.1
+--   * OS memory state / Available Physical Memory  -> 4.2
+--   * RESOURCE_SEMAPHORE / CMEMTHREAD waits         -> Section 6
+--   * Error 17890 "paged out" in the error log      -> 10.2
+--
+-- Suggested triage order:
+--   1. Rule out OS-level pressure (4.2) — low available memory means
+--      another process may be starving SQL Server of RAM.
+--   2. Check RESOURCE_SEMAPHORE waits (6.1); if elevated, find the
+--      expensive queries driving memory grants (3.4).
+--   3. Check plan cache bloat via CACHESTORE_SQLCP (2.1/2.3) — ad hoc,
+--      non-parameterized workloads can consume large amounts of memory.
+--   4. Look for poorly indexed queries causing large scans that flush
+--      the buffer pool and drive down PLE — missing indexes often
+--      "fix" a perceived memory problem more than adding RAM does.
+-----------------------------------------------------------------------
+
+-----------------------------------------------------------------------
 -- SECTION 1: BUFFER POOL USAGE
 -----------------------------------------------------------------------
 
@@ -133,6 +168,29 @@ GROUP BY cacheobjtype, objtype
 ORDER BY TotalSizeMB DESC;
 
 -----------------------------------------------------------------------
+-- 2.3 AD HOC PLAN CACHE BLOAT CHECK
+--     High memory/plan count under CACHESTORE_SQLCP with mostly
+--     single-use plans indicates non-parameterized ad hoc queries
+--     are bloating the plan cache. Consider enabling
+--     'Optimize for Ad Hoc Workloads'.
+-----------------------------------------------------------------------
+SELECT
+    CAST(SUM(size_in_bytes) / 1048576.0 AS DECIMAL(18,2)) AS AdHocPlanCacheMB,
+    COUNT(*)                                              AS AdHocPlanCount,
+    SUM(CASE WHEN usecounts = 1 THEN 1 ELSE 0 END)        AS SingleUsePlans,
+    CAST(100.0 * SUM(CASE WHEN usecounts = 1 THEN 1 ELSE 0 END)
+         / COUNT(*) AS DECIMAL(5,2))                      AS SingleUsePct
+FROM sys.dm_exec_cached_plans
+WHERE cacheobjtype = 'Compiled Plan'
+  AND objtype = 'Adhoc';
+
+SELECT
+    [name],
+    value_in_use                                          AS OptimizeForAdHocWorkloadsEnabled
+FROM sys.configurations
+WHERE [name] = 'optimize for ad hoc workloads';
+
+-----------------------------------------------------------------------
 -- SECTION 3: MEMORY GRANTS
 -----------------------------------------------------------------------
 
@@ -188,6 +246,29 @@ FROM sys.dm_exec_query_memory_grants AS mg
     CROSS APPLY sys.dm_exec_sql_text(plan_handle) AS st
 WHERE mg.request_time < COALESCE(grant_time, '99991231')
 ORDER BY mg.requested_memory_kb DESC;
+
+-----------------------------------------------------------------------
+-- 3.4 TOP QUERIES BY MEMORY GRANT (historical, from plan cache)
+--     Identifies cached queries with the largest memory grants —
+--     useful when RESOURCE_SEMAPHORE waits are elevated (Section 6).
+-----------------------------------------------------------------------
+SELECT TOP 25
+    DB_NAME(qt.dbid)                                       AS DatabaseName,
+    qs.execution_count,
+    CAST(qs.total_grant_kb / 1024.0 AS DECIMAL(18,2))     AS TotalGrantMB,
+    CAST(qs.total_grant_kb / 1024.0 / qs.execution_count
+         AS DECIMAL(18,2))                                AS AvgGrantMB,
+    CAST(qs.max_grant_kb / 1024.0 AS DECIMAL(18,2))       AS MaxGrantMB,
+    qs.total_spills,
+    SUBSTRING(qt.[text], (qs.statement_start_offset / 2) + 1,
+        ((CASE qs.statement_end_offset
+             WHEN -1 THEN DATALENGTH(qt.[text])
+             ELSE qs.statement_end_offset END
+          - qs.statement_start_offset) / 2) + 1)           AS QueryText
+FROM sys.dm_exec_query_stats AS qs
+    CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle) AS qt
+WHERE qs.total_grant_kb > 0
+ORDER BY qs.total_grant_kb DESC;
 
 -----------------------------------------------------------------------
 -- SECTION 4: MEMORY TARGETS & SYSTEM MEMORY
@@ -258,6 +339,27 @@ SELECT
 FROM sys.dm_os_process_memory;
 
 -----------------------------------------------------------------------
+-- 4.4 MAX SERVER MEMORY vs. PHYSICAL MEMORY CHECK
+--     Verify adequate memory is left for the operating system.
+-----------------------------------------------------------------------
+SELECT
+    CONVERT(DECIMAL(18,2), sm.total_physical_memory_kb / 1048576.0) AS TotalPhysicalGB,
+    CONVERT(DECIMAL(18,2), CONVERT(BIGINT, c.value_in_use) / 1024.0) AS MaxServerMemoryGB,
+    CONVERT(DECIMAL(18,0), (sm.total_physical_memory_kb / 1024.0 - CONVERT(BIGINT, c.value_in_use))) AS MemoryLeftForOSMB,
+    CASE
+        WHEN CONVERT(BIGINT, c.value_in_use) = 2147483647
+            THEN '*** UNLIMITED — CONFIGURE NOW ***'
+        WHEN (sm.total_physical_memory_kb / 1024.0 - CONVERT(BIGINT, c.value_in_use)) < 2048
+            THEN '*** LESS THAN 2 GB LEFT FOR OS ***'
+        WHEN (sm.total_physical_memory_kb / 1024.0 - CONVERT(BIGINT, c.value_in_use)) < 4096
+            THEN '* Less than 4 GB left for OS *'
+        ELSE 'OK'
+    END                                                              AS [Status]
+FROM sys.dm_os_sys_memory sm
+    CROSS JOIN sys.configurations c
+WHERE c.[name] = 'max server memory (MB)';
+
+-----------------------------------------------------------------------
 -- SECTION 5: PAGE LIFE EXPECTANCY
 -----------------------------------------------------------------------
 
@@ -282,11 +384,42 @@ WHERE [object_name] LIKE '%Buffer Manager%'
   AND counter_name = 'Page life expectancy';
 
 -----------------------------------------------------------------------
--- SECTION 6: RING BUFFER MEMORY MONITOR
+-- SECTION 6: MEMORY-RELATED WAIT STATISTICS
 -----------------------------------------------------------------------
 
 -----------------------------------------------------------------------
--- 6.1 RING BUFFER MEMORY-RELATED USAGE
+-- 6.1 RESOURCE_SEMAPHORE / CMEMTHREAD WAITS
+--     RESOURCE_SEMAPHORE = queries queued waiting for a memory grant
+--     (a major red flag for memory pressure).
+--     CMEMTHREAD = contention for thread-safe memory objects, often
+--     caused by a high rate of ad hoc (non-parameterized) queries.
+-----------------------------------------------------------------------
+SELECT
+    wait_type,
+    waiting_tasks_count,
+    wait_time_ms,
+    max_wait_time_ms,
+    signal_wait_time_ms,
+    CAST(wait_time_ms / 1000.0 AS DECIMAL(18,2))          AS WaitTimeSec,
+    CASE
+        WHEN waiting_tasks_count > 0
+        THEN CAST(wait_time_ms * 1.0 / waiting_tasks_count AS DECIMAL(18,2))
+        ELSE 0
+    END                                                    AS AvgWaitMs
+FROM sys.dm_os_wait_stats
+WHERE wait_type IN (
+    'RESOURCE_SEMAPHORE',
+    'RESOURCE_SEMAPHORE_QUERY_COMPILE',
+    'CMEMTHREAD'
+)
+ORDER BY wait_time_ms DESC;
+
+-----------------------------------------------------------------------
+-- SECTION 7: RING BUFFER MEMORY MONITOR
+-----------------------------------------------------------------------
+
+-----------------------------------------------------------------------
+-- 7.1 RING BUFFER MEMORY-RELATED USAGE
 --     Historical view of memory resource monitor notifications.
 -----------------------------------------------------------------------
 SELECT
@@ -307,23 +440,25 @@ FROM (
 ORDER BY EventTime DESC;
 
 -----------------------------------------------------------------------
--- SECTION 7: COMPREHENSIVE DIAGNOSTICS
+-- SECTION 8: COMPREHENSIVE DIAGNOSTICS
 -----------------------------------------------------------------------
 
 -----------------------------------------------------------------------
--- 7.1 DBCC MEMORYSTATUS
---     Comprehensive memory diagnostic information.
+-- 8.1 DBCC MEMORYSTATUS
+--     Comprehensive memory diagnostic information — consolidated
+--     snapshot of all memory nodes, clerks, and cache states. Useful
+--     for identifying specific out-of-memory errors.
 --     Reference: http://support.microsoft.com/kb/907877/en-us
 -----------------------------------------------------------------------
 -- DBCC MEMORYSTATUS;
 
 
 -----------------------------------------------------------------------
--- SECTION 8: MEMORY DUMP INFORMATION
+-- SECTION 9: MEMORY DUMP INFORMATION
 -----------------------------------------------------------------------
 
 -----------------------------------------------------------------------
--- 8.1 MEMORY DUMP FILES — LOCATION, TIME, AND SIZE
+-- 9.1 MEMORY DUMP FILES — LOCATION, TIME, AND SIZE
 --     Get information on location, time and size of any memory dumps 
 --     from SQL Server. Memory dumps may indicate crashes or severe errors.
 -----------------------------------------------------------------------
@@ -337,11 +472,11 @@ GO
 
 
 -----------------------------------------------------------------------
--- SECTION 9: BUFFER POOL SCAN MONITORING
+-- SECTION 10: ERROR LOG CHECKS FOR MEMORY PRESSURE
 -----------------------------------------------------------------------
 
 -----------------------------------------------------------------------
--- 9.1 LONG DURATION BUFFER POOL SCANS FROM ERROR LOG
+-- 10.1 LONG DURATION BUFFER POOL SCANS FROM ERROR LOG
 --     Finds buffer pool scans that took more than 10 seconds in the 
 --     current SQL Server Error log.
 --     This should happen much less often in SQL Server 2022.
@@ -350,23 +485,10 @@ EXEC sys.xp_readerrorlog 0, 1, N'Buffer pool scan took';
 GO
 
 -----------------------------------------------------------------------
--- 6.1 MAX SERVER MEMORY vs. PHYSICAL MEMORY CHECK
---     Verify adequate memory is left for the operating system
+-- 10.2 ERROR 17890 CHECK — "PROCESS MEMORY HAS BEEN PAGED OUT"
+--     Confirms severe external memory pressure (the OS trimmed SQL
+--     Server's working set). Searches the current error log.
 -----------------------------------------------------------------------
-SELECT
-    CONVERT(DECIMAL(18,2), sm.total_physical_memory_kb / 1048576.0) AS TotalPhysicalGB,
-    CONVERT(DECIMAL(18,2), CONVERT(BIGINT, c.value_in_use) / 1024.0) AS MaxServerMemoryGB,
-    CONVERT(DECIMAL(18,0), (sm.total_physical_memory_kb / 1024.0 - CONVERT(BIGINT, c.value_in_use))) AS MemoryLeftForOSMB,
-    CASE
-        WHEN CONVERT(BIGINT, c.value_in_use) = 2147483647
-            THEN '*** UNLIMITED — CONFIGURE NOW ***'
-        WHEN (sm.total_physical_memory_kb / 1024.0 - CONVERT(BIGINT, c.value_in_use)) < 2048
-            THEN '*** LESS THAN 2 GB LEFT FOR OS ***'
-        WHEN (sm.total_physical_memory_kb / 1024.0 - CONVERT(BIGINT, c.value_in_use)) < 4096
-            THEN '* Less than 4 GB left for OS *'
-        ELSE 'OK'
-    END                                                              AS [Status]
-FROM sys.dm_os_sys_memory sm
-    CROSS JOIN sys.configurations c
-WHERE c.[name] = 'max server memory (MB)';
+EXEC sys.xp_readerrorlog 0, 1, N'paged out';
+GO
 

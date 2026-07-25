@@ -89,6 +89,26 @@ WHERE object_name LIKE 'xml_deadlock_report';
 *******************************************************************************/
 
 -----------------------------------------------------------------------
+-- OVERVIEW: QUERY OPTIMIZATION BEST PRACTICES
+-----------------------------------------------------------------------
+-- * Select only needed data - avoid SELECT *; list only the columns
+--   actually required to cut I/O and network traffic.
+-- * Keep predicates SARGable - avoid wrapping indexed columns in
+--   functions (e.g., WHERE LEFT(Name,1)='A'); rewrite so the optimizer
+--   can seek (e.g., WHERE Name LIKE 'A%').
+-- * Parameterize - use stored procedures/parameterized queries instead
+--   of ad-hoc SQL strings to promote plan reuse and cut compilation
+--   overhead (see performance-plan-cache-analysis.sql for ad-hoc bloat).
+-- * Prefer set-based logic - avoid cursors/iterative loops; T-SQL is
+--   optimized for set-based operations.
+-- * Keep transactions short - minimizes lock/blocking duration (see
+--   performance-blocking.sql for active blocking chains).
+-- The queries below (2.1-2.6) surface the actual queries violating
+-- these practices - highest logical reads, longest duration, missing
+-- indexes, etc.
+-----------------------------------------------------------------------
+
+-----------------------------------------------------------------------
 -- 2.1 TOP QUERIES BY TOTAL LOGICAL READS (Instance-Wide)
 --     Identifies queries that read lots of pages from buffer pool
 --     High logical reads indicate heavy data scanning

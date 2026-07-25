@@ -11,6 +11,18 @@ SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
 -----------------------------------------------------------------------
 -- 1. TEMPDB FILE CONFIGURATION & SIZING
 -----------------------------------------------------------------------
+-- Best practices recap:
+--   * Place tempdb on the fastest storage available (ideally SSD),
+--     separate from user database files - it's a shared, write-heavy
+--     resource used by the entire instance.
+--   * Pre-size tempdb files to their expected working size instead of
+--     letting autogrowth handle it; autogrowth events pause activity
+--     instance-wide while tempdb is growing (see disk-space-and-file-
+--     management.sql for general file-growth guidance).
+--   * Grant the service account "Perform Volume Maintenance Tasks"
+--     (Instant File Initialization) so any tempdb growth that does
+--     occur is near-instant.
+-----------------------------------------------------------------------
 
 -- 1.1 TempDB file size and growth parameters
 SELECT

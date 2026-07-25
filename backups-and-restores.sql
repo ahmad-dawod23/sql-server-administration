@@ -12,6 +12,7 @@
  *   8. LOG BACKUP & TRANSACTION LOG MONITORING
  *   9. RESTORE OPERATIONS & VERIFICATION
  *  10. SYSTEM DATABASE RESTORE PROCEDURES
+ *  11. BACKUP & RESTORE ARCHITECTURE CONCEPTS AND RESTORE SCENARIO REFERENCE
  *****************************************************************************************************/
 --trace flags for backup and restore monitoring, historical reporting, integrity checks, performance analysis, and restore operations. Each section contains multiple queries with comments explaining their purpose and usage. Use these queries as templates for managing SQL Server backups and restores effectively.
 
@@ -884,6 +885,315 @@ Restore Procedure:
 
 -----------------------------------------------------------------------------------------
 */
+
+
+/*****************************************************************************************************
+ * SECTION 11: BACKUP & RESTORE ARCHITECTURE CONCEPTS AND RESTORE SCENARIO REFERENCE
+ * Purpose: Conceptual reference covering the internal backup/restore architecture, recovery
+ *          models, restore phases, and step-by-step T-SQL patterns for every restore scenario
+ *          (complements the operational queries in Sections 6 and 9)
+ *****************************************************************************************************/
+
+/*
+-----------------------------------------------------------------------------------------
+11.1  INTERNAL MECHANICS: WRITE-AHEAD LOGGING (WAL) AND CHECKPOINTS
+-----------------------------------------------------------------------------------------
+SQL Server guarantees transactional durability through Write-Ahead Logging. Every data
+modification is written to the transaction log on disk BEFORE the modified data page is
+written to the physical data file.
+
+    - Log Buffers  : Log records are batched in memory (log buffers) before being
+                      flushed to disk.
+    - Checkpoints  : Periodically flush all "dirty" (modified) pages from the buffer pool
+                      to the data files. This bounds crash-recovery time, since only
+                      transactions after the last checkpoint must be processed on restart.
+
+-----------------------------------------------------------------------------------------
+11.2  RECOVERY MODELS
+-----------------------------------------------------------------------------------------
+The recovery model controls how the transaction log is maintained and which restore
+options are available.
+
+    SIMPLE
+        - Log is auto-truncated after each checkpoint.
+        - No point-in-time recovery; restore is only possible to the point of the last
+          full/differential backup.
+        - Lowest administrative overhead; relies solely on full and differential backups.
+
+    FULL
+        - Every operation is fully logged; the log is only truncated by a log backup.
+        - Supports point-in-time recovery to any moment covered by the log chain.
+        - Requires periodic transaction log backups, or the log will grow unbounded
+          (see Section 8 for log-backup monitoring queries).
+
+    BULK_LOGGED
+        - Adjunct to FULL; minimally logs bulk operations (BULK INSERT, SELECT INTO,
+          index rebuilds) to reduce log volume and improve throughput.
+        - Point-in-time recovery is DISABLED for any log backup that contains a
+          minimally logged operation.
+        - Recommended pattern: backup log -> switch to BULK_LOGGED -> run bulk operation
+          -> switch back to FULL -> backup log again, to keep the point-in-time gap as
+          small as possible.
+
+-----------------------------------------------------------------------------------------
+11.3  CORE BACKUP TYPES
+-----------------------------------------------------------------------------------------
+    Full            : Complete copy of all data files, plus enough of the log to bring
+                       the database to a consistent state on restore. Foundation of every
+                       restore chain.
+    Differential    : Captures only the data extents changed since the last full backup.
+                       Faster to restore than a long chain of log backups.
+    Transaction Log : Captures all log activity since the last log backup. In FULL/
+                       BULK_LOGGED models, this is the only operation that truncates the
+                       log.
+    Tail-Log        : A final log backup taken at the moment of failure (WITH NO_TRUNCATE
+                       if the database is damaged) to capture any not-yet-backed-up
+                       transactions, enabling zero data loss.
+    Copy-Only       : An out-of-band backup (WITH COPY_ONLY) that does NOT break the
+                       differential base or the log backup chain.
+
+-----------------------------------------------------------------------------------------
+11.4  RESTORE PHASES
+-----------------------------------------------------------------------------------------
+Every restore sequence (Full -> Differential -> Logs, applied in order) passes through
+three phases:
+
+    1. Data Copy Phase : Data, log, and index pages are copied from the backup media into
+                          the target database files.
+    2. Redo Phase      : Committed transactions from the transaction log(s) are rolled
+                          forward to bring the database to the desired recovery point.
+                          (Enterprise Edition Fast Recovery lets users connect once Redo
+                          completes, while Undo still runs in the background.)
+    3. Undo Phase      : Transactions that were still open (uncommitted) at the recovery
+                          point are rolled back to guarantee consistency before the
+                          database comes online.
+
+-----------------------------------------------------------------------------------------
+11.5  RECOVERY STATES
+-----------------------------------------------------------------------------------------
+    WITH NORECOVERY : Leaves the database in the RESTORING state so more backups can be
+                       applied. Use for every backup in the chain except the last.
+    WITH RECOVERY   : Default. Completes Redo/Undo and brings the database online.
+                       Use only for the final backup in the chain.
+    WITH STANDBY    : Completes Redo/Undo but keeps the database read-only between log
+                       restores (undo actions are saved to an undo file), so it can be
+                       queried while more log backups are pending.
+
+-----------------------------------------------------------------------------------------
+11.6  BACKUP STRATEGY BEST PRACTICES
+-----------------------------------------------------------------------------------------
+    - Layer Full + Differential + Log backups to fit your RPO/RTO; SIMPLE recovery is
+      only appropriate when some data loss (back to the last full/diff) is acceptable.
+    - Verify every backup: RESTORE VERIFYONLY plus periodic full test restores (Section 6)
+      are the only way to know a backup is actually recoverable.
+    - Don't neglect system databases - back up master (and msdb) regularly, especially
+      after logins, linked servers, or instance-level configuration changes.
+    - Store backups on separate physical devices/storage from the data and log files,
+      and keep an off-site/geo-redundant copy for disaster recovery.
+    - Set PAGE_VERIFY = CHECKSUM on every database so I/O-subsystem corruption is caught
+      as early as possible (see database-integrity-checks.sql, Section 2.3, for the audit
+      query and fix-it script).
+    - Encrypt backups (BACKUP DATABASE ... WITH ENCRYPTION) and store the certificate/key
+      used separately from the backup files themselves - see tde-and-encryption-status.sql
+      for certificate expiry and encryption-state audits.
+-----------------------------------------------------------------------------------------
+*/
+
+
+-- Query 11.1: Essential Pre-Restore Preparations
+-- Step 1: Isolate the database - required before a full restore, since SQL Server
+-- effectively drops and re-creates the database, which cannot happen with active
+-- connections in place
+ALTER DATABASE [YourDatabase] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
+GO
+
+-- Step 2: Take a tail-log backup to capture any transactions not yet backed up
+-- (WITH NO_TRUNCATE allows this even if the database is damaged or inaccessible)
+BACKUP LOG [YourDatabase]
+    TO DISK = 'D:\Backups\YourDatabase_TailLog.trn'
+    WITH NO_TRUNCATE, NORECOVERY;
+GO
+
+-- Step 3: Inspect available backup sets before restoring (see also Section 9.1/9.2)
+RESTORE HEADERONLY   FROM DISK = 'D:\Backups\YourDatabase_Full.bak';
+RESTORE FILELISTONLY FROM DISK = 'D:\Backups\YourDatabase_Full.bak';
+RESTORE LABELONLY    FROM DISK = 'D:\Backups\YourDatabase_Full.bak';
+GO
+
+-- Note: If the backup is encrypted, the certificate/asymmetric key used to encrypt it
+-- must already exist on the destination instance, and the restoring login needs
+-- VIEW DEFINITION permission on that encryptor.
+
+
+-- Query 11.2: Complete (Full) Database Restore - Full -> Differential -> Logs -> Tail-Log
+RESTORE DATABASE [YourDatabase]
+    FROM DISK = 'D:\Backups\YourDatabase_Full.bak'
+    WITH NORECOVERY;
+GO
+
+RESTORE DATABASE [YourDatabase]
+    FROM DISK = 'D:\Backups\YourDatabase_Diff.bak'
+    WITH NORECOVERY;
+GO
+
+RESTORE LOG [YourDatabase]
+    FROM DISK = 'D:\Backups\YourDatabase_Log1.trn'
+    WITH NORECOVERY;
+GO
+
+RESTORE LOG [YourDatabase]
+    FROM DISK = 'D:\Backups\YourDatabase_TailLog.trn'
+    WITH RECOVERY;
+GO
+
+
+-- Query 11.3: Point-in-Time Restore Using STOPAT
+-- Requires FULL or BULK_LOGGED recovery model. Restore a full backup taken before the
+-- target time, then apply subsequent log backups, stopping log application at STOPAT.
+-- (See also Section 9.5/9.7/9.8 for STOPATMARK / STOPBEFOREMARK named-transaction restores.)
+RESTORE DATABASE [YourDatabase]
+    FROM DISK = 'D:\Backups\YourDatabase_Full.bak'
+    WITH NORECOVERY;
+GO
+
+RESTORE LOG [YourDatabase]
+    FROM DISK = 'D:\Backups\YourDatabase_Log1.trn'
+    WITH NORECOVERY, STOPAT = '2026-07-24T14:30:00';
+GO
+
+RESTORE LOG [YourDatabase]
+    FROM DISK = 'D:\Backups\YourDatabase_TailLog.trn'
+    WITH RECOVERY, STOPAT = '2026-07-24T14:30:00';
+GO
+
+
+-- Query 11.4: File/Filegroup Restore (read-write filegroup - requires FULL/BULK_LOGGED,
+-- since transaction log backups must be applied afterward)
+BACKUP LOG [YourDatabase]
+    TO DISK = 'D:\Backups\YourDatabase_TailLog.trn'
+    WITH NORECOVERY;
+GO
+
+RESTORE DATABASE [YourDatabase]
+    FILE = 'YourDatabase_FG2_File1'
+    FROM DISK = 'D:\Backups\YourDatabase_FileGroup.bak'
+    WITH NORECOVERY;
+GO
+
+RESTORE LOG [YourDatabase]
+    FROM DISK = 'D:\Backups\YourDatabase_Log1.trn'
+    WITH NORECOVERY;
+GO
+
+RESTORE LOG [YourDatabase]
+    FROM DISK = 'D:\Backups\YourDatabase_TailLog.trn'
+    WITH RECOVERY;
+GO
+
+
+-- Query 11.5: Page Restore (Enterprise Edition only; NOT supported under SIMPLE recovery;
+-- system pages such as file headers cannot be restored this way)
+-- Repairs specific corrupted 8KB pages without taking the whole database offline
+RESTORE DATABASE [YourDatabase]
+    PAGE = '1:57, 1:58, 3:24'
+    FROM DISK = 'D:\Backups\YourDatabase_Full.bak'
+    WITH NORECOVERY;
+GO
+
+RESTORE LOG [YourDatabase]
+    FROM DISK = 'D:\Backups\YourDatabase_Log1.trn'
+    WITH NORECOVERY;
+GO
+
+-- Take a fresh log backup to capture the restored page(s), then recover
+BACKUP LOG [YourDatabase] TO DISK = 'D:\Backups\YourDatabase_PostPageRestore.trn';
+GO
+
+RESTORE LOG [YourDatabase]
+    FROM DISK = 'D:\Backups\YourDatabase_PostPageRestore.trn'
+    WITH RECOVERY;
+GO
+
+
+-- Query 11.6: Piecemeal Restore - bring the PRIMARY filegroup online first, then
+-- restore remaining filegroups individually while the database is partially available
+RESTORE DATABASE [YourDatabase]
+    FILEGROUP = 'PRIMARY'
+    FROM DISK = 'D:\Backups\YourDatabase_Full.bak'
+    WITH PARTIAL, NORECOVERY;
+GO
+
+RESTORE LOG [YourDatabase]
+    FROM DISK = 'D:\Backups\YourDatabase_Log1.trn'
+    WITH NORECOVERY;
+GO
+
+RESTORE LOG [YourDatabase]
+    FROM DISK = 'D:\Backups\YourDatabase_TailLog.trn'
+    WITH RECOVERY;
+GO
+
+-- Remaining (secondary) filegroups can be restored afterward, individually, while
+-- PRIMARY is already online and serving queries
+RESTORE DATABASE [YourDatabase]
+    FILEGROUP = 'SECONDARY'
+    FROM DISK = 'D:\Backups\YourDatabase_FileGroup.bak'
+    WITH NORECOVERY;
+GO
+
+RESTORE LOG [YourDatabase]
+    FROM DISK = 'D:\Backups\YourDatabase_TailLog.trn'
+    WITH RECOVERY;
+GO
+
+
+-- Query 11.7: Revert to a Database Snapshot
+-- Fast way to return to a known-good state; breaks the log backup chain, so a new full
+-- backup is required afterward to resume log backups. Drop other snapshots first if
+-- reverting to a point before they were created.
+RESTORE DATABASE [YourDatabase]
+    FROM DATABASE_SNAPSHOT = 'YourDatabase_Snapshot_20260724';
+GO
+
+
+-- Query 11.8: Restore with File Relocation and Overwrite (General Options Reference)
+-- WITH REPLACE                          : Overwrite an existing database of the same
+--                                          name, or restore a backup onto a differently
+--                                          named existing database
+-- WITH MOVE 'logical' TO 'physical_path' : Relocate data/log files, e.g. when restoring
+--                                          to a different server or drive layout
+-- WITH STANDBY = 'undo_file'            : Read-only between log restores (see 11.5)
+-- WITH CHECKSUM                         : Verify page checksums recorded in the backup
+-- WITH FILE = n                         : Select a specific backup set within a media
+--                                          set/device that holds multiple backups
+-- WITH RESTRICTED_USER                  : Limit access to sysadmin/db_owner/dbcreator
+--                                          after restore, for post-restore validation
+-- WITH KEEP_REPLICATION                 : Preserve replication settings when restoring a
+--                                          published database to a different instance
+-- WITH RESTART                          : Resume an interrupted restore from where it
+--                                          left off, skipping completed work
+RESTORE DATABASE [YourDatabase]
+    FROM DISK = 'D:\Backups\YourDatabase_Full.bak'
+    WITH REPLACE,
+         MOVE 'YourDatabase'     TO 'D:\Data\YourDatabase.mdf',
+         MOVE 'YourDatabase_log' TO 'L:\Log\YourDatabase_log.ldf',
+         RECOVERY,
+         STATS = 10;
+GO
+
+
+-- Query 11.9: Post-Restore Checklist
+-- 1. Integrity check on the recovered database
+DBCC CHECKDB ('YourDatabase') WITH NO_INFOMSGS;
+GO
+
+-- 2. If the database was moved to a new server, remap orphaned logins/users so
+--    applications can connect (see logins-and-security.sql for orphaned-user repair)
+
+-- 3. Periodically test the full restore sequence end-to-end to validate that RTO/RPO
+--    targets are actually met (see Section 5 for backup-recency/overdue alerts)
+
+
 /*
 Troubleshooting Steps for Managed / Automated Backups
 */

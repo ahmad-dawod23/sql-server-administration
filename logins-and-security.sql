@@ -796,6 +796,90 @@ ORDER BY s.[name];
 EXEC msdb.dbo.sp_altermessage 229,'WITH_LOG','true';
 GO
 
+-----------------------------------------------------------------------
+-- 9.5 SA ACCOUNT SECURITY CHECK
+--     If Mixed Mode auth is enabled, the built-in sa account is a
+--     prime brute-force target. Confirm it's disabled/renamed and,
+--     if still enabled, that it has a strong password.
+-----------------------------------------------------------------------
+SELECT
+    [name]                                     AS LoginName,
+    is_disabled                                AS IsDisabled,
+    LOGINPROPERTY([name], 'IsLocked')          AS IsLocked,
+    LOGINPROPERTY([name], 'BadPasswordCount')  AS BadPwdCount,
+    create_date,
+    modify_date,
+    CASE
+        WHEN is_disabled = 0 THEN '*** ENABLED — disable or rename if not required ***'
+        ELSE 'OK - disabled'
+    END                                        AS Recommendation
+FROM sys.sql_logins
+WHERE principal_id = 1;   -- principal_id 1 is always the sa account, even if renamed
+
+-----------------------------------------------------------------------
+-- 9.6 AUTHENTICATION MODE CHECK
+--     Windows Authentication is preferred over Mixed Mode; if Mixed
+--     Mode is required, ensure sa (9.5) and all SQL logins (9.1) are
+--     locked down.
+-----------------------------------------------------------------------
+SELECT
+    SERVERPROPERTY('IsIntegratedSecurityOnly') AS WindowsAuthOnly,
+    CASE SERVERPROPERTY('IsIntegratedSecurityOnly')
+        WHEN 1 THEN 'Windows Authentication only (recommended)'
+        ELSE 'Mixed Mode enabled — lock down sa (9.5) and SQL logins (9.1)'
+    END                                        AS Mode;
+
+-----------------------------------------------------------------------
+-- 9.7 POTENTIAL SQL INJECTION RISK — DYNAMIC SQL BUILT FROM CONCATENATION
+--     Heuristic scan of stored procedure/function definitions for
+--     string-concatenated EXEC() calls. Flags candidates for manual
+--     review — always use parameterized dynamic SQL (sp_executesql
+--     with parameters) rather than concatenating raw input into a
+--     string.
+-----------------------------------------------------------------------
+SELECT
+    OBJECT_SCHEMA_NAME(o.object_id)  AS SchemaName,
+    o.[name]                         AS ObjectName,
+    o.type_desc                      AS ObjectType
+FROM sys.sql_modules m
+INNER JOIN sys.objects o
+    ON m.object_id = o.object_id
+WHERE (m.definition LIKE '%EXEC(%+%' OR m.definition LIKE '%EXECUTE(%+%')
+  AND m.definition NOT LIKE '%sp_executesql%'
+ORDER BY SchemaName, ObjectName;
+
+-----------------------------------------------------------------------
+-- 9.8 SQL SERVER AUDIT TEMPLATE — FAILED LOGINS & PERMISSION CHANGES
+--     Reference template for implementing SQL Server Audit to track
+--     failed logins and schema/permission changes. Adjust the file
+--     path and audited action groups as needed.
+--     *** UNCOMMENT AND CUSTOMIZE BEFORE RUNNING ***
+-----------------------------------------------------------------------
+/*
+CREATE SERVER AUDIT [ServerAudit_Security]
+    TO FILE (FILEPATH = 'D:\Audits\')
+    WITH (ON_FAILURE = CONTINUE);
+GO
+ALTER SERVER AUDIT [ServerAudit_Security] WITH (STATE = ON);
+GO
+
+CREATE SERVER AUDIT SPECIFICATION [ServerAuditSpec_Security]
+FOR SERVER AUDIT [ServerAudit_Security]
+    ADD (FAILED_LOGIN_GROUP),
+    ADD (SERVER_PERMISSION_CHANGE_GROUP),
+    ADD (SERVER_ROLE_MEMBER_CHANGE_GROUP)
+WITH (STATE = ON);
+GO
+
+-- Database-level audit specification example (per database):
+-- CREATE DATABASE AUDIT SPECIFICATION [DbAuditSpec_Security]
+-- FOR SERVER AUDIT [ServerAudit_Security]
+--     ADD (SCHEMA_OBJECT_CHANGE_GROUP),
+--     ADD (DATABASE_PERMISSION_CHANGE_GROUP)
+-- WITH (STATE = ON);
+-- GO
+*/
+
 
 /*********************************************************************************************
  * SECTION 10: CREATING & MANAGING LOGINS

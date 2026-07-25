@@ -11,6 +11,60 @@ SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
 SET NOCOUNT ON;
 
 -----------------------------------------------------------------------
+-- OVERVIEW: WHAT DOES "BUFFER I/O BOUND" MEAN?
+-- Purpose : Background/concepts for interpreting the queries below.
+-----------------------------------------------------------------------
+-- A query that is "mostly bound by buffer I/O" is one whose primary
+-- bottleneck is physical I/O — reading data pages from disk into the
+-- buffer pool — rather than CPU.
+--
+-- Logical reads vs. physical reads:
+--   * Logical reads  = pages read from the buffer pool (memory).
+--     Cheap individually, but a very high count still costs CPU time.
+--   * Physical reads = pages that must be pulled from disk because
+--     they are not already cached. Expensive — disk is typically the
+--     slowest resource in the stack, and this is what the queries in
+--     this script measure directly (latency, stalls, IOPS).
+--
+-- Primary indicator: PAGEIOLATCH_* / WRITELOG waits
+--   A worker thread is suspended waiting for a data page to be read
+--   from (PAGEIOLATCH_SH/EX) or a log record flushed to (WRITELOG)
+--   disk. A high volume of these waits in sys.dm_os_wait_stats is the
+--   clearest sign of a buffer-I/O-bound workload — see
+--   performance-wait-stats.sql for instance-wide wait analysis, and
+--   Section 10 below to drill down to the specific table/index.
+--
+-- Root causes (roughly in order of likelihood):
+--   1. Memory pressure — buffer pool too small, Page Life Expectancy
+--      too low, or buffer cache hit ratio below ~90%, so pages get
+--      flushed and must be re-read from disk constantly.
+--      -> See performance-buffer-pool-and-memory-analysis.sql
+--         (Section 5 = PLE, Section 1.4 = hit ratio).
+--   2. Inefficient query/index design — table/index scans, missing or
+--      fragmented indexes, and key/RID lookups all force SQL Server
+--      to touch (and potentially fault in) far more pages than
+--      necessary.
+--      -> See Sections 10-12 below and
+--         performance-index-and-statistics-maintenance.sql.
+--   3. Slow or saturated storage subsystem — high disk latency or
+--      queueing means every physical read/write simply takes longer.
+--      -> Measured directly by the file-, drive-, and IOPS-level
+--         queries in Sections 2, 3, 5, 7, and 9 below.
+--
+-- Resolution strategy:
+--   Strategy          | Action
+--   ------------------+---------------------------------------------
+--   Increase cache     | Add RAM to grow the buffer pool so fewer
+--                       | pages need to be re-read from disk.
+--   Optimize queries    | Add/tighten WHERE clauses; avoid returning
+--                       | more rows/columns than needed.
+--   Improve indexing    | Add indexes so seeks replace scans; use
+--                       | covering indexes to avoid key/RID lookups.
+--   Upgrade storage      | Faster disks/IOPS, especially for the
+--                       | random I/O patterns typical of OLTP.
+-----------------------------------------------------------------------
+
+-----------------------------------------------------------------------
 -- 1. PENDING I/O REQUESTS (live snapshot)
 --    Shows I/O requests currently in flight. Useful during an active
 --    I/O performance incident.
@@ -530,4 +584,123 @@ END TRY
 BEGIN CATCH
     THROW;
 END CATCH;
+
+
+-----------------------------------------------------------------------
+-- 10. PAGEIOLATCH WAITS BY TABLE/INDEX (object-level drill-down)
+--    Drills the file-level latency numbers above down to the specific
+--    table/index driving the I/O, using per-object page I/O latch
+--    stats. Run in the context of the database you want to inspect.
+--
+--    What to look for:
+--      High PageIOLatchWaitMs on a single index = that object is the
+--      hot spot behind the PAGEIOLATCH waits seen instance-wide.
+--      Compare RangeScanCount vs. SingletonLookupCount — a high scan
+--      count relative to seeks often means a missing/unused index.
+-----------------------------------------------------------------------
+SELECT
+    OBJECT_SCHEMA_NAME(ios.object_id)                AS SchemaName,
+    OBJECT_NAME(ios.object_id)                        AS TableName,
+    ISNULL(i.name, '(heap)')                          AS IndexName,
+    i.type_desc                                       AS IndexType,
+    ios.page_io_latch_wait_count                      AS PageIOLatchWaitCount,
+    ios.page_io_latch_wait_in_ms                       AS PageIOLatchWaitMs,
+    CASE
+        WHEN ios.page_io_latch_wait_count = 0 THEN 0
+        ELSE CAST(ios.page_io_latch_wait_in_ms * 1.0 / ios.page_io_latch_wait_count AS DECIMAL(16,2))
+    END                                               AS AvgPageIOLatchWaitMs,
+    ios.range_scan_count                              AS RangeScanCount,
+    ios.singleton_lookup_count                        AS SingletonLookupCount,
+    ios.leaf_insert_count + ios.leaf_update_count
+        + ios.leaf_delete_count                       AS LeafModificationCount
+FROM sys.dm_db_index_operational_stats(DB_ID(), NULL, NULL, NULL) AS ios
+INNER JOIN sys.objects AS o
+    ON ios.object_id = o.object_id
+LEFT OUTER JOIN sys.indexes AS i
+    ON ios.object_id = i.object_id
+    AND ios.index_id = i.index_id
+WHERE o.is_ms_shipped = 0
+  AND ios.page_io_latch_wait_count > 0
+ORDER BY ios.page_io_latch_wait_in_ms DESC
+OPTION (RECOMPILE);
+
+
+-----------------------------------------------------------------------
+-- 11. TOP QUERIES BY PHYSICAL READS (queries driving buffer I/O waits)
+--    Identifies the specific cached query plans responsible for the
+--    most physical I/O since they were compiled. Directly answers
+--    "which queries are mostly bound by buffer I/O?"
+--
+--    What to look for:
+--      High TotalPhysicalReads + high AvgPhysicalReadsPerExec = a
+--      query repeatedly forcing disk reads — check its plan for
+--      scans, missing indexes, or key/RID lookups (Sections 10/12).
+--      Note: resets on plan eviction/recompile — pair with Query
+--      Store for a longer history if available.
+-----------------------------------------------------------------------
+SELECT TOP (50)
+    DB_NAME(st.dbid)                                  AS DatabaseName,
+    qs.execution_count                                AS ExecutionCount,
+    qs.total_physical_reads                           AS TotalPhysicalReads,
+    CAST(qs.total_physical_reads * 1.0 / qs.execution_count AS DECIMAL(18,2))
+                                                       AS AvgPhysicalReadsPerExec,
+    qs.total_logical_reads                            AS TotalLogicalReads,
+    qs.total_worker_time / 1000                       AS TotalCpuMs,
+    qs.total_elapsed_time / 1000                      AS TotalElapsedMs,
+    qs.last_execution_time                            AS LastExecutionTime,
+    SUBSTRING(
+        st.text,
+        (qs.statement_start_offset / 2) + 1,
+        (
+            (CASE qs.statement_end_offset
+                WHEN -1 THEN DATALENGTH(st.text)
+                ELSE qs.statement_end_offset
+             END - qs.statement_start_offset) / 2
+        ) + 1
+    )                                                  AS QueryText
+FROM sys.dm_exec_query_stats AS qs
+CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle) AS st
+WHERE qs.total_physical_reads > 0
+ORDER BY qs.total_physical_reads DESC
+OPTION (RECOMPILE);
+
+
+-----------------------------------------------------------------------
+-- 12. MISSING INDEXES CONTRIBUTING TO PHYSICAL I/O
+--    Scans/lookups from missing indexes are one of the most common
+--    root causes of buffer-I/O-bound queries. Ranks missing index
+--    suggestions by estimated overall impact so the highest-value
+--    fixes (fewer pages touched -> less physical I/O) surface first.
+--
+--    What to look for:
+--      High ImprovementMeasure with high UserSeeks/UserScans = an
+--      index likely to meaningfully cut physical reads if created.
+--      Always validate with actual workload testing before deploying.
+-----------------------------------------------------------------------
+SELECT
+    DB_NAME(mid.database_id)                          AS DatabaseName,
+    OBJECT_NAME(mid.object_id, mid.database_id)       AS TableName,
+    migs.avg_total_user_cost * migs.avg_user_impact
+        * (migs.user_seeks + migs.user_scans)         AS ImprovementMeasure,
+    migs.user_seeks                                   AS UserSeeks,
+    migs.user_scans                                   AS UserScans,
+    migs.avg_user_impact                              AS AvgPctBenefit,
+    mid.equality_columns                              AS EqualityColumns,
+    mid.inequality_columns                            AS InequalityColumns,
+    mid.included_columns                              AS IncludedColumns,
+    'CREATE INDEX IX_' + OBJECT_NAME(mid.object_id, mid.database_id)
+        + '_Missing_' + CAST(mig.index_handle AS VARCHAR(10))
+        + ' ON ' + mid.statement
+        + ' (' + ISNULL(mid.equality_columns, '')
+        + CASE WHEN mid.equality_columns IS NOT NULL AND mid.inequality_columns IS NOT NULL THEN ',' ELSE '' END
+        + ISNULL(mid.inequality_columns, '') + ')'
+        + ISNULL(' INCLUDE (' + mid.included_columns + ')', '') AS SuggestedCreateIndexStatement
+FROM sys.dm_db_missing_index_groups AS mig
+INNER JOIN sys.dm_db_missing_index_group_stats AS migs
+    ON migs.group_handle = mig.index_group_handle
+INNER JOIN sys.dm_db_missing_index_details AS mid
+    ON mig.index_handle = mid.index_handle
+WHERE mid.database_id = DB_ID()
+ORDER BY ImprovementMeasure DESC
+OPTION (RECOMPILE);
 

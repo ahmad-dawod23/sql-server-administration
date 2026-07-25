@@ -98,6 +98,30 @@ FROM sys.dm_os_enumerate_fixed_drives;
 ==============================================================================*/
 
 -----------------------------------------------------------------------
+-- OVERVIEW: FILE PLACEMENT & GROWTH BEST PRACTICES
+-----------------------------------------------------------------------
+-- * Separate data (.mdf/.ndf) and log (.ldf) files onto different
+--   physical disk arrays/volumes. Log writes are sequential while data
+--   access is largely random; keeping them apart avoids one workload
+--   competing with the other for the same spindles/IOPS.
+-- * TempDB is a shared, write-heavy instance resource - place it on
+--   the fastest available storage, separate from user databases (see
+--   performance-tempdb.sql, Section 1, for file-count/sizing checks).
+-- * Pre-size data/log files to fit expected growth instead of relying
+--   on autogrowth for day-to-day operation. If autogrow is needed, use
+--   a fixed MB increment (64MB+) rather than a percentage - see B6
+--   (percent-growth audit) and B9 (growth settings check) below.
+-- * Leave AUTO_SHRINK OFF. Shrinking fragments the file system and is
+--   CPU/IO-intensive; it very rarely provides a lasting benefit.
+-- * Grant the SQL Server service account "Perform Volume Maintenance
+--   Tasks" (Instant File Initialization) so data file growth/restores
+--   don't have to zero-fill new space - this can dramatically speed up
+--   both operations. Log files can never use IFI (always zero-filled).
+--   Check via sys.dm_server_services.instant_file_initialization_enabled
+--   (see info-and-best-practices-queries.sql, Section 1.2).
+-----------------------------------------------------------------------
+
+-----------------------------------------------------------------------
 -- B1. DATABASE FILE SIZES — Current Database
 --     Shows current size, space used, free space, and autogrowth settings.
 -----------------------------------------------------------------------

@@ -18,34 +18,187 @@
  *     starts with USE [distribution] so the script is safe to run piecemeal.
  *
  * Table of Contents:
- *   1. Agent Configuration and Status
- *   2. Agent History
- *   3. Error Diagnosis
- *   4. Publication and Subscription Information
- *   5. Tracer Token Management
- *   6. Latency Monitoring
- *   7. Transaction Analysis
- *   8. Undistributed Commands and Backlog
- *   9. Publisher-Side Checks (Log Reader Backlog, Open Transactions)
- *  10. Snapshot / Reinitialization Status
- *  11. Distribution Database Health
- *  12. Troubleshooting Specific Issues
- *  13. Performance Analysis - Agent Waits
- *  14. Maintenance and Cleanup
+ *   1. General Triage Troubleshooting
+ *   2. Agent Configuration and Status
+ *   3. Publication and Subscription Information
+ *   4. Tracer Token Management
+ *   5. Latency Monitoring
+ *   6. Transaction Analysis
+ *   7. Undistributed Commands and Backlog
+ *   8. Publisher-Side Checks (Log Reader Backlog, Open Transactions)
+ *   9. Snapshot / Reinitialization Status
+ *  10. Distribution Database Health
+ *  11. Troubleshooting Specific Issues
+ *  12. Performance Analysis - Agent Waits
  ******************************************************************************/
 
 SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
 GO
 
 /*******************************************************************************
- * SECTION 1: AGENT CONFIGURATION AND STATUS
+ * SECTION 1: GENERAL TRIAGE TROUBLESHOOTING
+ *
+ * Start here for replication incidents. These queries show recent agent
+ * activity, failures, errors, and whether agents are currently connected.
  ******************************************************************************/
 
 USE [msdb];
 GO
 
--- 1.1 Identify Replication Agent Jobs
--- Find job IDs for Distribution, LogReader, and Snapshot agents
+-- 1.1 Get Agent Job History for a Specific Job
+-- Replace job_id with the value returned by query 2.1.
+EXEC msdb.dbo.sp_help_jobhistory
+    @job_id = 'D55F576C-91B7-48D4-9F77-0C4F11105AD6',  -- <replace job_id>
+    @mode   = 'FULL';
+GO
+
+-- 1.2 Recent Replication Agent Job Activity
+SELECT
+    j.name,
+    ja.start_execution_date,
+    ja.stop_execution_date,
+    ja.run_requested_date,
+    ja.run_requested_source,
+    ja.last_executed_step_id,
+    ja.last_executed_step_date
+FROM msdb.dbo.sysjobactivity ja
+JOIN msdb.dbo.sysjobs j
+    ON ja.job_id = j.job_id
+WHERE j.category_id IN (
+    SELECT category_id 
+    FROM msdb.dbo.syscategories 
+    WHERE name LIKE 'REPL%'
+)
+ORDER BY ja.start_execution_date DESC;
+GO
+
+-- 1.3 Currently Running Replication Agent Sessions on This Server
+-- Quick "is anything actually connected?" check
+SELECT
+    s.session_id,
+    s.login_time,
+    s.host_name,
+    s.program_name,
+    s.login_name,
+    s.status,
+    s.reads,
+    s.writes,
+    s.logical_reads,
+    DB_NAME(s.database_id) AS database_name
+FROM sys.dm_exec_sessions s
+WHERE s.program_name LIKE 'Replication%'
+   OR s.program_name LIKE 'repl-%';
+GO
+
+USE [distribution];
+GO
+
+-- 1.4 Recent Log Reader Agent History
+SELECT TOP (1000)
+    agent_id, runstatus, start_time, time, duration,
+    delivery_time, delivery_rate, delivery_latency,
+    delivered_transactions, delivered_commands, average_commands,
+    error_id, comments, xact_seqno
+FROM dbo.MSlogreader_history
+WHERE time > DATEADD(HOUR, -24, GETDATE())
+ORDER BY start_time DESC, time DESC;
+GO
+
+-- 1.5 Recent Snapshot Agent History
+SELECT TOP (1000)
+    agent_id, runstatus, start_time, time, duration,
+    delivered_transactions, delivered_commands, delivery_rate,
+    error_id, comments
+FROM dbo.MSsnapshot_history
+WHERE time > DATEADD(HOUR, -24, GETDATE())
+ORDER BY start_time DESC, time DESC;
+GO
+
+-- 1.6 Recent Distribution Agent History
+SELECT TOP (1000)
+    agent_id, runstatus, start_time, time, duration,
+    delivery_time, delivery_rate, delivery_latency,
+    delivered_transactions, delivered_commands, average_commands,
+    current_delivery_rate, current_delivery_latency,
+    error_id, comments, xact_seqno
+FROM dbo.MSdistribution_history
+WHERE time > DATEADD(HOUR, -24, GETDATE())
+ORDER BY start_time DESC, time DESC;
+GO
+
+-- 1.7 Log Reader Agent History Filtered by Agent ID
+SELECT TOP (500)
+    runstatus, start_time, time, duration, delivery_latency,
+    delivered_transactions, delivered_commands, error_id, comments, xact_seqno
+FROM dbo.MSlogreader_history
+WHERE agent_id = 1                                    -- <replace agent_id from 2.2>
+ORDER BY start_time DESC, time DESC;
+GO
+
+-- 1.8 Snapshot Agent History Filtered by Agent ID
+SELECT TOP (500)
+    runstatus, start_time, time, duration,
+    delivered_transactions, delivered_commands, error_id, comments
+FROM dbo.MSsnapshot_history
+WHERE agent_id = 1                                    -- <replace agent_id from 2.3>
+ORDER BY start_time DESC, time DESC;
+GO
+
+-- 1.9 Distribution Agent History Filtered by Agent ID
+SELECT TOP (500)
+    runstatus, start_time, time, duration, delivery_latency,
+    delivered_transactions, delivered_commands,
+    current_delivery_rate, current_delivery_latency,
+    error_id, comments, xact_seqno
+FROM dbo.MSdistribution_history
+WHERE agent_id = 3                                    -- <replace agent_id from 2.4>
+ORDER BY start_time DESC, time DESC;
+GO
+
+-- runstatus reference:
+--   1 = Start, 2 = Succeed, 3 = In Progress, 4 = Idle,
+--   5 = Retry, 6 = Fail
+
+-- 1.10 Recent Replication Errors
+SELECT TOP (1000)
+    id, time, error_type_id, source_type_id, source_name,
+    error_code, error_text
+FROM dbo.MSrepl_errors
+WHERE time > DATEADD(DAY, -7, GETDATE())
+ORDER BY time DESC;
+GO
+
+-- 1.11 Investigate a Specific Transaction Error
+-- Use the transaction sequence number from the error message
+DECLARE @xact_seqno VARBINARY(16) = 0x00CB2EBA000031B4001300000000;  -- <replace>
+
+SELECT *
+FROM dbo.MSrepl_transactions
+WHERE xact_seqno = @xact_seqno;
+
+SELECT *
+FROM dbo.MSrepl_commands
+WHERE xact_seqno = @xact_seqno;
+GO
+
+-- 1.12 Browse Replication Commands for an Error
+-- Use values from error message
+EXEC sp_browsereplcmds
+    @xact_seqno_start      = '0x00CB2EBA000031B4001300000000',  -- <replace>
+    @xact_seqno_end        = '0x00CB2EBA000031B4001300000000',  -- <replace>
+    @command_id            = 16,                                -- <replace>
+    @publisher_database_id = 2;                                 -- <replace>
+GO
+
+/*******************************************************************************
+ * SECTION 2: AGENT CONFIGURATION AND STATUS
+ ******************************************************************************/
+
+USE [msdb];
+GO
+
+-- 2.1 Identify Replication Agent Jobs
+-- Find job IDs for Distribution, Log Reader, and Snapshot agents.
 SELECT
     sjv.job_id,
     sjv.name AS job_name,
@@ -67,193 +220,36 @@ FROM msdb.dbo.sysjobsteps sjs
 WHERE subsystem IN ('Distribution', 'LogReader', 'Snapshot');
 GO
 
--- 1.2 Get Agent Job History
--- Replace job_id with actual value from query 1.1
-EXEC msdb.dbo.sp_help_jobhistory
-    @job_id = 'D55F576C-91B7-48D4-9F77-0C4F11105AD6',  -- <replace job_id>
-    @mode   = 'FULL';
-GO
---alternative way:
-SELECT
-    j.name,
-    ja.start_execution_date,
-    ja.stop_execution_date,
-    ja.run_requested_date,
-    ja.run_requested_source,
-    ja.last_executed_step_id,
-    ja.last_executed_step_date
-FROM msdb.dbo.sysjobactivity ja
-JOIN msdb.dbo.sysjobs j
-    ON ja.job_id = j.job_id
-WHERE j.category_id IN (
-    SELECT category_id 
-    FROM msdb.dbo.syscategories 
-    WHERE name LIKE 'REPL%'
-)
-ORDER BY ja.start_execution_date DESC;
-
-
-
 USE [distribution];
 GO
 
--- 1.3 Check Configured LogReader Agents
+-- 2.2 Check Configured Log Reader Agents
 SELECT id, name, publisher_id, publisher_db, publisher_security_mode,
        job_id, job_step_uid, profile_id, debug_flags
 FROM dbo.MSlogreader_agents;
 GO
 
--- 1.4 Check Configured Snapshot Agents
+-- 2.3 Check Configured Snapshot Agents
 SELECT id, name, publisher_id, publisher_db, publication, publisher_security_mode,
        job_id, job_step_uid, profile_id
 FROM dbo.MSsnapshot_agents;
 GO
 
--- 1.5 Check Configured Distribution Agents
+-- 2.4 Check Configured Distribution Agents
 SELECT id, name, publisher_id, publisher_db, publication,
        subscriber_id, subscriber_db, subscription_type,
        job_id, job_step_uid, profile_id
 FROM dbo.MSdistribution_agents;
 GO
 
--- 1.6 Currently Running Replication Agent Sessions on This Server
--- Quick "is anything actually connected?" check
-SELECT
-    s.session_id,
-    s.login_time,
-    s.host_name,
-    s.program_name,
-    s.login_name,
-    s.status,
-    s.reads,
-    s.writes,
-    s.logical_reads,
-    DB_NAME(s.database_id) AS database_name
-FROM sys.dm_exec_sessions s
-WHERE s.program_name LIKE 'Replication%'
-   OR s.program_name LIKE 'repl-%';
-GO
-
 /*******************************************************************************
- * SECTION 2: AGENT HISTORY
+ * SECTION 3: PUBLICATION AND SUBSCRIPTION INFORMATION
  ******************************************************************************/
 
 USE [distribution];
 GO
 
--- 2.1 LogReader Agent History (recent, projected columns)
-SELECT TOP (1000)
-    agent_id, runstatus, start_time, time, duration,
-    delivery_time, delivery_rate, delivery_latency,
-    delivered_transactions, delivered_commands, average_commands,
-    error_id, comments, xact_seqno
-FROM dbo.MSlogreader_history
-WHERE time > DATEADD(HOUR, -24, GETDATE())
-ORDER BY start_time DESC, time DESC;
-GO
-
--- 2.2 Snapshot Agent History (recent)
-SELECT TOP (1000)
-    agent_id, runstatus, start_time, time, duration,
-    delivered_transactions, delivered_commands, delivery_rate,
-    error_id, comments
-FROM dbo.MSsnapshot_history
-WHERE time > DATEADD(HOUR, -24, GETDATE())
-ORDER BY start_time DESC, time DESC;
-GO
-
--- 2.3 Distribution Agent History (recent)
-SELECT TOP (1000)
-    agent_id, runstatus, start_time, time, duration,
-    delivery_time, delivery_rate, delivery_latency,
-    delivered_transactions, delivered_commands, average_commands,
-    current_delivery_rate, current_delivery_latency,
-    error_id, comments, xact_seqno
-FROM dbo.MSdistribution_history
-WHERE time > DATEADD(HOUR, -24, GETDATE())
-ORDER BY start_time DESC, time DESC;
-GO
-
--- 2.4 LogReader Agent History (filtered by Agent ID)
-SELECT TOP (500)
-    runstatus, start_time, time, duration, delivery_latency,
-    delivered_transactions, delivered_commands, error_id, comments, xact_seqno
-FROM dbo.MSlogreader_history
-WHERE agent_id = 1                                    -- <replace agent_id from 1.3>
-ORDER BY start_time DESC, time DESC;
-GO
-
--- 2.5 Snapshot Agent History (filtered by Agent ID)
-SELECT TOP (500)
-    runstatus, start_time, time, duration,
-    delivered_transactions, delivered_commands, error_id, comments
-FROM dbo.MSsnapshot_history
-WHERE agent_id = 1                                    -- <replace agent_id from 1.4>
-ORDER BY start_time DESC, time DESC;
-GO
-
--- 2.6 Distribution Agent History (filtered by Agent ID)
-SELECT TOP (500)
-    runstatus, start_time, time, duration, delivery_latency,
-    delivered_transactions, delivered_commands,
-    current_delivery_rate, current_delivery_latency,
-    error_id, comments, xact_seqno
-FROM dbo.MSdistribution_history
-WHERE agent_id = 3                                    -- <replace agent_id from 1.5>
-ORDER BY start_time DESC, time DESC;
-GO
-
--- 2.7 runstatus reference:
---   1 = Start, 2 = Succeed, 3 = In Progress, 4 = Idle,
---   5 = Retry, 6 = Fail
-GO
-
-/*******************************************************************************
- * SECTION 3: ERROR DIAGNOSIS
- ******************************************************************************/
-
-USE [distribution];
-GO
-
--- 3.1 Recent Replication Errors
-SELECT TOP (1000)
-    id, time, error_type_id, source_type_id, source_name,
-    error_code, error_text
-FROM dbo.MSrepl_errors
-WHERE time > DATEADD(DAY, -7, GETDATE())
-ORDER BY time DESC;
-GO
-
--- 3.2 Investigate Specific Transaction Error
--- Use the transaction sequence number from the error message
-DECLARE @xact_seqno VARBINARY(16) = 0x00CB2EBA000031B4001300000000;  -- <replace>
-
-SELECT *
-FROM dbo.MSrepl_transactions
-WHERE xact_seqno = @xact_seqno;
-
-SELECT *
-FROM dbo.MSrepl_commands
-WHERE xact_seqno = @xact_seqno;
-GO
-
--- 3.3 Browse Replication Commands for Error
--- Use values from error message
-EXEC sp_browsereplcmds
-    @xact_seqno_start      = '0x00CB2EBA000031B4001300000000',  -- <replace>
-    @xact_seqno_end        = '0x00CB2EBA000031B4001300000000',  -- <replace>
-    @command_id            = 16,                                -- <replace>
-    @publisher_database_id = 2;                                 -- <replace>
-GO
-
-/*******************************************************************************
- * SECTION 4: PUBLICATION AND SUBSCRIPTION INFORMATION
- ******************************************************************************/
-
-USE [distribution];
-GO
-
--- 4.1 Find Publications with Subscription Details
+-- 3.1 Find Publications with Subscription Details
 SELECT DISTINCT
     pb.publisher_db,
     da.subscriber_db,
@@ -277,18 +273,18 @@ FROM dbo.MSpublications pb
         ON pb.publisher_db = pd.publisher_db;
 GO
 
--- 4.2 Get Publisher Database IDs
+-- 3.2 Get Publisher Database IDs
 SELECT id, publisher_id, publisher_db, publication_type
 FROM dbo.MSpublisher_databases;
 GO
 
--- 4.3 Get Distribution Agent IDs by Publisher Database
+-- 3.3 Get Distribution Agent IDs by Publisher Database
 SELECT id, name, publisher_db, publication, subscriber_db, subscription_type
 FROM dbo.MSdistribution_agents
 WHERE publisher_database_id = 1;                       -- <replace>
 GO
 
--- 4.4 Check if Subscriber table is being modified outside replication
+-- 3.4 Check if Subscriber Table Is Being Modified Outside Replication
 
 
 SELECT 
@@ -313,16 +309,16 @@ ORDER BY modify_date DESC;
 
 
 /*******************************************************************************
- * SECTION 5: TRACER TOKEN MANAGEMENT
+ * SECTION 4: TRACER TOKEN MANAGEMENT
  ******************************************************************************/
 
--- 5.1 Post Tracer Token (run on the PUBLISHER, against the published database)
+-- 4.1 Post Tracer Token (run on the PUBLISHER, against the published database)
 -- USE [<publisher_database>];
 EXEC sys.sp_posttracertoken
     @publication = 'publication_name';                 -- <replace>
 GO
 
--- 5.2 View Tracer Token History (run on the DISTRIBUTOR)
+-- 4.2 View Tracer Token History (run on the DISTRIBUTOR)
 USE [distribution];
 GO
 EXEC sys.sp_helptracertokens
@@ -331,7 +327,7 @@ EXEC sys.sp_helptracertokens
     @publisher_db = 'publisher_database';              -- <replace>
 GO
 
--- 5.3 View Specific Tracer Token Details
+-- 4.3 View Specific Tracer Token Details
 EXEC sys.sp_helptracertokenhistory
     @publisher    = 'instance\name',                   -- <replace>
     @publication  = 'publication_TABLES',              -- <replace>
@@ -339,7 +335,7 @@ EXEC sys.sp_helptracertokenhistory
     @tracer_id    = -2147483634;                       -- <replace>
 GO
 
--- 5.4 Delete Faulty Tracer Token
+-- 4.4 Delete Faulty Tracer Token
 -- Use this to remove tracer tokens that show NULL subscriber latency
 EXEC sys.sp_deletetracertokenhistory
     @publisher    = 'instance\name',                   -- <replace>
@@ -349,13 +345,13 @@ EXEC sys.sp_deletetracertokenhistory
 GO
 
 /*******************************************************************************
- * SECTION 6: LATENCY MONITORING
+ * SECTION 5: LATENCY MONITORING
  ******************************************************************************/
 
 USE [distribution];
 GO
 
--- 6.1 Comprehensive Replication Lag with Tracer Tokens
+-- 5.1 Comprehensive Replication Lag with Tracer Tokens
 SELECT
     ps.name             AS publisher,
     p.publisher_db,
@@ -392,7 +388,7 @@ ORDER BY
     t.publisher_commit DESC;
 GO
 
--- 6.2 System Performance Counters for Latency
+-- 5.2 System Performance Counters for Latency
 -- Notes:
 --   * Both counters report the latency of the LAST delivered batch in
 --     MILLISECONDS - they are point-in-time, not cumulative.
@@ -415,7 +411,7 @@ WHERE counter_name IN (
 ORDER BY object_name, instance_name;
 GO
 
--- 6.3 Advanced Latency Analysis with Pending-Token Fallback
+-- 5.3 Advanced Latency Analysis with Pending-Token Fallback
 ;WITH Replication_Tracers AS
 (
     SELECT
@@ -487,8 +483,8 @@ FROM Replication_Latency
 ORDER BY lag_sec DESC;
 GO
 
--- 6.4 Simple Lag Check - Last Delivered Transaction per Agent
--- Step 1: Pick the agent (use 1.5 / 4.3 to find the right agent_id).
+-- 5.4 Simple Lag Check - Last Delivered Transaction per Agent
+-- Step 1: Pick the agent (use 2.4 / 3.3 to find the right agent_id).
 DECLARE @agent_id INT = 3;                              -- <replace agent_id>
 
 -- Step 2: Find the last seqno actually delivered by that agent.
@@ -510,7 +506,7 @@ FROM dbo.MSrepl_transactions WITH (NOLOCK)
 WHERE xact_seqno = @last_xact_seqno;
 GO
 
--- 6.5 Pending Commands per Subscription (built-in, no math)
+-- 5.5 Pending Commands per Subscription (built-in, no math)
 -- Most reliable single number for "how far behind am I".
 EXEC sys.sp_replmonitorsubscriptionpendingcmds
     @publisher          = 'instance\name',             -- <replace>
@@ -522,13 +518,13 @@ EXEC sys.sp_replmonitorsubscriptionpendingcmds
 GO
 
 /*******************************************************************************
- * SECTION 7: TRANSACTION ANALYSIS
+ * SECTION 6: TRANSACTION ANALYSIS
  ******************************************************************************/
 
 USE [distribution];
 GO
 
--- 7.1 Identify Large Transactions (today)
+-- 6.1 Identify Large Transactions (today)
 -- Heuristic: <5 commands typical OLTP, 400-500 batched, >1000 = "fat".
 -- Pre-filter MSrepl_commands by publisher_database_id to avoid scanning
 -- the full commands table on busy distributors.
@@ -555,7 +551,7 @@ HAVING COUNT(*) > 1000
 ORDER BY COUNT(*) DESC;
 GO
 
--- 7.2 Analyze Distribution Agent Progress (XML stats from history)
+-- 6.2 Analyze Distribution Agent Progress (XML stats from history)
 ;WITH CTE1 AS
 (
     SELECT TOP (10)
@@ -580,7 +576,7 @@ FROM CTE1 c1
 ORDER BY c1.rownum;
 GO
 
--- 7.3 Find Next Transaction to be Replicated
+-- 6.3 Find Next Transaction to be Replicated
 SELECT TOP (1) *
 FROM dbo.MSrepl_transactions WITH (NOLOCK)
 WHERE publisher_database_id = 1                         -- <replace>
@@ -588,7 +584,7 @@ WHERE publisher_database_id = 1                         -- <replace>
 ORDER BY xact_seqno ASC;
 GO
 
--- 7.4 Count Commands in a Specific Transaction
+-- 6.4 Count Commands in a Specific Transaction
 SELECT COUNT(*) AS command_count
 FROM dbo.MSrepl_commands
 WHERE xact_seqno            = 0x0005D665000015750080000000000000  -- <replace>
@@ -596,13 +592,13 @@ WHERE xact_seqno            = 0x0005D665000015750080000000000000  -- <replace>
 GO
 
 /*******************************************************************************
- * SECTION 8: UNDISTRIBUTED COMMANDS AND BACKLOG
+ * SECTION 7: UNDISTRIBUTED COMMANDS AND BACKLOG
  ******************************************************************************/
 
 USE [distribution];
 GO
 
--- 8.1 Pending Commands per Publication / Subscription (built-in)
+-- 7.1 Pending Commands per Publication / Subscription (built-in)
 EXEC sys.sp_replmonitorsubscriptionpendingcmds
     @publisher          = 'instance\name',              -- <replace>
     @publisher_db       = 'publisher_database',         -- <replace>
@@ -612,12 +608,12 @@ EXEC sys.sp_replmonitorsubscriptionpendingcmds
     @subscription_type  = 0;
 GO
 
--- 8.2 High-Level Publisher Health (latency, pending cmds, status)
+-- 7.2 High-Level Publisher Health (latency, pending cmds, status)
 EXEC sys.sp_replmonitorhelppublisher
     @publisher = 'instance\name';                       -- <replace, NULL = all>
 GO
 
--- 8.3 Per-Publication Subscription Status (status / latency / cmds)
+-- 7.3 Per-Publication Subscription Status (status / latency / cmds)
 EXEC sys.sp_replmonitorhelpsubscription
     @publisher          = 'instance\name',              -- <replace>
     @publisher_db       = 'publisher_database',         -- <replace>
@@ -625,7 +621,7 @@ EXEC sys.sp_replmonitorhelpsubscription
     @publication_type   = 0;                            -- 0=trans, 1=snap, 2=merge
 GO
 
--- 8.4 Manual Backlog Estimate (commands not yet delivered to a subscriber)
+-- 7.4 Manual Backlog Estimate (commands not yet delivered to a subscriber)
 -- Counts MSrepl_commands rows newer than the last seqno actually delivered
 -- by the distribution agent for each publication / subscription.
 ;WITH last_delivered AS
@@ -658,29 +654,29 @@ ORDER BY pending_commands DESC;
 GO
 
 /*******************************************************************************
- * SECTION 9: PUBLISHER-SIDE CHECKS (LOG READER BACKLOG, OPEN TRANSACTIONS)
+ * SECTION 8: PUBLISHER-SIDE CHECKS (LOG READER BACKLOG, OPEN TRANSACTIONS)
  ******************************************************************************/
 
 -- Run these on the PUBLISHER, against the published database.
 -- USE [<published_database>];
 -- GO
 
--- 9.1 Oldest Open / Unreplicated Transaction in the Log
+-- 8.1 Oldest Open / Unreplicated Transaction in the Log
 DBCC OPENTRAN WITH TABLERESULTS;
 GO
 
--- 9.2 Log Reader Backlog Snapshot
+-- 8.2 Log Reader Backlog Snapshot
 -- Returns the number of transactions in the publisher log waiting to be
 -- read by the Log Reader Agent, plus the time of the oldest one.
 EXEC sys.sp_replcounters;
 GO
 
--- 9.3 Pending Transactions Awaiting Log Reader
+-- 8.3 Pending Transactions Awaiting Log Reader
 -- 0 = caught up; >0 = log reader behind / not running
 EXEC sys.sp_repltrans;
 GO
 
--- 9.4 Log-Space Used by Replication
+-- 8.4 Log-Space Used by Replication
 -- If log_reuse_wait_desc = 'REPLICATION' on the published DB, the log
 -- reader is behind or disabled - investigate before the log fills.
 SELECT
@@ -693,10 +689,10 @@ WHERE database_id = DB_ID();
 GO
 
 /*******************************************************************************
- * SECTION 10: SNAPSHOT / REINITIALIZATION STATUS
+ * SECTION 9: SNAPSHOT / REINITIALIZATION STATUS
  ******************************************************************************/
 
--- 10.1 Subscription Sync Type and Reinit State (run on SUBSCRIBER DB)
+-- 9.1 Subscription Sync Type and Reinit State (run on SUBSCRIBER DB)
 -- USE [<subscriber_database>];
 SELECT
     publisher,
@@ -710,7 +706,7 @@ SELECT
 FROM dbo.MSreplication_subscriptions;
 GO
 
--- 10.2 Subscriptions Marked for Reinitialization (on DISTRIBUTOR)
+-- 9.2 Subscriptions Marked for Reinitialization (on DISTRIBUTOR)
 USE [distribution];
 GO
 SELECT
@@ -728,7 +724,7 @@ WHERE s.[status] IN (0, 1)            -- 0=Inactive, 1=Subscribed (awaiting init
 ORDER BY da.publisher_db, da.publication, da.subscriber_db;
 GO
 
--- 10.3 Latest Snapshot Generated per Publication
+-- 9.3 Latest Snapshot Generated per Publication
 SELECT
     a.publisher_db,
     a.publication,
@@ -743,13 +739,13 @@ ORDER BY a.publisher_db, a.publication;
 GO
 
 /*******************************************************************************
- * SECTION 11: DISTRIBUTION DATABASE HEALTH
+ * SECTION 10: DISTRIBUTION DATABASE HEALTH
  ******************************************************************************/
 
 USE [distribution];
 GO
 
--- 11.1 Distribution DB Size and File Usage
+-- 10.1 Distribution DB Size and File Usage
 SELECT
     f.name           AS logical_name,
     f.type_desc,
@@ -761,7 +757,7 @@ SELECT
 FROM sys.database_files f;
 GO
 
--- 11.2 Row Counts for the Big Replication Tables
+-- 10.2 Row Counts for the Big Replication Tables
 SELECT
     OBJECT_NAME(p.object_id) AS table_name,
     SUM(p.row_count)         AS row_count_estimate,
@@ -778,7 +774,7 @@ GROUP BY p.object_id
 ORDER BY reserved_mb DESC;
 GO
 
--- 11.3 Distribution Cleanup / Maintenance Job Status
+-- 10.3 Distribution Cleanup / Maintenance Job Status
 SELECT
     j.name,
     j.enabled,
@@ -808,10 +804,10 @@ ORDER BY j.name, h.run_date DESC, h.run_time DESC;
 GO
 
 /*******************************************************************************
- * SECTION 12: TROUBLESHOOTING SPECIFIC ISSUES
+ * SECTION 11: TROUBLESHOOTING SPECIFIC ISSUES
  ******************************************************************************/
 
--- 12.1 Fix Identity Insert Errors on Subscriber
+-- 11.1 Fix Identity Insert Errors on Subscriber
 -- Error: "Cannot insert explicit value for identity column when
 --         IDENTITY_INSERT is set to OFF"
 -- Sets the replication identity flag for every table that actually has
@@ -857,10 +853,10 @@ DEALLOCATE id_cursor;
 GO
 
 /*******************************************************************************
- * SECTION 13: PERFORMANCE ANALYSIS - AGENT WAITS
+ * SECTION 12: PERFORMANCE ANALYSIS - AGENT WAITS
  ******************************************************************************/
 
--- 13.1 Find a Replication Agent Session ID
+-- 12.1 Find a Replication Agent Session ID
 SELECT
     session_id,
     program_name,
@@ -873,9 +869,9 @@ WHERE program_name LIKE 'Replication%'
    OR program_name LIKE 'repl-%';
 GO
 
--- 13.2 Create Extended Event Session to Track Agent Waits
+-- 12.2 Create Extended Event Session to Track Agent Waits
 -- EDIT BEFORE RUNNING:
---   * @session_id  - value from 13.1
+--   * @session_id  - value from 12.1
 --   * @xe_path     - writeable folder; default uses the SQL log directory
 DECLARE @session_id INT = 61;                          -- <replace>
 DECLARE @log_path   NVARCHAR(260)
@@ -899,7 +895,7 @@ PRINT @sql;
 EXEC (@sql);
 GO
 
--- 13.3 Start Extended Event Session
+-- 12.3 Start Extended Event Session
 ALTER EVENT SESSION Replication_AGT_Waits ON SERVER STATE = START;
 GO
 
@@ -907,12 +903,12 @@ GO
 -- ALTER EVENT SESSION Replication_AGT_Waits ON SERVER STATE = STOP;
 -- GO
 
--- 13.4 Cleanup: Drop Extended Event Session
+-- 12.4 Cleanup: Drop Extended Event Session
 -- DROP EVENT SESSION Replication_AGT_Waits ON SERVER;
 -- GO
 
--- 13.5 Read Extended Event Data - Stage 1
--- Adjust the path to match what 13.2 used.
+-- 12.5 Read Extended Event Data - Stage 1
+-- Adjust the path to match what 12.2 used.
 SELECT CAST(event_data AS XML) AS event_data
 INTO #ReplicationAgentWaits_Stage_1
 FROM sys.fn_xe_file_target_read_file(
@@ -920,7 +916,7 @@ FROM sys.fn_xe_file_target_read_file(
         NULL, NULL, NULL);
 GO
 
--- 13.6 Parse Extended Event Data - Stage 2
+-- 12.6 Parse Extended Event Data - Stage 2
 SELECT
     event_data.value('(/event/action[@name="session_id"]/value)[1]',    'SMALLINT')     AS session_id,
     event_data.value('(/event/data[@name="wait_type"]/text)[1]',        'VARCHAR(100)') AS wait_type,
@@ -931,7 +927,7 @@ INTO #ReplicationAgentWaits_Stage_2
 FROM #ReplicationAgentWaits_Stage_1;
 GO
 
--- 13.7 Aggregate Wait Statistics
+-- 12.7 Aggregate Wait Statistics
 SELECT
     session_id,
     wait_type,
@@ -943,7 +939,7 @@ GROUP BY session_id, wait_type
 ORDER BY session_id, SUM(duration) DESC;
 GO
 
--- 13.8 Cleanup temp tables
+-- 12.8 Cleanup temp tables
 DROP TABLE IF EXISTS #ReplicationAgentWaits_Stage_1;
 DROP TABLE IF EXISTS #ReplicationAgentWaits_Stage_2;
 GO

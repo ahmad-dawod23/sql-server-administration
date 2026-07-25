@@ -7,6 +7,25 @@
 -----------------------------------------------------------------------
 
 -----------------------------------------------------------------------
+-- OVERVIEW: DATA PROTECTION BEST PRACTICES
+-----------------------------------------------------------------------
+-- * Data at rest: Use TDE (audited below) to encrypt data files, log
+--   files, and backups so stolen physical media/backup files can't be
+--   read without the certificate/key.
+-- * Data in transit: Enforce SSL/TLS between clients and SQL Server -
+--   see info-and-best-practices-queries.sql, Section 3, for the
+--   encrypt_option/force_encryption connection audit.
+-- * Backup security: Encrypt backups (BACKUP ... WITH ENCRYPTION) and
+--   store the certificate/key separately from the backup files
+--   themselves - see backups-and-restores.sql, Section 11.6.
+-- * Always Encrypted: For highly sensitive columns, use Always
+--   Encrypted so data is encrypted client-side - even sysadmin/DBA
+--   logins never see plaintext. Requires application driver support;
+--   it complements TDE (protects specific columns) rather than
+--   replacing it (protects the whole database/backup).
+-----------------------------------------------------------------------
+
+-----------------------------------------------------------------------
 -- 1. TDE STATUS — ALL DATABASES (detailed with progress)
 -----------------------------------------------------------------------
 SELECT

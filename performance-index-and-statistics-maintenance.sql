@@ -8,6 +8,50 @@
 -----------------------------------------------------------------------
 
 -----------------------------------------------------------------------
+-- OVERVIEW: IS INDEX MAINTENANCE STILL NEEDED ON SSD STORAGE?
+-----------------------------------------------------------------------
+-- It's a common myth that SSDs eliminate the need for index
+-- maintenance. SSDs remove the "seek penalty" for random I/O, so they
+-- largely eliminate the cost of EXTERNAL fragmentation (logical pages
+-- out of order on disk). They do NOT fix everything, though:
+--
+--   * Internal fragmentation (low page density) is untouched by SSDs.
+--     Low density means more pages must be read for the same amount
+--     of data, wasting buffer pool space and increasing I/O — and can
+--     deepen the B-tree, raising CPU/IO cost per seek/scan. -> 2.1/2.3
+--   * Rebuilds (not reorganizes) also perform a full-scan statistics
+--     update. Many "fragmentation fixed" performance gains are really
+--     from fresh statistics, not reduced fragmentation. -> Section 5
+--   * Heaps (no clustered index) don't get B-tree fragmentation, but
+--     they do accumulate forwarding pointers from updated rows that
+--     no longer fit their original page — these add I/O and can only
+--     be cleared by rebuilding the heap/table. -> 2.4
+--
+-- Strategic guidance: rebuilds are resource-intensive (CPU/Memory/IO)
+-- and can hurt concurrent workloads. Favor page-density-driven,
+-- demonstrated-need maintenance (e.g., a query regressing) over a
+-- rigid schedule — especially in cloud environments like Azure SQL.
+-----------------------------------------------------------------------
+
+-----------------------------------------------------------------------
+-- OVERVIEW: INDEXING STRATEGY FUNDAMENTALS
+-----------------------------------------------------------------------
+-- * Clustered index: almost every table should have one. Pick a key
+--   that is narrow, unique, static, and ever-increasing (e.g., an
+--   IDENTITY column) to minimize page splits and fragmentation.
+-- * Nonclustered indexes: target columns frequently used in WHERE,
+--   JOIN, and ORDER BY clauses - see Section 3 for missing-index
+--   suggestions driven by the actual workload.
+-- * Avoid over-indexing: every index speeds up reads but slows down
+--   INSERT/UPDATE/DELETE. Regularly remove unused (Section 4.1) and
+--   duplicate/overlapping indexes to cut write and maintenance
+--   overhead.
+-- * Fragmentation thresholds: REORGANIZE below ~30% fragmentation and
+--   REBUILD above ~30% (Section 2.2 generates the statements) - but
+--   see the SSD note above before committing to a rigid schedule.
+-----------------------------------------------------------------------
+
+-----------------------------------------------------------------------
 -- SECTION 1: BASIC INDEX AND STATISTICS CHECKS
 -----------------------------------------------------------------------
 
@@ -108,6 +152,67 @@ WHERE ips.avg_fragmentation_in_percent > 5
   AND i.[name] IS NOT NULL
   AND o.is_ms_shipped = 0
 ORDER BY ips.avg_fragmentation_in_percent DESC;
+GO
+
+-- 2.3 Low page density check (internal fragmentation)
+--     SSDs eliminate most of the cost of external fragmentation, but
+--     NOT internal fragmentation (low page density). Low density means
+--     more pages — and therefore more I/O and buffer pool space — are
+--     needed for the same data. Flagged here regardless of the
+--     avg_fragmentation_in_percent value, since a rebuild can be
+--     worthwhile for density alone even when logical frag % is low.
+-----------------------------------------------------------------------
+SELECT
+    DB_NAME()                                     AS [Database],
+    SCHEMA_NAME(o.[schema_id])                    AS [Schema],
+    o.[name]                                      AS [Table],
+    i.[name]                                      AS [Index],
+    ips.avg_page_space_used_in_percent            AS AvgPageDensityPct,
+    ips.avg_fragmentation_in_percent              AS FragPct,
+    ips.page_count                                AS Pages,
+    ips.record_count                              AS [Rows],
+    CASE
+        WHEN ips.avg_page_space_used_in_percent < 60 THEN 'REBUILD - LOW DENSITY'
+        WHEN ips.avg_page_space_used_in_percent < 75 THEN 'REVIEW'
+        ELSE 'OK'
+    END                                            AS Recommendation
+FROM sys.dm_db_index_physical_stats(DB_ID(), NULL, NULL, NULL, 'SAMPLED') ips
+    JOIN sys.objects  o ON ips.[object_id] = o.[object_id]
+    JOIN sys.indexes  i ON ips.[object_id] = i.[object_id]
+                        AND ips.index_id    = i.index_id
+WHERE ips.page_count > 1000
+  AND ips.avg_page_space_used_in_percent < 75
+  AND o.is_ms_shipped = 0
+ORDER BY ips.avg_page_space_used_in_percent ASC;
+GO
+
+-- 2.4 Heap forwarding pointers
+--     Heaps (no clustered index) don't suffer B-tree fragmentation, but
+--     updated rows that no longer fit their original page leave a
+--     forwarding pointer behind. Scanning the heap must follow these
+--     pointers, which limits read-ahead and adds I/O that SSDs cannot
+--     eliminate. Rebuilding the heap/table is the only way to remove
+--     them and reclaim the wasted space.
+-----------------------------------------------------------------------
+SELECT
+    DB_NAME()                                     AS [Database],
+    SCHEMA_NAME(o.[schema_id])                    AS [Schema],
+    o.[name]                                      AS [Table],
+    ips.forwarded_record_count                    AS ForwardedRecords,
+    ips.record_count                              AS [Rows],
+    CAST(100.0 * ips.forwarded_record_count
+         / NULLIF(ips.record_count, 0) AS DECIMAL(5,2))
+                                                   AS ForwardedPct,
+    ips.page_count                                AS Pages,
+    'ALTER TABLE ' + QUOTENAME(SCHEMA_NAME(o.[schema_id]))
+        + '.' + QUOTENAME(o.[name])
+        + ' REBUILD;'                              AS RebuildCommand
+FROM sys.dm_db_index_physical_stats(DB_ID(), NULL, NULL, NULL, 'DETAILED') ips
+    JOIN sys.objects o ON ips.[object_id] = o.[object_id]
+WHERE ips.index_id = 0                             -- heap
+  AND ips.forwarded_record_count > 0
+  AND o.is_ms_shipped = 0
+ORDER BY ips.forwarded_record_count DESC;
 GO
 
 -----------------------------------------------------------------------

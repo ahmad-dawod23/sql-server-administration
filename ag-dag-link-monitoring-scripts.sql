@@ -6,6 +6,117 @@
 -- Safety  : All queries are read-only.
 -- Applies to : On-prem (AG/DAG) / Azure SQL MI (Link feature)
 -----------------------------------------------------------------------
+-- TROUBLESHOOTING METHODOLOGY: AG SYNCHRONIZATION ISSUES
+-- Troubleshooting Always On Availability Group (AOAG) synchronization
+-- issues requires a systematic analysis of synchronization states, log
+-- queues, wait statistics, and underlying infrastructure performance.
+--
+-- 1) Identify the Synchronization State (see queries #2 and #9 below):
+--    - SYNCHRONIZED     : Synchronous-commit mode; secondary is caught
+--                         up and primary waits for acknowledgment
+--                         before committing transactions.
+--    - SYNCHRONIZING    : Normal healthy state for async-commit
+--                         replicas. For sync replicas, it means the
+--                         secondary is currently catching up.
+--    - NOT SYNCHRONIZING: Replica is disconnected or data movement has
+--                         been suspended.
+--    - REVERTING        : Secondary must undo changes (e.g. after a
+--                         failover interrupted a large transaction) to
+--                         go back in sync. Inherently slow.
+--
+-- 2) Investigate Log Send Queue latency (see query #10 below):
+--    - Network throughput: check for latency/dropped packets in
+--      multi-site or cross-region groups; ensure "TCP Congestion
+--      Windows Restart" is set to False on Windows servers.
+--    - I/O stalls on secondary: high write latency on the secondary's
+--      transaction log delays acknowledgments back to primary (see
+--      query #11, sys.dm_io_virtual_file_stats).
+--    - Primary CPU load: log capture/compression is CPU-intensive; an
+--      overloaded primary can cause send queue growth.
+--    - Wait type: monitor HADR_SYNC_COMMIT on the primary. High wait
+--      times mean the primary is waiting too long for the secondary
+--      to harden log records (see query #10).
+--
+-- 3) Investigate Recovery (Redo) Queue (see query #12 below):
+--    - Redo thread blockage: read-only workloads on the secondary
+--      acquire Schema Stability (Sch-S) locks, which can block redo
+--      threads attempting Schema Modification (Sch-M) operations
+--      (e.g. ALTER TABLE).
+--    - Parallel redo issues: watch for DIRTY_PAGE_TABLE_LOCK or
+--      PARALLEL_REDO_FLOW_CONTROL waits. If redo is frequently
+--      blocked, consider temporarily disabling readable secondaries.
+--    - Resource contention: ensure the secondary has enough CPU and
+--      I/O bandwidth to keep up with the redo rate.
+--
+-- 4) Resolve Disconnections and Timeouts (see query #13 below):
+--    - Intermittent disconnects often result from SESSION_TIMEOUT
+--      being exceeded (default 10 seconds).
+--    - High CPU (100%) or non-yielding schedulers can prevent SQL
+--      Server from responding to pings within the timeout.
+--    - Verify database mirroring endpoints (default port 5022) are
+--      started and not in conflict; test with Test-NetConnection.
+--    - Ensure encryption algorithms and authentication types match on
+--      both replicas.
+--
+-- 5) Handle Critical Error Scenarios (see queries #14/#15 below):
+--    - Transaction Log Full (Error 9002): if the primary log cannot
+--      truncate due to AVAILABILITY_REPLICA, log records haven't been
+--      hardened on all secondaries. Add log space or, as a last
+--      resort, remove a problematic secondary to allow truncation.
+--    - Automatic seeding failures: ensure the secondary has CREATE ANY
+--      DATABASE permission; check the error log for path access
+--      issues or mismatched FILESTREAM settings.
+--    - Suspect/Recovery Pending databases on primary: failover will
+--      NOT automatically occur. Remove the replica from the group,
+--      fix the underlying issue (e.g. I/O failure), and rejoin it.
+--
+-- Recommended diagnostic tools:
+--    - AlwaysOn_health XEvent session: tracks state changes, lease
+--      expirations, and high-severity errors (see query #7 and #16).
+--    - sys.dm_hadr_database_replica_states: primary DMV for LSNs,
+--      queue sizes, and rates (see query #2 and #9).
+--    - Windows Cluster Log: for issues between the SQL Server resource
+--      DLL and the WSFC. Generate with PowerShell: Get-ClusterLog.
+--
+-- IsAlive / LEASE TIMEOUT FAILURES
+-- An IsAlive check failure means the Windows Cluster service (the SQL
+-- Server Resource DLL) contacted the instance via shared memory and
+-- got no response within the timeout (default 5 sec, tied to a
+-- 20-second lease). The cluster then assumes the instance is dead/hung
+-- and restarts it or fails it over. Common root causes:
+--   1. SQL Server "frozen" by memory dump generation: a critical error
+--      (scheduler deadlock, access violation, assertion failure)
+--      triggers SQLDumper, which suspends the whole process, including
+--      the thread that answers the cluster heartbeat. Evidence: "Stack
+--      Dump being sent to..." in the error log just before failure.
+--   2. Severe resource exhaustion: CPU pinned near 100% starves the
+--      lease-response thread ("thread starvation"); or memory pressure
+--      forces aggressive working-set trimming/paging, and slow disk
+--      I/O to page memory back in exceeds the timeout.
+--   3. Virtualization issues: VM snapshots or vMotion can "stun" the
+--      guest OS for several seconds; if this exceeds the lease
+--      timeout, the cluster detects a time jump/timeout and fails the
+--      resource. Memory ballooning on an overcommitted host can cause
+--      similar unresponsiveness.
+--   4. Communication/Lease failure: the AG lease mechanism (used to
+--      prevent split-brain) exchanges heartbeats between the SQL
+--      Server resource DLL and the instance. On failure, SQL Server
+--      proactively restarts. Error log shows: "Error: 19407, The lease
+--      between availability group '...' and the Windows Server
+--      Failover Cluster has expired."
+--
+-- Troubleshooting steps for IsAlive/lease failures — examine, for the
+-- time of failure:
+--   1. SQL Server Error Log: look for "Stack Dump", "Non-yielding
+--      scheduler", or "Lease expired" messages just before the restart
+--      (see query #16).
+--   2. Windows Cluster Log: generate via PowerShell (Get-ClusterLog).
+--      Search for "[hadrag] Resource Alive result 0" or "Lease timeout
+--      detected"; often includes CPU/memory stats at failure time.
+--   3. Windows System Event Log: look for Event IDs 1135 (cluster node
+--      removed) or 1177 (quorum lost) to see if network connectivity
+--      issues caused the cluster to lose sight of the node.
+-----------------------------------------------------------------------
 
 SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
 
@@ -231,3 +342,179 @@ FROM sys.dm_hadr_database_replica_states AS drs WITH (NOLOCK)
 ORDER BY ag.name, ar.replica_server_name, adc.[database_name] 
 OPTION (RECOMPILE);
 GO
+
+-----------------------------------------------------------------------
+-- 10. LOG SEND QUEUE / HADR_SYNC_COMMIT WAIT ANALYSIS
+--     High HADR_SYNC_COMMIT waits on the primary indicate it is
+--     waiting too long for a synchronous secondary to harden log
+--     records. Also review HADR_DATABASE_WAIT_FOR_TRANSITION_TO_VERSIONING
+--     and HADR% waits below for broader AG-related bottlenecks.
+-----------------------------------------------------------------------
+SELECT 
+    wait_type, 
+    waiting_tasks_count, 
+    wait_time_ms, 
+    max_wait_time_ms, 
+    signal_wait_time_ms,
+    wait_time_ms - signal_wait_time_ms AS resource_wait_time_ms
+FROM sys.dm_os_wait_stats
+WHERE wait_type LIKE 'HADR%'
+    OR wait_type IN ('DIRTY_PAGE_TABLE_LOCK', 'PARALLEL_REDO_FLOW_CONTROL', 'REDO_THREAD_PENDING_WORK')
+ORDER BY wait_time_ms DESC;
+GO
+
+-----------------------------------------------------------------------
+-- 11. SECONDARY LOG WRITE I/O LATENCY (LOG SEND QUEUE ROOT CAUSE)
+--     Run on the secondary replica. High avg_write_latency_ms on the
+--     transaction log file delays acknowledgments to the primary and
+--     grows log_send_queue_size.
+-----------------------------------------------------------------------
+SELECT 
+    DB_NAME(vfs.database_id) AS [Database],
+    mf.physical_name,
+    mf.type_desc,
+    vfs.num_of_writes,
+    vfs.io_stall_write_ms,
+    CASE WHEN vfs.num_of_writes = 0 THEN 0 
+         ELSE vfs.io_stall_write_ms / vfs.num_of_writes END AS avg_write_latency_ms,
+    vfs.num_of_reads,
+    vfs.io_stall_read_ms,
+    CASE WHEN vfs.num_of_reads = 0 THEN 0 
+         ELSE vfs.io_stall_read_ms / vfs.num_of_reads END AS avg_read_latency_ms
+FROM sys.dm_io_virtual_file_stats(NULL, NULL) AS vfs
+INNER JOIN sys.master_files AS mf
+    ON vfs.database_id = mf.database_id 
+    AND vfs.file_id = mf.file_id
+WHERE mf.type_desc = 'LOG'
+ORDER BY avg_write_latency_ms DESC;
+GO
+
+-----------------------------------------------------------------------
+-- 12. REDO BLOCKING ANALYSIS (RECOVERY QUEUE ROOT CAUSE)
+--     Run on the secondary replica. Schema Stability (Sch-S) locks
+--     held by read-only queries can block the redo thread's Schema
+--     Modification (Sch-M) requests, stalling redo_queue_size.
+-----------------------------------------------------------------------
+SELECT 
+    wt.session_id,
+    wt.wait_type,
+    wt.wait_duration_ms,
+    wt.blocking_session_id,
+    r.status,
+    r.command,
+    r.wait_resource,
+    t.text AS blocking_sql_text
+FROM sys.dm_os_waiting_tasks AS wt
+LEFT JOIN sys.dm_exec_requests AS r
+    ON wt.blocking_session_id = r.session_id
+OUTER APPLY sys.dm_exec_sql_text(r.sql_handle) AS t
+WHERE wt.wait_type LIKE 'LCK_M_SCH%'
+    OR wt.wait_type IN ('DIRTY_PAGE_TABLE_LOCK', 'PARALLEL_REDO_FLOW_CONTROL', 'REDO_THREAD_PENDING_WORK')
+ORDER BY wt.wait_duration_ms DESC;
+GO
+
+-----------------------------------------------------------------------
+-- 13. CONNECTION HEALTH / SESSION_TIMEOUT DIAGNOSTICS
+--     Correlate replica connection state with resource pressure that
+--     can cause missed pings (SESSION_TIMEOUT, default 10 sec) or
+--     non-yielding schedulers.
+-----------------------------------------------------------------------
+-- 13a. Endpoint state and last connection error per replica
+SELECT 
+    ar.replica_server_name,
+    ar.endpoint_url,
+    ars.connected_state_desc,
+    ars.last_connect_error_number,
+    ars.last_connect_error_description,
+    ars.last_connect_error_timestamp
+FROM sys.dm_hadr_availability_replica_states AS ars
+INNER JOIN sys.availability_replicas AS ar
+    ON ars.replica_id = ar.replica_id
+ORDER BY ars.last_connect_error_timestamp DESC;
+GO
+
+-- 13b. Scheduler health — non-yielding schedulers / CPU starvation
+SELECT 
+    scheduler_id, 
+    cpu_id, 
+    status, 
+    is_online, 
+    runnable_tasks_count, 
+    current_tasks_count, 
+    work_queue_count, 
+    pending_disk_io_count
+FROM sys.dm_os_schedulers
+WHERE status = 'VISIBLE ONLINE'
+ORDER BY runnable_tasks_count DESC;
+GO
+
+-----------------------------------------------------------------------
+-- 14. SUSPECT / RECOVERY PENDING DATABASES
+--     If an AG database enters SUSPECT or RECOVERY_PENDING on the
+--     primary, automatic failover will NOT occur. Investigate and
+--     remediate (fix underlying I/O issue, then remove/rejoin replica).
+-----------------------------------------------------------------------
+SELECT 
+    name AS [database_name], 
+    state_desc, 
+    is_in_standby, 
+    is_read_only
+FROM sys.databases
+WHERE state_desc IN ('SUSPECT', 'RECOVERY_PENDING', 'RESTORING', 'EMERGENCY');
+GO
+
+-----------------------------------------------------------------------
+-- 15. TRANSACTION LOG GROWTH DUE TO AVAILABILITY_REPLICA (ERROR 9002)
+--     If log_reuse_wait_desc = 'AVAILABILITY_REPLICA', the primary's
+--     log cannot truncate because log records haven't been hardened
+--     on all secondaries. Compare against log_send_queue_size in
+--     query #9 to identify the lagging replica.
+-----------------------------------------------------------------------
+SELECT 
+    d.name AS [database_name],
+    d.log_reuse_wait_desc,
+    ls.cntr_value * 8 / 1024.0 AS log_size_mb,
+    lu.cntr_value * 8 / 1024.0 AS log_used_mb,
+    CAST(lu.cntr_value AS FLOAT) / NULLIF(ls.cntr_value, 0) * 100 AS log_used_pct
+FROM sys.databases AS d
+INNER JOIN sys.dm_os_performance_counters AS ls
+    ON ls.instance_name = d.name AND ls.counter_name = 'Log File(s) Size (KB)'
+INNER JOIN sys.dm_os_performance_counters AS lu
+    ON lu.instance_name = d.name AND lu.counter_name = 'Log File(s) Used Size (KB)'
+WHERE d.log_reuse_wait_desc = 'AVAILABILITY_REPLICA'
+ORDER BY log_used_pct DESC;
+GO
+
+-----------------------------------------------------------------------
+-- 16. SEARCH ERROR LOG FOR CRITICAL AG / CLUSTER EVENTS
+--     Looks for stack dumps, non-yielding schedulers, and lease
+--     expiration messages that precede IsAlive failures or
+--     unexpected restarts. Adjust @logsToSearch to cover the
+--     time window of interest.
+-----------------------------------------------------------------------
+DECLARE @logsToSearch INT = 3; -- number of archived error logs to scan (0 = current)
+DECLARE @i INT = 0;
+CREATE TABLE #ErrorLogEntries (LogDate DATETIME, ProcessInfo NVARCHAR(50), [Text] NVARCHAR(MAX));
+
+WHILE @i <= @logsToSearch
+BEGIN
+    INSERT INTO #ErrorLogEntries EXEC sys.xp_readerrorlog @i, 1, N'Stack Dump';
+    INSERT INTO #ErrorLogEntries EXEC sys.xp_readerrorlog @i, 1, N'Non-yielding';
+    INSERT INTO #ErrorLogEntries EXEC sys.xp_readerrorlog @i, 1, N'lease';
+    INSERT INTO #ErrorLogEntries EXEC sys.xp_readerrorlog @i, 1, N'19407';
+    SET @i += 1;
+END;
+
+SELECT * FROM #ErrorLogEntries ORDER BY LogDate DESC;
+DROP TABLE #ErrorLogEntries;
+GO
+
+-----------------------------------------------------------------------
+-- 17. GENERATE WINDOWS CLUSTER LOG (REFERENCE — RUN IN POWERSHELL)
+--     Not executable T-SQL. Use the Windows Cluster Log to diagnose
+--     issues between the SQL Server resource DLL and the WSFC, and to
+--     confirm IsAlive/lease timeout failures (search for
+--     "[hadrag] Resource Alive result 0" or "Lease timeout detected").
+--
+--     Get-ClusterLog -Destination C:\Temp -UseLocalTime
+-----------------------------------------------------------------------
