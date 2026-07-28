@@ -36,6 +36,8 @@ Start here
 
 **"I have a security/login issue"** → `logins-and-security.sql`
 
+**"Alerts/job notifications aren't arriving"** → `database-mail.sql`
+
 **"Replication is broken"** → `replication-troubleshooting-queries.sql`
 
 **"Is my backup OK?"** → `backups-and-restores.sql`
@@ -48,11 +50,12 @@ Start here
 
 | Script | Purpose | Safety |
 |--------|---------|--------|
-| advanced-administration-and-recovery.sql | Error logs, instance configuration, emergency recovery, xp_cmdshell, destructive command generators | **High-risk procedures** |
+| advanced-administration-and-recovery.sql | Error logs, instance configuration, service startup failure triage, emergency recovery | **High-risk procedures** |
 | ag-dag-link-monitoring-scripts.sql | AG/DAG/Link health, seeding, failover events | Read-only |
 | backups-and-restores.sql | Backup/restore progress, history, missing backups | Read-only |
-| database-integrity-checks.sql | DBCC CHECKDB/CHECKTABLE/CHECKALLOC, suspect pages | Read-only (CPU-intensive) |
-| database-mail.sql | Database Mail queue, logs, profiles, diagnostics | Read-only |
+| dangerous-admin-utilities.sql | xp_cmdshell, bulk DROP generators, database offline/detach | **Destructive — all blocks commented out** |
+| database-integrity-checks.sql | DBCC CHECKDB/CHECKTABLE/CHECKALLOC, suspect pages, page verification, VLF counts, corruption response | Read-only diagnostics; DBCC + repair templates commented out |
+| database-mail.sql | Database Mail triage (failures + error text), queue state, prerequisites, permissions, Agent mail profile, configuration | Read-only diagnostics; remediation, test send + purge/retention commented out |
 | disk-space-and-file-management.sql | Volume free space, file sizes, autogrowth, VLFs | Read-only |
 | extended-events.sql | XE session templates for monitoring | **Contains DDL** |
 | info-and-best-practices-queries.sql | Server, service, hardware, CPU, network, database, and configuration information | Read-only unless noted |
@@ -84,7 +87,7 @@ Start here
 | powershell scripts.ps1 | PowerShell administration and diagnostic command collection |
 | sp_WhoIsActive.sql | Adam Machanic's community session and activity diagnostic procedure |
 | SQL Managed Instance Diagnostic Information Queries.sql | Broad Azure SQL Managed Instance diagnostic query collection |
-| stored-proccedure-performance-checking.sql | Stored procedure execution and performance investigation queries |
+| stored-procedure-performance-checking.sql | Stored procedure execution and performance investigation queries |
 | T-SQL commands.sql | General T-SQL administration command reference |
 
 ### `SQL_UTILITIES/`

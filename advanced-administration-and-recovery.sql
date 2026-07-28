@@ -1,27 +1,28 @@
 /*******************************************************************************
  * SQL SERVER ADVANCED ADMINISTRATION & RECOVERY
  *
- * Purpose: Specialized SQL Server administration procedures for error-log
- *          diagnostics, instance configuration, service startup failure
- *          triage, emergency recovery, operating system integration, and
- *          high-risk database operations.
+ * Purpose: Incident-response procedures for a SQL Server instance that is
+ *          failing, unreachable, or misbehaving — error-log diagnostics,
+ *          instance configuration, service startup failure triage, and
+ *          emergency recovery.
  *
  * Sections:
  *   1. ERROR LOG DIAGNOSTICS
  *   2. INSTANCE CONFIGURATION & TRACE FLAGS
  *   3. SERVICE STARTUP FAILURE: CAUSES & DIAGNOSTICS
  *   4. EMERGENCY RECOVERY PROCEDURES
- *   5. OPERATING SYSTEM COMMANDS (xp_cmdshell)
- *   6. DATABASE OBJECT & USER REMOVAL
- *   7. DATABASE LIFECYCLE OPERATIONS
  *
  * Safety:  Section 1, the trace-flag query in Section 2, and the diagnostic
- *          queries in Section 3 are read-only. All configuration, recovery,
- *          OS, and destructive operations are commented out by default and
- *          clearly marked.
+ *          queries in Section 3 are read-only. All configuration and recovery
+ *          operations are commented out by default and clearly marked.
  *
  * Note:    Review placeholders and generated commands before execution. Test
  *          changes outside production and maintain verified backups.
+ *
+ * Related: other scripts/00-triage.sql          run this first during an incident
+ *          database-integrity-checks.sql        DBCC, corruption detection & repair
+ *          backups-and-restores.sql             restore paths and backup validation
+ *          dangerous-admin-utilities.sql        xp_cmdshell, bulk DROP, offline/detach
  ******************************************************************************/
 
 /*******************************************************************************
@@ -50,17 +51,20 @@ DROP TABLE IF EXISTS #error_log;
 CREATE TABLE #error_log
 (
     log_number INT NOT NULL,
-    log_date DATE NOT NULL,
-    log_size INT NOT NULL
+    log_date DATETIME NULL,          -- sp_enumerrorlogs returns DATETIME; keep the time component
+    log_size BIGINT NULL
 );
 
 DROP TABLE IF EXISTS #sp_readerrorlog_output;
 
+-- Column types must match sp_readerrorlog's output. Text is NVARCHAR(MAX):
+-- a narrower type raises "String or binary data would be truncated" and
+-- aborts the sweep on the first long log entry.
 CREATE TABLE #sp_readerrorlog_output
 (
-    LogDate DATETIME2 NOT NULL,
-    ProcessInfo VARCHAR(255) NOT NULL,
-    Text VARCHAR(255) NOT NULL
+    LogDate DATETIME NULL,
+    ProcessInfo NVARCHAR(100) NULL,
+    Text NVARCHAR(MAX) NULL
 );
 
 INSERT #error_log
@@ -147,9 +151,14 @@ GO
    SECTION 3: SERVICE STARTUP FAILURE: CAUSES & DIAGNOSTICS
 
    Reference summary of common causes preventing the SQL Server (Database
-   Engine) or SQL Server Agent service from starting, followed by read-only
-   diagnostic queries that surface the most frequent culprits. Use this
-   section as a first pass when an instance is down or repeatedly recycling.
+   Engine) or SQL Server Agent service from starting, followed by the read-only
+   diagnostic queries that are specific to startup failure. Use this section as
+   a first pass when an instance is down or repeatedly recycling.
+
+   Most causes in 3.1 are diagnosed from outside SQL Server (Event Viewer,
+   Configuration Manager, the OS) because a service that will not start cannot
+   be queried. General instance-health checks that need a working connection
+   live in other scripts/00-triage.sql - see 3.5.
 *******************************************************************************/
 
 -----------------------------------------------------------------------
@@ -276,23 +285,7 @@ ORDER BY value_name;
 GO
 
 -----------------------------------------------------------------------
--- 3.3 CHECK SYSTEM & USER DATABASE STATE
---     Flags RECOVERY_PENDING, SUSPECT, RESTORING, or STANDBY databases
---     that can prevent the instance from being considered fully available
---     READ-ONLY
------------------------------------------------------------------------
-SELECT name,
-       database_id,
-       state_desc,
-       recovery_model_desc,
-       is_in_standby,
-       is_read_only
-FROM sys.databases
-ORDER BY database_id;
-GO
-
------------------------------------------------------------------------
--- 3.4 CHECK TEMPDB FILE LOCATIONS AND STATE
+-- 3.3 CHECK TEMPDB FILE LOCATIONS AND STATE
 --     Confirms tempdb files exist and their target directories are valid;
 --     a missing directory or path prevents the instance from starting
 --     READ-ONLY
@@ -306,76 +299,7 @@ WHERE database_id = DB_ID(N'tempdb');
 GO
 
 -----------------------------------------------------------------------
--- 3.5 CHECK FOR WORKER THREAD (THREADPOOL) EXHAUSTION
---     Non-zero, growing THREADPOOL wait time suggests the instance may
---     become unresponsive to new connections
---     READ-ONLY
------------------------------------------------------------------------
-SELECT wait_type,
-       waiting_tasks_count,
-       wait_time_ms,
-       signal_wait_time_ms
-FROM sys.dm_os_wait_stats
-WHERE wait_type = N'THREADPOOL';
-GO
-
------------------------------------------------------------------------
--- 3.6 CHECK PHYSICAL MEMORY STATE AND MEMORY CONFIGURATION
---     Correlates OS-reported memory pressure with min/max server memory
---     READ-ONLY
------------------------------------------------------------------------
-SELECT total_physical_memory_kb / 1024 AS total_physical_memory_mb,
-       available_physical_memory_kb / 1024 AS available_physical_memory_mb,
-       system_memory_state_desc
-FROM sys.dm_os_sys_memory;
-GO
-
-SELECT name,
-       value,
-       value_in_use
-FROM sys.configurations
-WHERE name IN (N'min server memory (MB)', N'max server memory (MB)');
-GO
-
------------------------------------------------------------------------
--- 3.7 CHECK AVAILABLE DISK SPACE FOR DATA, LOG, AND TEMPDB VOLUMES
---     Low free space (OS error 112) can prevent recovery and mark a
---     database SUSPECT
---     READ-ONLY
------------------------------------------------------------------------
-SELECT DISTINCT vs.volume_mount_point,
-       vs.total_bytes / 1024 / 1024 / 1024 AS total_gb,
-       vs.available_bytes / 1024 / 1024 / 1024 AS free_gb
-FROM sys.master_files AS mf
-CROSS APPLY sys.dm_os_volume_stats(mf.database_id, mf.file_id) AS vs;
-GO
-
------------------------------------------------------------------------
--- 3.8 CHECK WSFC / AVAILABILITY GROUP CLUSTER HEALTH
---     Relevant for FCI and Always On Availability Group instances only;
---     returns empty result sets on a standalone instance
---     READ-ONLY
------------------------------------------------------------------------
-SELECT *
-FROM sys.dm_os_cluster_nodes;
-GO
-
-SELECT *
-FROM sys.dm_hadr_cluster;
-GO
-
------------------------------------------------------------------------
--- 3.9 CHECK SQL SERVER AND SQL SERVER AGENT SERVICE STATE
---     QUERYSTATE is a read-only xp_servicecontrol action; adjust the
---     service display name if the instance is named (e.g. MSSQL$INSTANCE)
---     READ-ONLY
------------------------------------------------------------------------
--- EXEC master.dbo.xp_servicecontrol 'QUERYSTATE', 'MSSQLSERVER';
--- EXEC master.dbo.xp_servicecontrol 'QUERYSTATE', 'SQLSERVERAGENT';
--- GO
-
------------------------------------------------------------------------
--- 3.10 SEARCH THE ERROR LOG FOR COMMON STARTUP FAILURE SIGNATURES
+-- 3.4 SEARCH THE ERROR LOG FOR COMMON STARTUP FAILURE SIGNATURES
 --      Pair with Section 1.2 to sweep every archived log for these terms
 --      READ-ONLY
 -----------------------------------------------------------------------
@@ -385,6 +309,33 @@ GO
 -- EXEC master.dbo.xp_readerrorlog 0, 1, N'17204', NULL, NULL, NULL, N'desc';
 -- EXEC master.dbo.xp_readerrorlog 0, 1, N'3417', NULL, NULL, NULL, N'desc';
 -- GO
+
+-----------------------------------------------------------------------
+-- 3.5 GENERAL INSTANCE HEALTH CHECKS — SEE other scripts/00-triage.sql
+--     The checks below are not startup-specific, so they are maintained
+--     in the triage script to keep a single copy. Run 00-triage.sql once
+--     the instance is reachable; every item here is relevant to a
+--     startup or availability investigation.
+--
+--       Service state, startup type,
+--       service account, last startup ... 00-triage.sql  section 1
+--       Database state (SUSPECT,
+--       RECOVERY_PENDING, RESTORING) .... 00-triage.sql  section 2
+--       THREADPOOL exhaustion ........... 00-triage.sql  section 5
+--       Memory state and min/max memory   00-triage.sql  sections 1 and 7
+--       Volume free space ............... 00-triage.sql  section 9
+--       WSFC / AG cluster health ........ 00-triage.sql  section 11
+--
+--     Why each matters here: a Disabled or Manual start mode explains a
+--     service that never came up; a full volume (OS error 112) can stop
+--     recovery and mark a database SUSPECT; memory exhaustion can prevent
+--     the buffer pool being allocated at startup; and THREADPOOL
+--     exhaustion makes a running instance refuse new connections — which
+--     is easily mistaken for the service being down.
+--
+--     See also: disk-space-and-file-management.sql for volume and file
+--     growth detail.
+-----------------------------------------------------------------------
 
 
 /*******************************************************************************
@@ -420,195 +371,12 @@ GO
 */
 
 -----------------------------------------------------------------------
--- 4.2 REPAIR A FILESTREAM DATABASE IN RECOVERY_PENDING
---     Last-resort procedure for a FileStream-enabled database that enters
---     RECOVERY_PENDING after Windows patching
---     *** CAN CAUSE DATA LOSS ***
---     Source: https://github.com/DavidSchanzer/Sql-Server-DBA-Toolbox
+-- 4.2 DATABASE-LEVEL CORRUPTION AND REPAIR
+--     Emergency mode, REPAIR_ALLOW_DATA_LOSS, page-level restore, and
+--     the FILESTREAM RECOVERY_PENDING procedure are maintained in
+--     database-integrity-checks.sql, Section 3, alongside the CHECKDB
+--     commands that detect the damage in the first place.
 -----------------------------------------------------------------------
-/*
--- Replace every <DBName> placeholder with the affected database name.
-
-USE [master];
-GO
-
-EXEC sys.sp_configure @configname = 'filestream access level', @configvalue = 2;
-RECONFIGURE WITH OVERRIDE;
-GO
-
-ALTER DATABASE <DBName> SET EMERGENCY;
-GO
-
-ALTER DATABASE <DBName> SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
-GO
-
-DBCC CHECKDB (<DBName>, REPAIR_ALLOW_DATA_LOSS) WITH ALL_ERRORMSGS;
-GO
-
-ALTER DATABASE <DBName> SET MULTI_USER;
-GO
-*/
-
-
-/*******************************************************************************
-   SECTION 5: OPERATING SYSTEM COMMANDS (xp_cmdshell)
-
-   WARNING: xp_cmdshell executes with SQL Server service-account privileges.
-            Enable it only for an approved task and disable it immediately after.
-*******************************************************************************/
-
------------------------------------------------------------------------
--- 5.1 ENABLE xp_cmdshell
---     *** SECURITY-SENSITIVE INSTANCE CHANGE ***
------------------------------------------------------------------------
-/*
-EXEC sys.sp_configure 'show advanced options', 1;
-RECONFIGURE;
-GO
-
-EXEC sys.sp_configure 'xp_cmdshell', 1;
-RECONFIGURE;
-GO
-*/
-
------------------------------------------------------------------------
--- 5.2 RUN A DIRECTORY LISTING
---     Simple example of operating-system command execution
------------------------------------------------------------------------
--- EXEC master.dbo.xp_cmdshell 'dir *.exe';
--- GO
-
------------------------------------------------------------------------
--- 5.3 MAP, VERIFY, AND DISCONNECT A NETWORK SHARE
---     Prefer a UNC path when the calling feature supports it
---     *** DO NOT STORE REAL CREDENTIALS IN THIS SCRIPT ***
------------------------------------------------------------------------
-/*
--- Replace all placeholders before use.
-EXEC master.dbo.xp_cmdshell 'net use T: \\<server>\<share> <password> /USER:<domain>\<account>';
-GO
-
-EXEC master.dbo.xp_cmdshell 'dir T:\';
-GO
-
-EXEC master.dbo.xp_cmdshell 'net use T: /delete';
-GO
-*/
-
------------------------------------------------------------------------
--- 5.4 DISABLE xp_cmdshell
---     Restore the secure configuration immediately after use
------------------------------------------------------------------------
-/*
-EXEC sys.sp_configure 'xp_cmdshell', 0;
-RECONFIGURE;
-GO
-
-EXEC sys.sp_configure 'show advanced options', 0;
-RECONFIGURE;
-GO
-*/
-
-
-/*******************************************************************************
-   SECTION 6: DATABASE OBJECT & USER REMOVAL
-
-   *** EXTREME CAUTION REQUIRED ***
-
-   Run these generators in the intended user database, not [master]. They return
-   commands for review; they do not execute the generated commands directly.
-*******************************************************************************/
-
------------------------------------------------------------------------
--- 6.1 GENERATE DROP COMMANDS FOR ALL USER-DEFINED FUNCTIONS
---     Includes scalar, inline table-valued, and table-valued functions
------------------------------------------------------------------------
-/*
-USE [<TargetDatabase>];
-GO
-
-SELECT N'DROP FUNCTION ' + QUOTENAME(SCHEMA_NAME(o.schema_id)) + N'.' +
-       QUOTENAME(o.name) + N';' AS drop_command
-FROM sys.objects AS o
-WHERE o.type IN ('FN', 'IF', 'TF')
-  AND o.is_ms_shipped = 0
-ORDER BY SCHEMA_NAME(o.schema_id),
-         o.name;
-*/
-
------------------------------------------------------------------------
--- 6.2 GENERATE DROP COMMANDS FOR ALL USER-DEFINED STORED PROCEDURES
------------------------------------------------------------------------
-/*
-USE [<TargetDatabase>];
-GO
-
-SELECT N'DROP PROCEDURE ' + QUOTENAME(SCHEMA_NAME(p.schema_id)) + N'.' +
-       QUOTENAME(p.name) + N';' AS drop_command
-FROM sys.procedures AS p
-WHERE p.is_ms_shipped = 0
-ORDER BY SCHEMA_NAME(p.schema_id),
-         p.name;
-*/
-
------------------------------------------------------------------------
--- 6.3 GENERATE DROP COMMANDS FOR NON-SYSTEM DATABASE USERS
---     Excludes fixed roles and standard system principals
------------------------------------------------------------------------
-/*
-USE [<TargetDatabase>];
-GO
-
-SELECT N'DROP USER ' + QUOTENAME(dp.name) + N';' AS drop_command
-FROM sys.database_principals AS dp
-WHERE dp.name NOT IN ('dbo', 'guest', 'INFORMATION_SCHEMA', 'sys', 'public')
-  AND dp.type <> 'R'
-  AND dp.is_fixed_role = 0
-ORDER BY dp.name;
-*/
-
-
-/*******************************************************************************
-   SECTION 7: DATABASE LIFECYCLE OPERATIONS
-
-   *** EXTREME CAUTION REQUIRED ***
-
-   These queries generate commands that cause service disruption or remove
-   databases from the instance. Review every generated command, maintain verified
-   backups, and execute only during an approved maintenance window.
-*******************************************************************************/
-
------------------------------------------------------------------------
--- 7.1 GENERATE OFFLINE COMMANDS FOR ALL USER DATABASES
---     *** TAKES EVERY ONLINE USER DATABASE OFFLINE ***
------------------------------------------------------------------------
-/*
-SELECT N'USE [master];' + CHAR(13) + CHAR(10) +
-       N'ALTER DATABASE ' + QUOTENAME(d.name) +
-       N' SET SINGLE_USER WITH ROLLBACK IMMEDIATE;' + CHAR(13) + CHAR(10) +
-       N'ALTER DATABASE ' + QUOTENAME(d.name) +
-       N' SET OFFLINE WITH ROLLBACK IMMEDIATE;' + CHAR(13) + CHAR(10) AS offline_command
-FROM sys.databases AS d
-WHERE d.database_id > 4
-  AND d.name <> N'distribution'
-ORDER BY d.name;
-*/
-
------------------------------------------------------------------------
--- 7.2 GENERATE DETACH COMMANDS FOR ALL USER DATABASES
---     *** REMOVES EVERY USER DATABASE FROM THE INSTANCE ***
------------------------------------------------------------------------
-/*
-SELECT N'USE [master];' + CHAR(13) + CHAR(10) +
-       N'ALTER DATABASE ' + QUOTENAME(d.name) +
-       N' SET SINGLE_USER WITH ROLLBACK IMMEDIATE;' + CHAR(13) + CHAR(10) +
-       N'EXEC master.dbo.sp_detach_db @dbname = N''' +
-       REPLACE(d.name, N'''', N'''''') + N''';' + CHAR(13) + CHAR(10) AS detach_command
-FROM sys.databases AS d
-WHERE d.database_id > 4
-  AND d.name <> N'distribution'
-ORDER BY d.name;
-*/
 
 
 /*******************************************************************************
@@ -620,5 +388,21 @@ ORDER BY d.name;
    Merged into Section 3 from:
    - Causes for SQL Server Service Startup Failure.txt
 
-   Last reorganized: July 25, 2026
+   Split out to dangerous-admin-utilities.sql (July 28, 2026):
+   - former Section 5: Operating system commands (xp_cmdshell)
+   - former Section 6: Database object & user removal
+   - former Section 7: Database lifecycle operations (offline / detach)
+
+   Moved to database-integrity-checks.sql Section 3 (July 28, 2026):
+   - former Section 4.2: FILESTREAM RECOVERY_PENDING repair
+
+   Moved to other scripts/00-triage.sql (July 28, 2026):
+   - former Section 3.5: THREADPOOL exhaustion  -> triage section 5
+   - former Section 3.6: memory state / config  -> triage sections 1 and 7
+   - former Section 3.7: volume free space      -> triage section 9
+   - former Section 3.3: database state         -> triage section 2 (superset)
+   - former Section 3.5: WSFC / cluster health  -> triage section 11
+   - former Section 3.6: service state          -> triage section 1
+
+   Last reorganized: July 28, 2026
 *******************************************************************************/

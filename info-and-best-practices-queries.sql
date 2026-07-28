@@ -9,8 +9,13 @@
  *   2. CPU HARDWARE & CONFIGURATION
  *   3. NETWORK PROTOCOL & CONNECTION SECURITY
  *   4. DATABASE INFORMATION, CONFIGURATION & MONITORING
+ *   5. INSTANCE CONFIGURATION & BEST PRACTICES
  * 
- * Safety: All queries are read-only unless otherwise noted.
+ * Safety: All queries are read-only. Any statement that modifies state is
+ *         commented out and must be reviewed/edited before running.
+ * Notes:  xp_readerrorlog / xp_instance_regread require sysadmin, and
+ *         xp_instance_regread is Windows-only. sys.dm_server_services and
+ *         sys.dm_os_cluster_nodes are not available on Azure SQL MI/DB.
  ******************************************************************************/
 
 
@@ -138,31 +143,35 @@ EXEC sys.xp_readerrorlog 0, 1, N'Manufacturer';
 EXEC sys.xp_instance_regread N'HKEY_LOCAL_MACHINE', N'HARDWARE\DESCRIPTION\System\BIOS', N'BiosReleaseDate';
 
 -----------------------------------------------------------------------
--- 1.8 ACCELERATOR STATUS
---     GPU and hardware acceleration status
+-- 1.8 ACCELERATOR STATUS (SQL Server 2025 / 17.x+)
+--     GPU and hardware acceleration status.
+--     Executed via dynamic SQL so the batch does not fail to compile on
+--     earlier versions where the DMV does not exist.
 -----------------------------------------------------------------------
-SELECT 
-    accelerator, 
-    accelerator_desc, 
-    config, 
-    config_in_use, 
-    mode, 
-    mode_desc, 
-    mode_reason, 
-    mode_reason_desc, 
-    accelerator_hardware_detected, 
-    accelerator_library_version, 
-    accelerator_driver_version
-FROM sys.dm_server_accelerator_status WITH (NOLOCK) 
-OPTION (RECOMPILE);
+IF OBJECT_ID(N'sys.dm_server_accelerator_status') IS NOT NULL
+    EXEC sys.sp_executesql N'
+        SELECT 
+            accelerator, 
+            accelerator_desc, 
+            config, 
+            config_in_use, 
+            mode, 
+            mode_desc, 
+            mode_reason, 
+            mode_reason_desc, 
+            accelerator_hardware_detected, 
+            accelerator_library_version, 
+            accelerator_driver_version
+        FROM sys.dm_server_accelerator_status
+        OPTION (RECOMPILE);';
+ELSE
+    SELECT N'sys.dm_server_accelerator_status not available on this version.' AS AcceleratorStatus;
+GO
 
 
 /*******************************************************************************
    SECTION 2: CPU HARDWARE & CONFIGURATION
 *******************************************************************************/
-
-SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
-GO
 
 -----------------------------------------------------------------------
 -- 2.1 GET SOCKET, PHYSICAL CORE AND LOGICAL CORE COUNT
@@ -209,25 +218,27 @@ OPTION (RECOMPILE);
 GO
 
 -----------------------------------------------------------------------
--- 2.4 GET CPU VECTORIZATION LEVEL (SQL Server 2022+)
+-- 2.4 GET CPU VECTORIZATION LEVEL (SQL Server 2022+ / 16.x+)
 --     Shows CPU vectorization support for query processing.
+--     Windows only (uses xp_instance_regread) and requires sysadmin.
 -----------------------------------------------------------------------
-IF EXISTS (SELECT * WHERE CONVERT(VARCHAR(2), SERVERPROPERTY('ProductMajorVersion')) = '16')
-BEGIN		
-    -- Get CPU Description from Registry (only works on Windows)
+IF CONVERT(INT, SERVERPROPERTY('ProductMajorVersion')) >= 16
+   AND (SELECT host_platform FROM sys.dm_os_host_info) = N'Windows'
+BEGIN
+    -- xp_instance_regread returns two columns: the value name and its data.
     DROP TABLE IF EXISTS #ProcessorDesc;
     CREATE TABLE #ProcessorDesc (
-        RegValue NVARCHAR(50), 
-        RegKey NVARCHAR(100)
+        RegValueName NVARCHAR(50),
+        RegValueData NVARCHAR(200)
     );
 
-    INSERT INTO #ProcessorDesc (RegValue, RegKey)
+    INSERT INTO #ProcessorDesc (RegValueName, RegValueData)
     EXEC sys.xp_instance_regread 
         N'HKEY_LOCAL_MACHINE', 
         N'HARDWARE\DESCRIPTION\System\CentralProcessor\0', 
         N'ProcessorNameString';
     
-    DECLARE @ProcessorDesc NVARCHAR(100) = (SELECT RegKey FROM #ProcessorDesc);
+    DECLARE @ProcessorDesc NVARCHAR(200) = (SELECT TOP (1) RegValueData FROM #ProcessorDesc);
 
     -- Get CPU Vectorization Level from SQL Server Error Log
     DROP TABLE IF EXISTS #CPUVectorizationLevel;
@@ -240,27 +251,23 @@ BEGIN
     INSERT INTO #CPUVectorizationLevel (LogDateTime, ProcessInfo, LogText)
     EXEC sys.xp_readerrorlog 0, 1, N'CPU vectorization level';
     
-    DECLARE @CPUVectorizationLevel NVARCHAR(200) = (SELECT LogText FROM #CPUVectorizationLevel);
+    DECLARE @CPUVectorizationLevel NVARCHAR(200) =
+        (SELECT TOP (1) LogText FROM #CPUVectorizationLevel ORDER BY LogDateTime DESC);
 
-    -- Get TF15097 Status
-    DROP TABLE IF EXISTS #TraceFlagStatus;
-    CREATE TABLE #TraceFlagStatus (
-        TraceFlag SMALLINT, 
-        TFStatus TINYINT, 
-        TFGlobal TINYINT, 
-        TFSession TINYINT
-    );
-
-    -- Display results
     SELECT 
-        @ProcessorDesc AS ProcessorDescription,
+        @ProcessorDesc         AS ProcessorDescription,
         @CPUVectorizationLevel AS CPUVectorizationLevel;
     
-    -- Cleanup
     DROP TABLE IF EXISTS #ProcessorDesc;
     DROP TABLE IF EXISTS #CPUVectorizationLevel;
-    DROP TABLE IF EXISTS #TraceFlagStatus;
 END
+GO
+
+-----------------------------------------------------------------------
+-- 2.5 ACTIVE TRACE FLAGS
+--     Lists globally and session-enabled trace flags.
+-----------------------------------------------------------------------
+DBCC TRACESTATUS(-1) WITH NO_INFOMSGS;
 GO
 
 
@@ -282,6 +289,25 @@ FROM sys.dm_exec_connections
 WHERE session_id = @@SPID;
 GO
 
+-----------------------------------------------------------------------
+-- 3.2 Connection Security Overview (all sessions)
+--      Flags unencrypted and SQL-authenticated connections
+-----------------------------------------------------------------------
+SELECT
+    c.net_transport,
+    c.protocol_type,
+    c.auth_scheme,
+    c.encrypt_option,
+    COUNT(*)                    AS SessionCount,
+    CASE WHEN c.encrypt_option = 'FALSE'
+         THEN '* Unencrypted connection *' ELSE '' END
+    + CASE WHEN c.auth_scheme = 'SQL'
+         THEN ' * SQL authentication - prefer Windows/Entra *' ELSE '' END
+                                AS Notes
+FROM sys.dm_exec_connections AS c
+GROUP BY c.net_transport, c.protocol_type, c.auth_scheme, c.encrypt_option
+ORDER BY SessionCount DESC;
+GO
 
 
 /*******************************************************************************
@@ -386,22 +412,23 @@ OPTION (RECOMPILE);
 
 -----------------------------------------------------------------------
 -- 4.7 ENABLE QUERY STORE WITH RECOMMENDED SETTINGS
---     Query Store helps track query performance over time
---     *** MODIFIES DATABASE SETTINGS ***
+--     Query Store helps track query performance over time.
+--     *** MODIFIES DATABASE SETTINGS - commented out by design. ***
+--     Replace YourDatabaseName, review the values, then uncomment.
 --     Reference: https://www.sqlskills.com/blogs/erin/query-store-settings/
 -----------------------------------------------------------------------
-
+/*
 -- Enable Query Store
 ALTER DATABASE [YourDatabaseName] SET QUERY_STORE = ON;
 GO
 
--- Configure Query Store settings (for SQL Server 2016 & 2017)
+-- Configure Query Store settings (SQL Server 2016+)
 ALTER DATABASE [YourDatabaseName]
 SET QUERY_STORE (
     OPERATION_MODE = READ_WRITE,
     QUERY_CAPTURE_MODE = AUTO,
     MAX_PLANS_PER_QUERY = 200,
-    MAX_STORAGE_SIZE_MB = 128,
+    MAX_STORAGE_SIZE_MB = 1024,          -- 128 MB is too small for most workloads
     CLEANUP_POLICY = (STALE_QUERY_THRESHOLD_DAYS = 30),
     SIZE_BASED_CLEANUP_MODE = AUTO,
     DATA_FLUSH_INTERVAL_SECONDS = 900,
@@ -409,21 +436,42 @@ SET QUERY_STORE (
 );
 GO
 
+-- SQL Server 2017+ additionally supports:
+--     WAIT_STATS_CAPTURE_MODE = ON
+-- SQL Server 2019+ additionally supports (with QUERY_CAPTURE_MODE = CUSTOM):
+--     QUERY_CAPTURE_POLICY = (STALE_CAPTURE_POLICY_THRESHOLD = 24 HOURS,
+--                             EXECUTION_COUNT = 30,
+--                             TOTAL_COMPILE_CPU_TIME_MS = 1000,
+--                             TOTAL_EXECUTION_CPU_TIME_MS = 100)
+*/
+
 -----------------------------------------------------------------------
 -- 4.8 IDENTIFY UNUSED DATABASES SINCE LAST RESTART
---     Shows databases with no user activity since SQL Server started
---     Useful for identifying candidates for archival or decommission
+--     Shows databases with no user activity since SQL Server started.
+--     Useful for identifying candidates for archival or decommission.
+--     Caveat: index usage stats are reset on restart, so run this only
+--     after the instance has been up long enough to be representative.
 -----------------------------------------------------------------------
+DECLARE @SqlServerStartTime DATETIME =
+    (SELECT sqlserver_start_time FROM sys.dm_os_sys_info);
+
 SELECT 
-    [name] AS UnusedDatabase
-FROM sys.databases 
-WHERE database_id > 4
-  AND [name] NOT IN (
-      SELECT DB_NAME(database_id) 
-      FROM sys.dm_db_index_usage_stats
-      WHERE COALESCE(last_user_seek, last_user_scan, last_user_lookup, '1/1/1970') > 
-            (SELECT login_time FROM sysprocesses WHERE spid = 1)
-  );
+    d.[name]  AS UnusedDatabase,
+    d.state_desc,
+    @SqlServerStartTime AS SqlServerStartTime
+FROM sys.databases AS d
+WHERE d.database_id > 4
+  AND d.state_desc = 'ONLINE'
+  AND NOT EXISTS (
+      SELECT 1
+      FROM sys.dm_db_index_usage_stats AS ius
+      WHERE ius.database_id = d.database_id
+        AND COALESCE(ius.last_user_seek, ius.last_user_scan,
+                     ius.last_user_lookup, ius.last_user_update,
+                     '1900-01-01') > @SqlServerStartTime
+  )
+ORDER BY d.[name];
+GO
 
 -----------------------------------------------------------------------
 -- 4.9 DEPRECATED FEATURES USAGE COUNT
@@ -484,10 +532,15 @@ SELECT
     c.[name]                                     AS Setting,
     c.value                                      AS ConfiguredValue,
     c.value_in_use                               AS RunningValue,
-    c.minimum_value                              AS MinAllowed,
-    c.maximum_value                              AS MaxAllowed,
+    c.minimum                                    AS MinAllowed,
+    c.maximum                                    AS MaxAllowed,
     c.is_dynamic                                 AS IsDynamic,
     c.is_advanced                                AS IsAdvanced,
+
+    CASE WHEN c.value <> c.value_in_use
+         THEN '*** PENDING - RECONFIGURE or restart required ***'
+         ELSE ''
+    END                                          AS PendingChange,
 
     CASE c.[name]
 
@@ -517,7 +570,7 @@ SELECT
                  ELSE 'OK - set to ' + CAST(c.value_in_use AS VARCHAR)
             END
 
-        -- Tempdb
+        -- Plan cache
         WHEN 'optimize for ad hoc workloads' THEN
             CASE WHEN c.value_in_use = 0
                  THEN '*** ENABLE (1) — prevents plan cache bloat ***'
@@ -580,6 +633,32 @@ SELECT
             CASE WHEN c.value_in_use = 0
                  THEN 'OK - default (100% fill)'
                  ELSE 'Set to ' + CAST(c.value_in_use AS VARCHAR) + '%'
+            END
+
+        -- Diagnostics
+        WHEN 'default trace enabled' THEN
+            CASE WHEN c.value_in_use = 0
+                 THEN '* Consider enabling (1) — useful baseline auditing *'
+                 ELSE 'OK - enabled'
+            END
+        WHEN 'blocked process threshold (s)' THEN
+            CASE WHEN c.value_in_use = 0
+                 THEN '* Disabled — set to 5-20 to capture blocked process reports *'
+                 WHEN c.value_in_use < 5
+                 THEN '* Very low — can flood the error log; 5-20 is typical *'
+                 ELSE 'OK - set to ' + CAST(c.value_in_use AS VARCHAR) + 's'
+            END
+
+        -- Feature switches
+        WHEN 'Agent XPs' THEN
+            CASE WHEN c.value_in_use = 0
+                 THEN '* SQL Agent XPs disabled — Agent may be stopped *'
+                 ELSE 'OK - enabled'
+            END
+        WHEN 'Database Mail XPs' THEN
+            CASE WHEN c.value_in_use = 0
+                 THEN '* Disabled — enable only if Database Mail is used *'
+                 ELSE 'OK - enabled'
             END
 
         ELSE 'Review manually'

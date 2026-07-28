@@ -3,15 +3,21 @@
 -- Purpose : Monitor Availability Group, Distributed AG, and Managed
 --           Instance Link health — replica status, seeding progress,
 --           failover events, and geo-replication lag.
--- Safety  : All queries are read-only.
--- Applies to : On-prem (AG/DAG) / Azure SQL MI (Link feature)
+-- Safety  : All queries are read-only against user data. Query #16
+--           creates/drops a #temp table and needs securityadmin (or
+--           sysadmin) to run xp_readerrorlog.
+-- Applies to : On-prem (AG/DAG) / Azure SQL MI (Link feature).
+--           MI-only    : #5 (sys.dm_geo_replication_link_status).
+--           On-prem only: #4b/#8 (cluster DMVs), #16 (xp_readerrorlog),
+--                         #18 (listener), #19 (Get-ClusterLog).
 -----------------------------------------------------------------------
 -- TROUBLESHOOTING METHODOLOGY: AG SYNCHRONIZATION ISSUES
 -- Troubleshooting Always On Availability Group (AOAG) synchronization
 -- issues requires a systematic analysis of synchronization states, log
 -- queues, wait statistics, and underlying infrastructure performance.
 --
--- 1) Identify the Synchronization State (see queries #2 and #9 below):
+-- 1) Identify the Synchronization State (see queries #2a, #4a and #9
+--    below):
 --    - SYNCHRONIZED     : Synchronous-commit mode; secondary is caught
 --                         up and primary waits for acknowledgment
 --                         before committing transactions.
@@ -24,10 +30,11 @@
 --                         failover interrupted a large transaction) to
 --                         go back in sync. Inherently slow.
 --
--- 2) Investigate Log Send Queue latency (see query #10 below):
+-- 2) Investigate Log Send Queue latency (see queries #6 and #10 below):
 --    - Network throughput: check for latency/dropped packets in
---      multi-site or cross-region groups; ensure "TCP Congestion
---      Windows Restart" is set to False on Windows servers.
+--      multi-site or cross-region groups; on Windows, disable TCP
+--      Congestion Window Restart:
+--      Set-NetTCPSetting -SettingName <profile> -CwndRestart False
 --    - I/O stalls on secondary: high write latency on the secondary's
 --      transaction log delays acknowledgments back to primary (see
 --      query #11, sys.dm_io_virtual_file_stats).
@@ -37,7 +44,7 @@
 --      times mean the primary is waiting too long for the secondary
 --      to harden log records (see query #10).
 --
--- 3) Investigate Recovery (Redo) Queue (see query #12 below):
+-- 3) Investigate Recovery (Redo) Queue (see queries #6 and #12 below):
 --    - Redo thread blockage: read-only workloads on the secondary
 --      acquire Schema Stability (Sch-S) locks, which can block redo
 --      threads attempting Schema Modification (Sch-M) operations
@@ -54,7 +61,9 @@
 --    - High CPU (100%) or non-yielding schedulers can prevent SQL
 --      Server from responding to pings within the timeout.
 --    - Verify database mirroring endpoints (default port 5022) are
---      started and not in conflict; test with Test-NetConnection.
+--      started and not in conflict; test with Test-NetConnection
+--      (see query #2b). If clients cannot connect but replicas are
+--      healthy, check the listener and routing config (query #18).
 --    - Ensure encryption algorithms and authentication types match on
 --      both replicas.
 --
@@ -69,14 +78,17 @@
 --    - Suspect/Recovery Pending databases on primary: failover will
 --      NOT automatically occur. Remove the replica from the group,
 --      fix the underlying issue (e.g. I/O failure), and rejoin it.
+--      Check sys.dm_hadr_auto_page_repair (query #17) for evidence of
+--      underlying storage corruption.
 --
 -- Recommended diagnostic tools:
 --    - AlwaysOn_health XEvent session: tracks state changes, lease
 --      expirations, and high-severity errors (see query #7 and #16).
 --    - sys.dm_hadr_database_replica_states: primary DMV for LSNs,
---      queue sizes, and rates (see query #2 and #9).
+--      queue sizes, and rates (see queries #2a, #6 and #9).
 --    - Windows Cluster Log: for issues between the SQL Server resource
---      DLL and the WSFC. Generate with PowerShell: Get-ClusterLog.
+--      DLL and the WSFC. Generate with PowerShell: Get-ClusterLog
+--      (see query #19).
 --
 -- IsAlive / LEASE TIMEOUT FAILURES
 -- An IsAlive check failure means the Windows Cluster service (the SQL
@@ -115,16 +127,19 @@
 --      detected"; often includes CPU/memory stats at failure time.
 --   3. Windows System Event Log: look for Event IDs 1135 (cluster node
 --      removed) or 1177 (quorum lost) to see if network connectivity
---      issues caused the cluster to lose sight of the node.
+--      issues caused the cluster to lose sight of the node. Cross-check
+--      quorum votes with query #4b.
 -----------------------------------------------------------------------
 
 SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+-- Session-level READ UNCOMMITTED persists across the GO batches below,
+-- so no per-table NOLOCK hints are needed.
 
 -----------------------------------------------------------------------
 -- 1. VALIDATE DAG/LINK STATUS
 --    Change @dagName to your Distributed AG name.
 -----------------------------------------------------------------------
-DECLARE @dagName NVARCHAR(MAX) = N'<YourDAGNameHere>'
+DECLARE @dagName NVARCHAR(MAX) = N'<YourDAGNameHere>';
 SELECT 
    ag.[name] AS [DAG Name], 
    ag.is_distributed, 
@@ -147,8 +162,8 @@ WHERE ag.is_distributed = 1 AND ag.name = @dagName;
 GO
 
 -----------------------------------------------------------------------
--- 2. RETRIEVE DATABASE REPLICA STATUS
---    Change @agName to your AG name.
+-- 2a. RETRIEVE DATABASE REPLICA STATUS
+--     Change @agName to your AG name.
 -----------------------------------------------------------------------
 DECLARE @agName NVARCHAR(MAX) = N'<YourAGNameHere>';
 SELECT 
@@ -163,62 +178,89 @@ WHERE ag.name = @agName;
 GO
 
 -----------------------------------------------------------------------
--- 2.1 VIEW DATABASE MIRRORING ENDPOINTS
+-- 2b. VIEW DATABASE MIRRORING ENDPOINTS
+--     The AG data-movement endpoint (default port 5022). state_desc
+--     must be 'STARTED' on every replica.
 -----------------------------------------------------------------------
-SELECT * 
+SELECT 
+    name,
+    state_desc,
+    role_desc,
+    is_encryption_enabled,
+    encryption_algorithm_desc,
+    connection_auth_desc
 FROM sys.database_mirroring_endpoints 
 WHERE type_desc = 'DATABASE_MIRRORING';
 GO
 
 -----------------------------------------------------------------------
--- 3. CHECK SEEDING STATUS
---    Change @seedAgName to your AG name.
+-- 3. CHECK SEEDING STATUS AND SPEED
+--    Change @seedAgName to your AG name. Drop the availability_groups
+--    join and the WHERE clause to see every seeding operation running
+--    on this instance regardless of AG.
 -----------------------------------------------------------------------
-DECLARE @seedAgName NVARCHAR(MAX) = N'<YourAGNameHere>'
+DECLARE @seedAgName NVARCHAR(MAX) = N'<YourAGNameHere>';
 SELECT
-	ag.local_database_name AS 'Local database name',
-	ar.current_state AS 'Current state',
-	ar.is_source AS 'Is source', --bit
-	ag.internal_state_desc AS 'Internal state desc',
-	-- ag.local_physical_seeding_id, 
-	-- ag.remote_physical_seeding_id, 
-	ag.database_size_bytes / 1024 / 1024 AS 'Database size MB', 
-	ag.transferred_size_bytes / 1024 / 1024 AS 'Transferred MB',
-	ag.transfer_rate_bytes_per_second / 1024 / 1024 AS 'Transfer rate MB/s', 
-	ag.total_disk_io_wait_time_ms / 1000 AS 'Total Disk IO wait (sec)',
-	ag.total_network_wait_time_ms / 1000 AS 'Total Network wait (sec)',
-	ag.is_compression_enabled AS 'Compression',
-	ag.start_time_utc AS 'Start time UTC', 
-	ag.estimate_time_complete_utc as 'Estimated time complete UTC',
-	ar.completion_time AS 'Completion time', --datetime
-	ar.number_of_attempts AS 'Attempt No' --int
-FROM sys.dm_hadr_physical_seeding_stats AS ag
-	INNER JOIN sys.dm_hadr_automatic_seeding AS ar
-	ON local_physical_seeding_id = operation_id
-	INNER JOIN sys.availability_groups groups
-	ON groups.group_id = ar.ag_id
+	pss.local_database_name AS [Local database name],
+	auto.current_state AS [Current state],
+	auto.is_source AS [Is source], --bit
+	pss.internal_state_desc AS [Internal state desc],
+	-- pss.local_physical_seeding_id, 
+	-- pss.remote_physical_seeding_id, 
+	CAST(pss.database_size_bytes / 1048576.0 AS DECIMAL(19, 2)) AS [Database size MB], 
+	CAST(pss.transferred_size_bytes / 1048576.0 AS DECIMAL(19, 2)) AS [Transferred MB],
+	CAST(pss.transfer_rate_bytes_per_second / 1048576.0 AS DECIMAL(19, 2)) AS [Transfer rate MB/s], 
+	CAST(pss.total_disk_io_wait_time_ms / 1000.0 AS DECIMAL(19, 1)) AS [Total Disk IO wait (sec)],
+	CAST(pss.total_network_wait_time_ms / 1000.0 AS DECIMAL(19, 1)) AS [Total Network wait (sec)],
+	pss.is_compression_enabled AS [Compression],
+	pss.start_time_utc AS [Start time UTC], 
+	pss.estimate_time_complete_utc AS [Estimated time complete UTC],
+	pss.end_time_utc AS [End time UTC],
+	auto.completion_time AS [Completion time], --datetime
+	auto.number_of_attempts AS [Attempt No] --int
+FROM sys.dm_hadr_physical_seeding_stats AS pss
+	INNER JOIN sys.dm_hadr_automatic_seeding AS auto
+		ON pss.local_physical_seeding_id = auto.operation_id
+	INNER JOIN sys.availability_groups AS groups
+		ON groups.group_id = auto.ag_id
 WHERE groups.name = @seedAgName;
 GO
 
 -----------------------------------------------------------------------
--- 4. CHECK AVAILABILITY GROUP NODE STATUS
---    Run this query on each node.
+-- 4a. AVAILABILITY GROUP-LEVEL HEALTH
+--     Fastest "is this AG healthy?" check. Run on any replica.
+--     Per-replica connection state and last connect error is in #13a.
 -----------------------------------------------------------------------
 SELECT 
-    r.replica_server_name, 
-    r.endpoint_url,
-    rs.connected_state_desc, 
-    rs.last_connect_error_description, 
-    rs.last_connect_error_number, 
-    rs.last_connect_error_timestamp 
-FROM sys.dm_hadr_availability_replica_states rs 
-    JOIN sys.availability_replicas r
-        ON rs.replica_id = r.replica_id
-WHERE rs.is_local = 1;
+    ag.name AS [AG Name],
+    ags.primary_replica,
+    ags.primary_recovery_health_desc,
+    ags.secondary_recovery_health_desc,
+    ags.synchronization_health_desc,
+    ag.failure_condition_level,
+    ag.health_check_timeout,
+    ag.automated_backup_preference_desc,
+    ag.is_distributed
+FROM sys.availability_groups AS ag
+INNER JOIN sys.dm_hadr_availability_group_states AS ags
+    ON ag.group_id = ags.group_id
+ORDER BY ag.name;
 GO
 
-
-
+-----------------------------------------------------------------------
+-- 4b. WSFC QUORUM VOTES PER MEMBER
+--     A member with number_of_quorum_votes = 0 cannot help form
+--     quorum. Enough members going OFFLINE causes quorum loss —
+--     correlate with System Event Log IDs 1135 / 1177.
+-----------------------------------------------------------------------
+SELECT 
+    member_name,
+    member_type_desc,
+    member_state_desc,
+    number_of_quorum_votes
+FROM sys.dm_hadr_cluster_members
+ORDER BY member_name;
+GO
 
 -----------------------------------------------------------------------
 -- 5. GEO-REPLICATION LINK STATUS (Azure SQL MI)
@@ -239,19 +281,40 @@ GO
  
  
 -----------------------------------------------------------------------
--- 6. MONITOR SEEDING PROCESS AND SPEED
---    The seeding process and its speed can be monitored via this DMV.
+-- 6. ESTIMATED DATA LOSS (RPO) AND CATCH-UP TIME (RTO)
+--    Run on the PRIMARY — queue sizes and rates are only meaningful
+--    there. Uses the raw columns exposed in query #9:
+--      Est RPO sec = log_send_queue_size / log_send_rate
+--                    (committed data not yet hardened on the secondary)
+--      Est RTO sec = redo_queue_size / redo_rate
+--                    (time the secondary needs to catch up post-failover)
+--    Rates are point-in-time averages, so treat these as indicative.
+--    A large queue with a NULL/0 rate means movement is stalled, not fast.
 -----------------------------------------------------------------------
 SELECT 
-    role_desc,
-    transfer_rate_bytes_per_second,
-    transferred_size_bytes,
-    database_size_bytes,
-    start_time_utc,
-    estimate_time_complete_utc,
-    end_time_utc,
-    local_physical_seeding_id
-FROM sys.dm_hadr_physical_seeding_stats;
+    ag.name AS [AG Name],
+    ar.replica_server_name,
+    adc.[database_name],
+    ar.availability_mode_desc,
+    drs.synchronization_state_desc,
+    drs.log_send_queue_size AS [Log Send Queue KB],
+    drs.log_send_rate AS [Log Send Rate KB/s],
+    CAST(drs.log_send_queue_size / NULLIF(drs.log_send_rate, 0) * 1.0 AS DECIMAL(19, 1)) AS [Est RPO sec],
+    drs.redo_queue_size AS [Redo Queue KB],
+    drs.redo_rate AS [Redo Rate KB/s],
+    CAST(drs.redo_queue_size / NULLIF(drs.redo_rate, 0) * 1.0 AS DECIMAL(19, 1)) AS [Est RTO sec],
+    drs.last_commit_time,
+    DATEDIFF(SECOND, drs.last_commit_time, SYSDATETIME()) AS [Secs Since Last Commit]
+FROM sys.dm_hadr_database_replica_states AS drs
+INNER JOIN sys.availability_replicas AS ar
+    ON drs.replica_id = ar.replica_id
+INNER JOIN sys.availability_groups AS ag
+    ON ag.group_id = drs.group_id
+INNER JOIN sys.availability_databases_cluster AS adc
+    ON drs.group_id = adc.group_id 
+    AND drs.group_database_id = adc.group_database_id
+WHERE drs.is_primary_replica = 0
+ORDER BY [Est RPO sec] DESC;
 GO
 	
 -----------------------------------------------------------------------
@@ -270,21 +333,24 @@ SELECT
     event_data.value('(/event/data[@name="previous_state"]/text)[1]', 'nvarchar(50)') AS PreviousState,
     event_data.value('(/event/data[@name="current_state"]/text)[1]', 'nvarchar(50)') AS CurrentState,
     event_data.value('(/event/data[@name="availability_group_name"]/value)[1]', 'sysname') AS AvailabilityGroupName,
-    event_data.value('(/event/data[@name="availability_replica_name"]/value)[1]', 'sysname') AS NewPrimaryReplica
+    event_data.value('(/event/data[@name="availability_replica_name"]/value)[1]', 'sysname') AS ReplicaName
 FROM FailoverEvents
-WHERE event_data.value('(/event/data[@name="current_state"]/value)[1]', 'int') = 1
+-- Filter on the state text rather than the numeric map value (the int
+-- mapping is version-specific). Remove the WHERE clause to see every
+-- replica state transition, not just promotions to primary.
+WHERE event_data.value('(/event/data[@name="current_state"]/text)[1]', 'nvarchar(50)') LIKE N'PRIMARY%'
 ORDER BY FailoverTime DESC;
 GO
 -----------------------------------------------------------------------
 -- 8. AG CLUSTER INFORMATION
 --    Get information about any AlwaysOn AG cluster this instance is 
---    a part of.
+--    a part of. Per-member quorum votes are in #4b.
 -----------------------------------------------------------------------
 SELECT 
     cluster_name, 
     quorum_type_desc, 
     quorum_state_desc
-FROM sys.dm_hadr_cluster WITH (NOLOCK) 
+FROM sys.dm_hadr_cluster 
 OPTION (RECOMPILE);
 GO
 
@@ -293,13 +359,15 @@ SELECT
     NodeName, 
     status_description, 
     is_current_owner
-FROM sys.dm_os_cluster_nodes WITH (NOLOCK) 
+FROM sys.dm_os_cluster_nodes 
 OPTION (RECOMPILE);
+GO
 
 
 -----------------------------------------------------------------------
 -- 9. AG HEALTH AND STATUS OVERVIEW
---    Comprehensive overview of AG health and status.
+--    Comprehensive per-database, per-replica detail (LSNs, queues,
+--    rates). For the derived RPO/RTO seconds, see #6.
 -----------------------------------------------------------------------
 SELECT 
     ag.name AS [AG Name], 
@@ -330,13 +398,13 @@ SELECT
     drs.last_commit_lsn, 
     drs.last_commit_time, 
     drs.database_state_desc 
-FROM sys.dm_hadr_database_replica_states AS drs WITH (NOLOCK)
-    INNER JOIN sys.availability_databases_cluster AS adc WITH (NOLOCK)
+FROM sys.dm_hadr_database_replica_states AS drs
+    INNER JOIN sys.availability_databases_cluster AS adc
         ON drs.group_id = adc.group_id 
         AND drs.group_database_id = adc.group_database_id
-    INNER JOIN sys.availability_groups AS ag WITH (NOLOCK)
+    INNER JOIN sys.availability_groups AS ag
         ON ag.group_id = drs.group_id
-    INNER JOIN sys.availability_replicas AS ar WITH (NOLOCK)
+    INNER JOIN sys.availability_replicas AS ar
         ON drs.group_id = ar.group_id 
         AND drs.replica_id = ar.replica_id
 ORDER BY ag.name, ar.replica_server_name, adc.[database_name] 
@@ -375,12 +443,10 @@ SELECT
     mf.type_desc,
     vfs.num_of_writes,
     vfs.io_stall_write_ms,
-    CASE WHEN vfs.num_of_writes = 0 THEN 0 
-         ELSE vfs.io_stall_write_ms / vfs.num_of_writes END AS avg_write_latency_ms,
+    CAST(vfs.io_stall_write_ms / NULLIF(vfs.num_of_writes, 0) * 1.0 AS DECIMAL(19, 2)) AS avg_write_latency_ms,
     vfs.num_of_reads,
     vfs.io_stall_read_ms,
-    CASE WHEN vfs.num_of_reads = 0 THEN 0 
-         ELSE vfs.io_stall_read_ms / vfs.num_of_reads END AS avg_read_latency_ms
+    CAST(vfs.io_stall_read_ms / NULLIF(vfs.num_of_reads, 0) * 1.0 AS DECIMAL(19, 2)) AS avg_read_latency_ms
 FROM sys.dm_io_virtual_file_stats(NULL, NULL) AS vfs
 INNER JOIN sys.master_files AS mf
     ON vfs.database_id = mf.database_id 
@@ -419,10 +485,13 @@ GO
 --     can cause missed pings (SESSION_TIMEOUT, default 10 sec) or
 --     non-yielding schedulers.
 -----------------------------------------------------------------------
--- 13a. Endpoint state and last connection error per replica
+-- 13a. Endpoint state and last connection error per replica.
+--      Add "AND ars.is_local = 1" to see only this node's view.
 SELECT 
     ar.replica_server_name,
     ar.endpoint_url,
+    ars.is_local,
+    ars.role_desc,
     ars.connected_state_desc,
     ars.last_connect_error_number,
     ars.last_connect_error_description,
@@ -478,9 +547,13 @@ SELECT
     CAST(lu.cntr_value AS FLOAT) / NULLIF(ls.cntr_value, 0) * 100 AS log_used_pct
 FROM sys.databases AS d
 INNER JOIN sys.dm_os_performance_counters AS ls
-    ON ls.instance_name = d.name AND ls.counter_name = 'Log File(s) Size (KB)'
+    ON ls.instance_name = d.name 
+    AND ls.counter_name = 'Log File(s) Size (KB)'
+    AND ls.object_name LIKE '%:Databases%'
 INNER JOIN sys.dm_os_performance_counters AS lu
-    ON lu.instance_name = d.name AND lu.counter_name = 'Log File(s) Used Size (KB)'
+    ON lu.instance_name = d.name 
+    AND lu.counter_name = 'Log File(s) Used Size (KB)'
+    AND lu.object_name LIKE '%:Databases%'
 WHERE d.log_reuse_wait_desc = 'AVAILABILITY_REPLICA'
 ORDER BY log_used_pct DESC;
 GO
@@ -494,14 +567,22 @@ GO
 -----------------------------------------------------------------------
 DECLARE @logsToSearch INT = 3; -- number of archived error logs to scan (0 = current)
 DECLARE @i INT = 0;
+IF OBJECT_ID('tempdb..#ErrorLogEntries') IS NOT NULL 
+    DROP TABLE #ErrorLogEntries;
 CREATE TABLE #ErrorLogEntries (LogDate DATETIME, ProcessInfo NVARCHAR(50), [Text] NVARCHAR(MAX));
 
 WHILE @i <= @logsToSearch
 BEGIN
-    INSERT INTO #ErrorLogEntries EXEC sys.xp_readerrorlog @i, 1, N'Stack Dump';
-    INSERT INTO #ErrorLogEntries EXEC sys.xp_readerrorlog @i, 1, N'Non-yielding';
-    INSERT INTO #ErrorLogEntries EXEC sys.xp_readerrorlog @i, 1, N'lease';
-    INSERT INTO #ErrorLogEntries EXEC sys.xp_readerrorlog @i, 1, N'19407';
+    -- A freshly cycled instance may not have @i archives yet; skip those.
+    BEGIN TRY
+        INSERT INTO #ErrorLogEntries EXEC sys.xp_readerrorlog @i, 1, N'Stack Dump';
+        INSERT INTO #ErrorLogEntries EXEC sys.xp_readerrorlog @i, 1, N'Non-yielding';
+        INSERT INTO #ErrorLogEntries EXEC sys.xp_readerrorlog @i, 1, N'lease';
+        INSERT INTO #ErrorLogEntries EXEC sys.xp_readerrorlog @i, 1, N'19407';
+    END TRY
+    BEGIN CATCH
+        PRINT CONCAT('Skipped error log archive ', @i, ': ', ERROR_MESSAGE());
+    END CATCH;
     SET @i += 1;
 END;
 
@@ -510,7 +591,80 @@ DROP TABLE #ErrorLogEntries;
 GO
 
 -----------------------------------------------------------------------
--- 17. GENERATE WINDOWS CLUSTER LOG (REFERENCE — RUN IN POWERSHELL)
+-- 17. AUTOMATIC PAGE REPAIR
+--     AGs automatically repair certain corrupt pages by fetching a
+--     clean copy from a partner replica. Rows here mean you HAVE had
+--     page corruption — treat as an I/O subsystem red flag and follow
+--     up with DBCC CHECKDB and the storage team.
+--       error_type: -1 = 823 hardware error, 1 = 824 (other),
+--                    2 = bad checksum, 3 = torn page
+--     Run on both primary and secondary; results are per-replica.
+-----------------------------------------------------------------------
+SELECT 
+    DB_NAME(database_id) AS [database_name],
+    file_id,
+    page_id,
+    error_type,
+    page_status_desc,
+    modification_time
+FROM sys.dm_hadr_auto_page_repair
+ORDER BY modification_time DESC;
+GO
+
+-----------------------------------------------------------------------
+-- 18. LISTENER AND READ-ONLY ROUTING CONFIGURATION
+--     Connectivity problems that look like AG failures are often just
+--     listener or routing misconfiguration.
+-----------------------------------------------------------------------
+-- 18a. Listener definition per AG. is_conformant = 0 means the WSFC
+--      resource was changed outside SQL Server and may not behave.
+SELECT 
+    ag.name AS [AG Name],
+    agl.dns_name,
+    agl.port,
+    agl.ip_configuration_string_from_cluster,
+    agl.is_conformant
+FROM sys.availability_group_listeners AS agl
+INNER JOIN sys.availability_groups AS ag
+    ON ag.group_id = agl.group_id
+ORDER BY ag.name;
+GO
+
+-- 18b. Is the listener actually online and listening on this node?
+SELECT 
+    ip_address,
+    is_ipv4,
+    port,
+    type_desc,
+    state_desc,
+    start_time
+FROM sys.dm_tcp_listener_states
+WHERE type_desc = 'TSQL'
+ORDER BY port;
+GO
+
+-- 18c. Read-only routing list. A missing read_only_routing_url, or a
+--      secondary set to NO for secondary_role_allow_connections, is
+--      why ApplicationIntent=ReadOnly connections land on the primary.
+SELECT 
+    ag.name AS [AG Name],
+    src.replica_server_name AS [When primary is],
+    rl.routing_priority,
+    tgt.replica_server_name AS [Route read-only to],
+    tgt.read_only_routing_url,
+    tgt.secondary_role_allow_connections_desc
+FROM sys.availability_read_only_routing_lists AS rl
+INNER JOIN sys.availability_replicas AS src
+    ON rl.replica_id = src.replica_id
+INNER JOIN sys.availability_replicas AS tgt
+    ON rl.read_only_replica_id = tgt.replica_id
+INNER JOIN sys.availability_groups AS ag
+    ON ag.group_id = src.group_id
+ORDER BY ag.name, src.replica_server_name, rl.routing_priority;
+GO
+
+-----------------------------------------------------------------------
+-- 19. GENERATE WINDOWS CLUSTER LOG (REFERENCE — RUN IN POWERSHELL)
 --     Not executable T-SQL. Use the Windows Cluster Log to diagnose
 --     issues between the SQL Server resource DLL and the WSFC, and to
 --     confirm IsAlive/lease timeout failures (search for

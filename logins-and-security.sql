@@ -5,26 +5,34 @@
  *           - Troubleshooting login failures
  *           - Orphaned users detection and fixing
  *           - Security configuration checks
- * Safety  : Most queries are read-only; modification queries are clearly marked
+ * Safety  : Sections 1-9 are read-only diagnostics and are safe to run as-is.
+ *           Sections 10-14 contain DDL and configuration changes. Every statement
+ *           in those sections is COMMENTED OUT BY DESIGN. Replace the placeholder
+ *           names, then uncomment one statement at a time, deliberately.
+ *           Read-only queries that change session context (USE, EXECUTE AS) are
+ *           also commented out.
+ * Platform: Written for SQL Server (on-premises / IaaS). Where a query is
+ *           unavailable or behaves differently on Azure SQL Managed Instance or
+ *           Azure SQL Database, an inline NOTE calls it out.
  *********************************************************************************************/
 
 /*********************************************************************************************
  * TABLE OF CONTENTS
  *********************************************************************************************
- * SECTION 1:  LOGIN TROUBLESHOOTING & DIAGNOSTICS
- * SECTION 2:  BASIC LOGIN INFORMATION
- * SECTION 3:  SERVER-LEVEL SECURITY AUDITS
- * SECTION 4:  DATABASE-LEVEL SECURITY AUDITS
- * SECTION 5:  PERMISSION ANALYSIS & QUERIES
- * SECTION 6:  SERVER ROLES & MEMBERSHIPS
- * SECTION 7:  DATABASE ROLES & MEMBERSHIPS
- * SECTION 8:  ORPHANED USERS DETECTION & FIXING
- * SECTION 9:  SECURITY CONFIGURATION CHECKS
- * SECTION 10: CREATING & MANAGING LOGINS
- * SECTION 11: CREATING & MANAGING USERS
- * SECTION 12: GRANTING & REVOKING PERMISSIONS
- * SECTION 13: APPLICATION ROLES
- * SECTION 14: TESTING & VERIFICATION
+ * SECTION 1:  LOGIN TROUBLESHOOTING & DIAGNOSTICS         [read-only]
+ * SECTION 2:  BASIC LOGIN INFORMATION                     [read-only]
+ * SECTION 3:  SERVER-LEVEL SECURITY AUDITS                [read-only]
+ * SECTION 4:  DATABASE-LEVEL SECURITY AUDITS              [read-only]
+ * SECTION 5:  PERMISSION ANALYSIS & QUERIES               [read-only]
+ * SECTION 6:  SERVER ROLES & MEMBERSHIPS                  [read-only + commented DDL]
+ * SECTION 7:  DATABASE ROLES & MEMBERSHIPS                [read-only + commented DDL]
+ * SECTION 8:  ORPHANED USERS DETECTION & FIXING           [read-only + commented DDL]
+ * SECTION 9:  SECURITY CONFIGURATION CHECKS               [read-only + commented DDL]
+ * SECTION 10: CREATING & MANAGING LOGINS                  *** ALL DDL - COMMENTED ***
+ * SECTION 11: CREATING & MANAGING USERS                   *** ALL DDL - COMMENTED ***
+ * SECTION 12: GRANTING & REVOKING PERMISSIONS             *** ALL DDL - COMMENTED ***
+ * SECTION 13: APPLICATION ROLES                           *** ALL DDL - COMMENTED ***
+ * SECTION 14: TESTING & VERIFICATION                      *** CONTEXT SWITCH - COMMENTED ***
  *********************************************************************************************/
 
 
@@ -35,6 +43,10 @@
 
 -----------------------------------------------------------------------
 -- 1.1 CAPTURE LOGIN FAILURE ERRORS FROM ERROR LOG
+--     Params: LogNumber, LogType (1 = SQL Server), Search1, Search2,
+--             StartDate, EndDate, SortOrder
+--     NOTE: Available on SQL Server and Azure SQL Managed Instance.
+--           Not available on Azure SQL Database.
 -----------------------------------------------------------------------
 EXEC xp_readerrorlog 0, 1, N'Login failed', NULL, NULL, NULL, N'desc';
 
@@ -100,9 +112,16 @@ ORDER BY p.[name];
 
 -----------------------------------------------------------------------
 -- 1.5 QUERY RING BUFFER FOR LOGIN FAILURE DETAILS
+--     NOTE: Ring buffers exist on SQL Server and Azure SQL Managed
+--           Instance. They are not available on Azure SQL Database.
+--     NOTE: The timestamp math deliberately works in SECONDS. DATEADD's
+--           second argument is an int, and the millisecond difference
+--           overflows int once server uptime exceeds ~24.8 days,
+--           producing "Arithmetic overflow error converting expression
+--           to data type int".
 -----------------------------------------------------------------------
 SELECT CONVERT (varchar(30), GETDATE(), 121) as [RunTime],
-dateadd (ms, rbf.[timestamp] - tme.ms_ticks, GETDATE()) as [Notification_Time],
+DATEADD (s, CONVERT(int, (rbf.[timestamp] - tme.ms_ticks) / 1000), GETDATE()) as [Notification_Time],
 cast(record as xml).value('(//SPID)[1]', 'bigint') as SPID,
 cast(record as xml).value('(//ErrorCode)[1]', 'varchar(255)') as Error_Code,
 cast(record as xml).value('(//CallingAPIName)[1]', 'varchar(255)') as [CallingAPIName],
@@ -118,9 +137,11 @@ GO
 
 -----------------------------------------------------------------------
 -- 1.6 QUERY CONNECTIVITY RING BUFFER FOR CONNECTION DETAILS
+--     NOTE: See the two notes on 1.5 - same platform limits and same
+--           int-overflow reason for using seconds in the DATEADD.
 -----------------------------------------------------------------------
 SELECT CONVERT (varchar(30), GETDATE(), 121) as [RunTime],
-dateadd (ms, (rbf.[timestamp] - tme.ms_ticks), GETDATE()) as Time_Stamp,
+DATEADD (s, CONVERT(int, (rbf.[timestamp] - tme.ms_ticks) / 1000), GETDATE()) as Time_Stamp,
 cast(record as xml).value('(//Record/ConnectivityTraceRecord/RecordType)[1]', 'varchar(50)') AS [Action],
 cast(record as xml).value('(//Record/ConnectivityTraceRecord/RecordSource)[1]', 'varchar(50)') AS [Source],
 cast(record as xml).value('(//Record/ConnectivityTraceRecord/Spid)[1]', 'int') AS [SPID],
@@ -190,20 +211,28 @@ GO
 
 -----------------------------------------------------------------------
 -- 2.5 CHECK SPECIFIC LOGIN (MULTIPLE METHODS)
+--     NOTE: master.dbo.syslogins is a deprecated backward-compatibility
+--           view. Prefer sys.server_principals / sys.sql_logins.
 -----------------------------------------------------------------------
-SELECT * FROM master.dbo.syslogins WHERE name = 'SOME_SUSER';
-SELECT * FROM master.sys.server_principals WHERE name = 'SOME_USER';
+DECLARE @LoginName sysname = N'YourLoginName';
+
+SELECT * FROM master.sys.server_principals WHERE [name] = @LoginName;
+SELECT * FROM master.sys.sql_logins        WHERE [name] = @LoginName;
+SELECT * FROM master.dbo.syslogins         WHERE [name] = @LoginName;   -- deprecated
+GO
 
 -----------------------------------------------------------------------
 -- 2.6 QUERY SECURITY IDS AT SERVER AND DATABASE LEVEL
+--     A mismatch between the two SIDs is what makes a user orphaned.
+--     See Section 8.
 -----------------------------------------------------------------------
 SELECT name, principal_id, sid 
 FROM sys.server_principals 
-WHERE name = 'TestUser';
+WHERE name = N'YourLoginName';
 
 SELECT name, principal_id, sid 
 FROM sys.database_principals 
-WHERE name = 'TestUser';
+WHERE name = N'YourUserName';
 GO
 
 -----------------------------------------------------------------------
@@ -220,8 +249,40 @@ GO
 
 -----------------------------------------------------------------------
 -- 2.9 SHOW WINDOWS LOGIN DETAILS
+--     Expands a Windows group into its members, which is the usual way
+--     to find out who really has access through a group.
+--     NOTE: Not supported on Azure SQL Managed Instance or Azure SQL
+--           Database (no Windows authentication there - use Microsoft
+--           Entra ID principals instead).
 -----------------------------------------------------------------------
-EXEC xp_logininfo 'DOMAIN\login';
+-- EXEC xp_logininfo 'DOMAIN\login';
+-- EXEC xp_logininfo 'DOMAIN\groupname', 'members';
+GO
+
+-----------------------------------------------------------------------
+-- 2.10 CURRENTLY CONNECTED LOGINS
+--      Who is connected right now, from where, and under what
+--      authentication scheme. Useful before disabling or dropping a
+--      login, and for spotting shared/service accounts.
+-----------------------------------------------------------------------
+SELECT
+    s.login_name                     AS LoginName,
+    s.original_login_name            AS OriginalLoginName,   -- differs when EXECUTE AS is active
+    s.[status]                       AS SessionStatus,
+    c.auth_scheme                    AS AuthScheme,          -- SQL / NTLM / KERBEROS
+    c.encrypt_option                 AS EncryptOption,
+    s.[host_name]                    AS HostName,
+    s.[program_name]                 AS ProgramName,
+    c.client_net_address             AS ClientAddress,
+    DB_NAME(s.database_id)           AS DatabaseName,
+    COUNT(*) OVER (PARTITION BY s.login_name) AS SessionsForLogin,
+    s.login_time                     AS LoginTime,
+    s.last_request_end_time          AS LastRequestEnd
+FROM sys.dm_exec_sessions s
+    LEFT JOIN sys.dm_exec_connections c
+        ON s.session_id = c.session_id
+WHERE s.is_user_process = 1
+ORDER BY s.login_name, s.login_time;
 GO
 
 
@@ -232,7 +293,14 @@ GO
 
 -----------------------------------------------------------------------
 -- 3.1 SYSADMIN ROLE MEMBERS (REVIEW REGULARLY!)
---     Sysadmin should be tightly controlled
+--     Sysadmin should be tightly controlled.
+--     CAVEAT 1: If a Windows GROUP is a member, every member of that
+--               group is effectively a sysadmin. This query shows the
+--               group, not its members - expand it with 2.9
+--               (xp_logininfo 'DOMAIN\group', 'members').
+--     CAVEAT 2: Sysadmin is not the only path to full control. Also
+--               review CONTROL SERVER grants (see 3.3) and any login
+--               with IMPERSONATE on a sysadmin.
 -----------------------------------------------------------------------
 SELECT
     sp.[name]              AS LoginName,
@@ -242,13 +310,27 @@ SELECT
     sp.modify_date         AS ModifiedDate,
     sl.default_database_name AS DefaultDatabase
 FROM sys.server_role_members srm
+    JOIN sys.server_principals sr ON srm.role_principal_id   = sr.principal_id
     JOIN sys.server_principals sp ON srm.member_principal_id = sp.principal_id
     LEFT JOIN sys.sql_logins   sl ON sp.principal_id = sl.principal_id
-WHERE srm.role_principal_id = SUSER_ID('sysadmin')
+WHERE sr.[name] = N'sysadmin'
+ORDER BY sp.[name];
+
+-- Logins holding CONTROL SERVER (equivalent to sysadmin in practice)
+SELECT
+    sp.[name]          AS LoginName,
+    sp.[type_desc]     AS LoginType,
+    perm.state_desc    AS PermissionState
+FROM sys.server_permissions perm
+    JOIN sys.server_principals sp ON perm.grantee_principal_id = sp.principal_id
+WHERE perm.permission_name = 'CONTROL SERVER'
+  AND perm.state_desc IN ('GRANT', 'GRANT_WITH_GRANT_OPTION')
+  AND sp.[name] NOT LIKE '##%'
 ORDER BY sp.[name];
 
 -----------------------------------------------------------------------
 -- 3.2 ALL SERVER ROLE MEMBERSHIPS
+--     Canonical version. Sections 6.2 refers back to this query.
 -----------------------------------------------------------------------
 SELECT
     sr.[name]              AS ServerRole,
@@ -309,6 +391,7 @@ GO
 
 -----------------------------------------------------------------------
 -- 4.2 DATABASE USER-ROLE MEMBERSHIPS (CURRENT DATABASE)
+--     Canonical version. Section 7.2 refers back to this query.
 -----------------------------------------------------------------------
 SELECT
     DB_NAME()              AS DatabaseName,
@@ -351,6 +434,11 @@ GO
 -----------------------------------------------------------------------
 -- 4.5 USERS WITH DB_OWNER ROLE (ALL DATABASES)
 --     Similar to sysadmin audit but at database level
+--     NOTE: sp_MSforeachdb is undocumented and unsupported. It silently
+--           skips databases in some builds and is not available on
+--           Azure SQL Database. For anything you rely on, build the
+--           loop yourself over sys.databases with sp_executesql, or use
+--           Aaron Bertrand's sp_foreachdb replacement.
 -----------------------------------------------------------------------
 /*
 EXEC sp_MSforeachdb '
@@ -369,9 +457,11 @@ WHERE dp_role.[name] = ''db_owner''
 
 -----------------------------------------------------------------------
 -- 4.6 SHOW ALL LOGINS AND MAPPINGS FOR SPECIFIC DATABASE
+--     Uncomment the USE and set the database name, or just run the
+--     SELECT against whatever database is currently selected.
 -----------------------------------------------------------------------
-use DATABASE_NAME_HERE;
-go
+-- USE YourDatabaseName;
+-- GO
 SELECT 
 	susers.[name] AS LogInAtServerLevel,
 	users.[name] AS UserAtDBLevel,
@@ -393,47 +483,80 @@ GO
  *********************************************************************************************/
 
 -----------------------------------------------------------------------
--- 5.1 COMPARE ROLES BETWEEN DATABASES
+-- 5.1 COMPARE ROLES BETWEEN TWO DATABASES
+--     Useful after a restore or migration. Rows where RoleInTarget is
+--     NULL exist in the source but are MISSING in the target.
+--     Replace SourceDatabase / TargetDatabase, then uncomment.
 -----------------------------------------------------------------------
+/*
 SELECT 
-    su.name AS 'RoleName', 
-    su.uid AS 'RoleId', 
-    su.isapprole AS 'IsAppRole',
-    su2.name AS 'RoleName2'
-FROM 
-    [BizTalkDTADB.bak].dbo.sysusers su -- source
-LEFT JOIN
-    [BizTalkDTADB].dbo.sysusers su2
-    ON su2.name = su.name
-WHERE 
-    su.issqlrole = 1
-    OR su.isapprole = 1 
-ORDER BY 
-    su.name;
+    src.[name]          AS RoleInSource, 
+    src.principal_id    AS SourcePrincipalId,
+    src.[type_desc]     AS RoleType,
+    tgt.[name]          AS RoleInTarget
+FROM [SourceDatabase].sys.database_principals src
+LEFT JOIN [TargetDatabase].sys.database_principals tgt
+    ON tgt.[name] = src.[name]
+WHERE src.[type] IN ('R', 'A')      -- R = database role, A = application role
+  AND src.is_fixed_role = 0
+  AND src.[name] <> 'public'
+ORDER BY src.[name];
+*/
 GO
 
 -----------------------------------------------------------------------
 -- 5.2 GENERATE SCRIPT TO COPY ROLE PERMISSIONS
+--     Prints (does not execute) a CREATE ROLE + GRANT/DENY script for
+--     one database role, so you can replay it in another database.
+--     Run in the database that owns the role.
+--
+--     The class filter is important: without it, database-scoped
+--     permissions (class 0, major_id 0) make OBJECT_NAME() return NULL,
+--     which nulls out the whole @Script variable and prints nothing.
 -----------------------------------------------------------------------
-DECLARE @RoleName VARCHAR(50);
-SET @RoleName = 'HWS_ADMIN_USER';
+DECLARE @RoleName sysname = N'YourRoleName';
+DECLARE @Script   nvarchar(max);
 
-DECLARE @Script VARCHAR(MAX);
-SET @Script = 'CREATE ROLE ' + @RoleName + CHAR(13);
+SET @Script = N'CREATE ROLE ' + QUOTENAME(@RoleName) + N';' + CHAR(13) + CHAR(10);
 
-SELECT @script = @script + 'GRANT ' + prm.permission_name + ' ON ' 
-    + OBJECT_NAME(major_id) + ' TO ' + rol.name + CHAR(13) COLLATE Latin1_General_CI_AS 
+SELECT @Script = @Script
+     + CASE prm.state WHEN 'W' THEN N'GRANT'
+                      ELSE prm.state_desc COLLATE DATABASE_DEFAULT END
+     + N' ' + prm.permission_name COLLATE DATABASE_DEFAULT
+     + CASE prm.class
+           WHEN 0 THEN N''                                    -- database scope
+           WHEN 1 THEN N' ON OBJECT::'
+                       + QUOTENAME(OBJECT_SCHEMA_NAME(prm.major_id))
+                       + N'.' + QUOTENAME(OBJECT_NAME(prm.major_id))
+                       + ISNULL(N' (' + QUOTENAME(c.[name]) + N')', N'')
+           WHEN 3 THEN N' ON SCHEMA::' + QUOTENAME(SCHEMA_NAME(prm.major_id))
+       END
+     + N' TO ' + QUOTENAME(rol.[name])
+     + CASE prm.state WHEN 'W' THEN N' WITH GRANT OPTION' ELSE N'' END
+     + N';' + CHAR(13) + CHAR(10)
 FROM sys.database_permissions prm
 JOIN sys.database_principals rol 
     ON prm.grantee_principal_id = rol.principal_id
-WHERE rol.name = @RoleName;
+LEFT JOIN sys.columns c
+    ON prm.class = 1
+   AND c.[object_id] = prm.major_id
+   AND c.column_id  = prm.minor_id
+WHERE rol.[name] = @RoleName
+  AND prm.class IN (0, 1, 3)        -- database, object/column, schema
+ORDER BY prm.class, prm.major_id, prm.permission_name;
 
-PRINT @script;
+PRINT @Script;
 GO
 
 -----------------------------------------------------------------------
 -- 5.3 LIST ALL USER MAPPINGS WITH DATABASE ROLES/PERMISSIONS
+--     NOTE: sp_msloginmappings is undocumented and unsupported. It is
+--           not available on Azure SQL Database / Managed Instance.
+--           Section 4.6 (run per database) is the supported equivalent.
 -----------------------------------------------------------------------
+IF OBJECT_ID('tempdb..#tempww') IS NOT NULL
+    DROP TABLE #tempww;
+
 CREATE TABLE #tempww (
     LoginName nvarchar(max),
     DBname nvarchar(max),
@@ -455,33 +578,57 @@ GO
 
 -----------------------------------------------------------------------
 -- 5.4 TEST EFFECTIVE PERMISSIONS FOR A LOGIN
+--     Impersonates a login and reports what it can actually do.
+--     *** CHANGES SESSION CONTEXT - UNCOMMENT AND RUN DELIBERATELY ***
+--     Requires IMPERSONATE on the target login (sysadmin has it).
+--     ALWAYS run REVERT afterwards, otherwise the rest of your session
+--     keeps running as the impersonated login.
+--     NOTE: EXECUTE AS LOGIN persists across GO batches in the same
+--           session. Switching databases while impersonating requires
+--           the impersonated login to have access to that database.
 -----------------------------------------------------------------------
+/*
 EXECUTE AS LOGIN = 'DOMAIN\login';
-	SELECT * FROM fn_my_permissions(NULL, 'SERVER');
-	GO
-	
-	use SKLFYOL01;
-	GO
-	
-	SELECT * FROM fn_my_permissions (NULL, 'DATABASE');
-	GO
-	
-	SELECT * FROM fn_my_permissions('SkySql.GetAllDataContext', 'OBJECT') 
-    ORDER BY subentity_name, permission_name; 
+GO
+
+    -- Server-scoped effective permissions
+    SELECT * FROM fn_my_permissions(NULL, 'SERVER');
     GO
+
+    USE YourDatabaseName;
+    GO
+
+    -- Database-scoped effective permissions
+    SELECT * FROM fn_my_permissions(NULL, 'DATABASE');
+    GO
+
+    -- Object-scoped effective permissions
+    SELECT * FROM fn_my_permissions('YourSchema.YourObject', 'OBJECT')
+    ORDER BY subentity_name, permission_name;
+    GO
+
 REVERT;
 GO
+*/
 
 -----------------------------------------------------------------------
 -- 5.5 CHECK ROLE MEMBERSHIP PROGRAMMATICALLY
 --     IS_SRVROLEMEMBER tests for server role membership
---     IS_MEMBER tests for database role membership and Windows group membership
+--     IS_MEMBER tests for database role membership and Windows group
+--     membership. Both return NULL if the role/group does not exist,
+--     so test for = 0 AND IS NULL if you want to fail closed.
+--
+--     Pattern only - the bare ROLLBACK below would error outside an
+--     explicit transaction, so this stays commented.
 -----------------------------------------------------------------------
+/*
 IF IS_MEMBER('BankManagers') = 0
 BEGIN
-    PRINT 'Operation is only for bank manager use';
-    ROLLBACK;
+    RAISERROR('Operation is only for bank manager use.', 16, 1);
+    IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+    RETURN;
 END;
+*/
 GO
 
 
@@ -498,15 +645,10 @@ GO
 
 -----------------------------------------------------------------------
 -- 6.2 VIEW MEMBERS OF SERVER ROLES
+--     See 3.2 - same query, plus login type and disabled status.
+--     Kept here as a pointer only, to avoid a duplicate maintained
+--     in two places.
 -----------------------------------------------------------------------
-SELECT 
-    r.name AS RoleName,
-    p.name AS PrincipalName 
-FROM sys.server_role_members AS srm
-INNER JOIN sys.server_principals AS r
-    ON srm.role_principal_id = r.principal_id
-INNER JOIN sys.server_principals AS p
-    ON srm.member_principal_id = p.principal_id;
 GO
 
 -----------------------------------------------------------------------
@@ -542,26 +684,36 @@ The public server role by default is granted:
 
 -----------------------------------------------------------------------
 -- 6.5 CREATE USER-DEFINED SERVER ROLE (SQL Server 2012+)
+--     *** DDL - UNCOMMENT AND CUSTOMIZE BEFORE RUNNING ***
 -----------------------------------------------------------------------
+/*
 USE master;
 GO
 CREATE SERVER ROLE srv_documenters;
 GO
+*/
 
 -----------------------------------------------------------------------
 -- 6.6 ADD LOGIN TO SERVER ROLE
+--     *** DDL - UNCOMMENT AND CUSTOMIZE BEFORE RUNNING ***
+--     Adding a login to sysadmin grants full control of the instance.
 -----------------------------------------------------------------------
-ALTER SERVER ROLE serveradmin ADD MEMBER SampleLogin;
+/*
+ALTER SERVER ROLE serveradmin ADD MEMBER [YourLoginName];
 GO
 
-ALTER SERVER ROLE sysadmin ADD MEMBER [AdventureWorks\Jeff.Hay];
+ALTER SERVER ROLE sysadmin ADD MEMBER [DOMAIN\YourLoginName];
 GO
+*/
 
 -----------------------------------------------------------------------
 -- 6.7 REMOVE LOGIN FROM SERVER ROLE
+--     *** DDL - UNCOMMENT AND CUSTOMIZE BEFORE RUNNING ***
 -----------------------------------------------------------------------
-ALTER SERVER ROLE serveradmin DROP MEMBER SampleLogin;
+/*
+ALTER SERVER ROLE serveradmin DROP MEMBER [YourLoginName];
 GO
+*/
 
 
 /*********************************************************************************************
@@ -577,15 +729,10 @@ GO
 
 -----------------------------------------------------------------------
 -- 7.2 VIEW MEMBERS OF DATABASE ROLES (CURRENT DATABASE)
+--     See 4.2 - same query, plus user type and create date.
+--     Kept here as a pointer only, to avoid a duplicate maintained
+--     in two places.
 -----------------------------------------------------------------------
-SELECT 
-    r.name AS RoleName,
-    p.name AS PrincipalName 
-FROM sys.database_role_members AS drm
-INNER JOIN sys.database_principals AS r
-    ON drm.role_principal_id = r.principal_id
-INNER JOIN sys.database_principals AS p
-    ON drm.member_principal_id = p.principal_id;
 GO
 
 -----------------------------------------------------------------------
@@ -606,74 +753,70 @@ Fixed Database Roles:
 
 -----------------------------------------------------------------------
 -- 7.4 ADD USER TO FIXED DATABASE ROLE
+--     *** DDL - UNCOMMENT AND CUSTOMIZE BEFORE RUNNING ***
 -----------------------------------------------------------------------
-USE AdventureWorks;
+/*
+USE YourDatabaseName;
 GO
-ALTER ROLE db_datareader ADD MEMBER James;
+ALTER ROLE db_datareader ADD MEMBER [YourUserName];
 GO
-
-USE MarketDev;
+ALTER ROLE db_owner      ADD MEMBER [DOMAIN\ITSupport];
 GO
-ALTER ROLE db_owner ADD MEMBER [AdventureWorks\ITSupport];
-GO
-ALTER ROLE db_datareader ADD MEMBER DBMonitorApp;
-GO
+*/
 
 -----------------------------------------------------------------------
 -- 7.5 REMOVE USER FROM DATABASE ROLE
+--     *** DDL - UNCOMMENT AND CUSTOMIZE BEFORE RUNNING ***
 -----------------------------------------------------------------------
-USE AdventureWorks;
+/*
+USE YourDatabaseName;
 GO
-ALTER ROLE db_backupoperator DROP MEMBER Mod10Login;
+ALTER ROLE db_backupoperator DROP MEMBER [YourUserName];
 GO
+*/
 
 -----------------------------------------------------------------------
 -- 7.6 CREATE USER-DEFINED DATABASE ROLE
+--     *** DDL - UNCOMMENT AND CUSTOMIZE BEFORE RUNNING ***
+--     Prefer granting permissions to roles, not directly to users.
 -----------------------------------------------------------------------
-USE MarketDev;
+/*
+USE YourDatabaseName;
 GO
 
-CREATE ROLE MarketingReaders AUTHORIZATION dbo;
+CREATE ROLE YourRoleName AUTHORIZATION dbo;
 GO
-
-CREATE ROLE SalesTeam;
-GO
-
-CREATE ROLE SalesManagers;
-GO
-
-CREATE ROLE HR_LimitedAccess AUTHORIZATION dbo;
-GO
+*/
 
 -----------------------------------------------------------------------
 -- 7.7 ADD MEMBERS TO USER-DEFINED DATABASE ROLE
+--     *** DDL - UNCOMMENT AND CUSTOMIZE BEFORE RUNNING ***
 -----------------------------------------------------------------------
-ALTER ROLE MarketingReaders ADD MEMBER James;
+/*
+ALTER ROLE YourRoleName ADD MEMBER [YourUserName];
 GO
-
-ALTER ROLE SalesTeam ADD MEMBER [AdventureWorks\SalesPeople];
+ALTER ROLE YourRoleName ADD MEMBER [DOMAIN\YourGroupName];
 GO
-ALTER ROLE SalesTeam ADD MEMBER [AdventureWorks\CreditManagement];
-GO
-ALTER ROLE SalesTeam ADD MEMBER [AdventureWorks\CorporateManagers];
-GO
-ALTER ROLE SalesManagers ADD MEMBER [AdventureWorks\Darren.Parker];
-GO
-
-ALTER ROLE HR_LimitedAccess ADD MEMBER Mod10Login;
-GO
+*/
 
 -----------------------------------------------------------------------
 -- 7.8 REMOVE MEMBER FROM USER-DEFINED DATABASE ROLE
+--     *** DDL - UNCOMMENT AND CUSTOMIZE BEFORE RUNNING ***
 -----------------------------------------------------------------------
-ALTER ROLE HR_LimitedAccess DROP MEMBER Mod10Login;
+/*
+ALTER ROLE YourRoleName DROP MEMBER [YourUserName];
 GO
+*/
 
 -----------------------------------------------------------------------
 -- 7.9 DROP USER-DEFINED DATABASE ROLE
+--     *** DDL - UNCOMMENT AND CUSTOMIZE BEFORE RUNNING ***
+--     The role must have no members before it can be dropped.
 -----------------------------------------------------------------------
-DROP ROLE HR_LimitedAccess;
+/*
+DROP ROLE YourRoleName;
 GO
+*/
 
 
 /*********************************************************************************************
@@ -703,7 +846,9 @@ WHERE dp.[type] IN ('S', 'U')       -- SQL and Windows users
 ORDER BY dp.[name];
 
 -----------------------------------------------------------------------
--- 8.2 ORPHANED USERS — ALL DATABASES (via sp_MSforeachdb)
+-- 8.2 ORPHANED USERS - ALL DATABASES (via sp_MSforeachdb)
+--     NOTE: sp_MSforeachdb is undocumented and can silently skip
+--           databases. See the note on 4.5.
 -----------------------------------------------------------------------
 /*
 EXEC sp_MSforeachdb '
@@ -723,9 +868,18 @@ WHERE dp.[type] IN (''S'', ''U'')
 
 -----------------------------------------------------------------------
 -- 8.3 FIX ORPHANED USER
+--     *** DDL - UNCOMMENT AND CUSTOMIZE BEFORE RUNNING ***
+--     Remaps an existing database user to an existing server login.
+--     The login must already exist. If it does not, recreate it with
+--     the ORIGINAL SID (see 10.4 / 10.5) instead of remapping.
+--     8.1 generates the exact command for each orphan it finds.
 -----------------------------------------------------------------------
-ALTER USER dbuser WITH LOGIN = loginname;
+/*
+USE YourDatabaseName;
 GO
+ALTER USER [YourUserName] WITH LOGIN = [YourLoginName];
+GO
+*/
 
 
 /*********************************************************************************************
@@ -792,9 +946,21 @@ ORDER BY s.[name];
 
 -----------------------------------------------------------------------
 -- 9.4 ENABLE LOGGING OF PERMISSION ERRORS TO ERROR LOG
+--     *** SERVER CONFIGURATION CHANGE - UNCOMMENT DELIBERATELY ***
+--     Message 229 is "The <permission> permission was denied...".
+--     Turning WITH_LOG on writes every occurrence to the SQL Server
+--     error log, which is useful while troubleshooting but can be very
+--     noisy on a busy instance. Remember to turn it back off.
 -----------------------------------------------------------------------
-EXEC msdb.dbo.sp_altermessage 229,'WITH_LOG','true';
+/*
+-- Enable:
+EXEC msdb.dbo.sp_altermessage 229, 'WITH_LOG', 'true';
 GO
+
+-- Disable again when finished:
+-- EXEC msdb.dbo.sp_altermessage 229, 'WITH_LOG', 'false';
+-- GO
+*/
 
 -----------------------------------------------------------------------
 -- 9.5 SA ACCOUNT SECURITY CHECK
@@ -880,209 +1046,462 @@ GO
 -- GO
 */
 
+-----------------------------------------------------------------------
+-- 9.9 EXISTING AUDIT CONFIGURATION & STATUS
+--     Confirms whether the audits defined in 9.8 (or elsewhere) are
+--     actually defined, enabled, and running. An audit that exists but
+--     is not started collects nothing.
+--     NOTE: Server-level audit objects do not exist on Azure SQL
+--           Database - use the database audit specification queries and
+--           auditing settings there instead.
+-----------------------------------------------------------------------
+-- Defined server audits and their targets
+--     max_file_size / max_rollover_files / log_file_path only exist on
+--     sys.server_file_audits, so they are NULL for audits that write to
+--     the Windows application or security log.
+SELECT
+    a.[name]                AS AuditName,
+    a.type_desc             AS TargetType,          -- FILE / APPLICATION LOG / SECURITY LOG
+    a.on_failure_desc       AS OnFailure,
+    a.queue_delay           AS QueueDelayMs,
+    a.is_state_enabled      AS IsEnabled,
+    f.max_file_size         AS MaxFileSizeMB,
+    f.max_rollover_files    AS MaxRolloverFiles,
+    f.log_file_path         AS LogFilePath
+FROM sys.server_audits a
+    LEFT JOIN sys.server_file_audits f ON a.audit_id = f.audit_id
+ORDER BY a.[name];
+
+-- Runtime status of each audit
+SELECT
+    [name]                          AS AuditName,
+    [status_desc]                   AS [Status],
+    status_time                     AS StatusTime,
+    audit_file_path                 AS CurrentFile,
+    audit_file_size                 AS CurrentFileSizeBytes,
+    event_session_address           AS SessionAddress
+FROM sys.dm_server_audit_status
+ORDER BY [name];
+
+-- Which action groups are being captured, server level
+SELECT
+    a.[name]                        AS AuditName,
+    s.[name]                        AS SpecificationName,
+    s.is_state_enabled              AS SpecEnabled,
+    d.audit_action_name             AS AuditedActionGroup
+FROM sys.server_audit_specifications s
+    JOIN sys.server_audits a                   ON s.audit_guid = a.audit_guid
+    JOIN sys.server_audit_specification_details d ON s.server_specification_id = d.server_specification_id
+ORDER BY a.[name], s.[name], d.audit_action_name;
+
+-- Which action groups are being captured in the CURRENT database
+SELECT
+    DB_NAME()                       AS DatabaseName,
+    s.[name]                        AS SpecificationName,
+    s.is_state_enabled              AS SpecEnabled,
+    d.audit_action_name             AS AuditedAction,
+    d.class_desc                    AS ObjectClass,
+    d.major_id                      AS MajorId
+FROM sys.database_audit_specifications s
+    JOIN sys.database_audit_specification_details d
+        ON s.database_specification_id = d.database_specification_id
+ORDER BY s.[name], d.audit_action_name;
+GO
+
+-----------------------------------------------------------------------
+-- 9.10 CREDENTIALS, PROXIES & SERVICE ACCOUNTS
+--      Credentials store external identities (Windows accounts, storage
+--      keys, managed identities). Agent proxies let job steps run as
+--      those identities, which is a common privilege-escalation path:
+--      a low-privileged login with access to a proxy backed by a
+--      high-privileged account effectively inherits that account.
+-----------------------------------------------------------------------
+-- Server-scoped credentials
+SELECT
+    c.[name]                AS CredentialName,
+    c.credential_identity   AS CredentialIdentity,
+    c.create_date           AS CreatedDate,
+    c.modify_date           AS ModifiedDate
+FROM sys.credentials c
+ORDER BY c.[name];
+
+-- Database-scoped credentials (current database)
+SELECT
+    DB_NAME()               AS DatabaseName,
+    dsc.[name]              AS CredentialName,
+    dsc.credential_identity AS CredentialIdentity,
+    dsc.create_date         AS CreatedDate,
+    dsc.modify_date         AS ModifiedDate
+FROM sys.database_scoped_credentials dsc
+ORDER BY dsc.[name];
+
+-- SQL Agent proxies, the credential behind them, and who can use them
+SELECT
+    p.[name]                AS ProxyName,
+    p.enabled               AS ProxyEnabled,
+    c.[name]                AS CredentialName,
+    c.credential_identity   AS RunsAsIdentity,
+    sp.[name]               AS GrantedToPrincipal,
+    sp.[type_desc]          AS PrincipalType
+FROM msdb.dbo.sysproxies p
+    LEFT JOIN sys.credentials c            ON p.credential_id = c.credential_id
+    LEFT JOIN msdb.dbo.sysproxylogin pl    ON p.proxy_id = pl.proxy_id
+    LEFT JOIN sys.server_principals sp     ON pl.sid = sp.[sid]
+ORDER BY p.[name], sp.[name];
+
+-- Logins that own SQL Agent jobs (job owner determines execution context)
+SELECT
+    j.[name]                AS JobName,
+    j.enabled               AS JobEnabled,
+    SUSER_SNAME(j.owner_sid) AS JobOwner,
+    CASE
+        WHEN SUSER_SNAME(j.owner_sid) IS NULL
+            THEN '*** OWNER SID HAS NO MATCHING LOGIN ***'
+        WHEN IS_SRVROLEMEMBER('sysadmin', SUSER_SNAME(j.owner_sid)) = 1
+            THEN '* Owned by a sysadmin - job steps run with full rights *'
+        ELSE 'OK'
+    END                     AS [Status]
+FROM msdb.dbo.sysjobs j
+ORDER BY j.[name];
+GO
+
 
 /*********************************************************************************************
  * SECTION 10: CREATING & MANAGING LOGINS
  * Examples for creating and managing server-level logins
+ * *** EVERY STATEMENT IN THIS SECTION IS DDL AND IS COMMENTED OUT BY DESIGN ***
+ * *** Replace the placeholder names and passwords, then uncomment one at a time ***
  *********************************************************************************************/
 
 -----------------------------------------------------------------------
 -- 10.1 CREATE A WINDOWS LOGIN
 -----------------------------------------------------------------------
-CREATE LOGIN [ADVENTUREWORKS\user.name] FROM WINDOWS;
+/*
+CREATE LOGIN [DOMAIN\user.name] FROM WINDOWS;
 GO
+*/
 
 -----------------------------------------------------------------------
 -- 10.2 CREATE A SQL SERVER LOGIN
+--      Never commit a real password to source control. Use a strong,
+--      unique password supplied at run time.
 -----------------------------------------------------------------------
-CREATE LOGIN James WITH PASSWORD = 'Pa$$w0rd';
+/*
+CREATE LOGIN [YourLoginName]
+    WITH PASSWORD = '<StrongPasswordHere>',
+         CHECK_POLICY = ON,
+         CHECK_EXPIRATION = ON;
 GO
+*/
 
 -----------------------------------------------------------------------
 -- 10.3 CREATE SQL SERVER LOGIN WITHOUT POLICY CHECK
+--      CHECK_POLICY = OFF also disables CHECK_EXPIRATION and removes
+--      account lockout. Only do this where an application genuinely
+--      cannot cope with policy, and document the exception.
+--      Query 9.1 reports every login created this way.
 -----------------------------------------------------------------------
-CREATE LOGIN HRApp WITH PASSWORD = 'Pa$$w0rd',
-                        CHECK_POLICY = OFF;
+/*
+CREATE LOGIN [YourAppLogin]
+    WITH PASSWORD = '<StrongPasswordHere>',
+         CHECK_POLICY = OFF;
 GO
+*/
 
 -----------------------------------------------------------------------
--- 10.4 RECREATE LOGIN FOR EXISTING USER (WITH SPECIFIC SID)
+-- 10.4 RECREATE LOGIN WITH A SPECIFIC SID
+--      This is how you avoid orphaned users: recreating the login with
+--      the ORIGINAL SID means existing database users map straight back
+--      to it, with no ALTER USER ... WITH LOGIN needed.
+--      Get the SID from the source server with query 2.6.
 -----------------------------------------------------------------------
---IF EXISTS (
---    SELECT 1
---    FROM master.sys.server_principals
---    WHERE name = 'testuser'
---)
+/*
+IF EXISTS (
+    SELECT 1
+    FROM master.sys.server_principals
+    WHERE [name] = N'YourLoginName'
+)
 BEGIN
---    DROP LOGIN testuser;
---END
+    DROP LOGIN [YourLoginName];
+END
+GO
+
+CREATE LOGIN [YourLoginName]
+    WITH PASSWORD = '<StrongPasswordHere>',
+         SID = 0x00000000000000000000000000000000,   -- original SID from 2.6
+         DEFAULT_DATABASE = [YourDatabaseName],
+         DEFAULT_LANGUAGE = us_english,
+         CHECK_EXPIRATION = OFF,
+         CHECK_POLICY = ON;
+GO
+*/
+
+-----------------------------------------------------------------------
+-- 10.5 MIGRATE LOGINS BETWEEN SERVERS (SID + PASSWORD HASH)
+--      Generates CREATE LOGIN statements that preserve both the SID and
+--      the existing password hash, so applications keep working and no
+--      users are orphaned. Run on the SOURCE server, review the output,
+--      then run the generated script on the TARGET.
 --
---CREATE LOGIN testuser
---    WITH PASSWORD = 'T5yqz7SP',
---    SID = 0x81341CD7A514D746A59712F660F31DE2,
---    DEFAULT_DATABASE = testdb,
---    DEFAULT_LANGUAGE = English,
---    CHECK_EXPIRATION = OFF,
---    CHECK_POLICY = ON;
+--      This is the same idea as Microsoft's sp_help_revlogin, without
+--      needing to install the procedure first. If sp_help_revlogin is
+--      already deployed, EXEC sp_help_revlogin; does the same job.
+--
+--      NOTE: Password hashes are portable only between servers with
+--            compatible versions. Windows logins carry no hash - they
+--            are recreated FROM WINDOWS and keep their AD SID anyway.
+-----------------------------------------------------------------------
+SELECT
+    sp.[name] AS LoginName,
+    CASE sp.[type]
+        WHEN 'S' THEN
+            'CREATE LOGIN ' + QUOTENAME(sp.[name])
+            + ' WITH PASSWORD = ' + CONVERT(nvarchar(max), sl.password_hash, 1) + ' HASHED'
+            + ', SID = ' + CONVERT(nvarchar(max), sp.[sid], 1)
+            + ', DEFAULT_DATABASE = ' + QUOTENAME(sl.default_database_name)
+            + ', DEFAULT_LANGUAGE = ' + QUOTENAME(ISNULL(sl.default_language_name, N'us_english'))
+            + ', CHECK_POLICY = '     + CASE sl.is_policy_checked     WHEN 1 THEN 'ON' ELSE 'OFF' END
+            + ', CHECK_EXPIRATION = ' + CASE sl.is_expiration_checked WHEN 1 THEN 'ON' ELSE 'OFF' END
+            + ';'
+        ELSE
+            'CREATE LOGIN ' + QUOTENAME(sp.[name]) + ' FROM WINDOWS'
+            + ' WITH DEFAULT_DATABASE = ' + QUOTENAME(sp.default_database_name) + ';'
+    END
+    + CASE WHEN sp.is_disabled = 1
+           THEN CHAR(13) + CHAR(10) + 'ALTER LOGIN ' + QUOTENAME(sp.[name]) + ' DISABLE;'
+           ELSE '' END AS CreateLoginScript
+FROM sys.server_principals sp
+    LEFT JOIN sys.sql_logins sl ON sp.principal_id = sl.principal_id
+WHERE sp.[type] IN ('S', 'U', 'G')
+  AND sp.[name] NOT LIKE '##%'
+  AND sp.[name] <> 'sa'
+ORDER BY sp.[name];
 GO
 
 
 /*********************************************************************************************
  * SECTION 11: CREATING & MANAGING USERS
  * Examples for creating and managing database-level users
+ * *** EVERY STATEMENT IN THIS SECTION IS DDL AND IS COMMENTED OUT BY DESIGN ***
  *********************************************************************************************/
 
 -----------------------------------------------------------------------
 -- 11.1 CREATE USER FOR LOGIN
 -----------------------------------------------------------------------
-CREATE USER James FOR LOGIN James;
+/*
+USE YourDatabaseName;
 GO
+CREATE USER [YourUserName] FOR LOGIN [YourLoginName];
+GO
+*/
 
 -----------------------------------------------------------------------
 -- 11.2 CREATE USER NOT ASSOCIATED WITH A LOGIN (Contained Database User)
+--      Requires the database to have containment enabled
+--      (ALTER DATABASE ... SET CONTAINMENT = PARTIAL) and the server
+--      option 'contained database authentication' set to 1.
+--      Contained users move with the database, so they never orphan.
 -----------------------------------------------------------------------
-CREATE USER XRayApp WITH PASSWORD = 'Pa$$w0rd';
+/*
+CREATE USER [YourAppUser] WITH PASSWORD = '<StrongPasswordHere>';
 GO
+*/
 
 -----------------------------------------------------------------------
 -- 11.3 ENABLE GUEST ACCOUNT IN DATABASE
+--      *** NOT RECOMMENDED - guest lets ANY login reach this database ***
+--      Only msdb and the system databases should normally have it on.
+--      Query 9.2 finds user databases where guest is enabled.
 -----------------------------------------------------------------------
+/*
+USE YourDatabaseName;
 GO
+GRANT CONNECT TO guest;
+GO
+*/
 
 -----------------------------------------------------------------------
 -- 11.4 DISABLE GUEST USER FROM ACCESSING A DATABASE
+--      This is the recommended state for every user database.
+--      Do NOT run this against master, tempdb or msdb.
 -----------------------------------------------------------------------
+/*
+USE YourDatabaseName;
+GO
 REVOKE CONNECT FROM guest;
 GO
+*/
 
 -----------------------------------------------------------------------
 -- 11.5 CHANGE DATABASE OWNER
+--      Databases owned by a personal account break when that account
+--      is removed. Prefer sa or a dedicated service principal.
 -----------------------------------------------------------------------
-ALTER AUTHORIZATION ON DATABASE::MarketDev
-  TO [ADVENTUREWORKS\Administrator];
+/*
+ALTER AUTHORIZATION ON DATABASE::[YourDatabaseName]
+  TO [sa];
 GO
+*/
 
 
 /*********************************************************************************************
  * SECTION 12: GRANTING & REVOKING PERMISSIONS
  * Examples for managing object and schema-level permissions
+ * *** EVERY STATEMENT IN THIS SECTION IS DDL AND IS COMMENTED OUT BY DESIGN ***
+ * Best practice: grant to ROLES, not to individual users.
  *********************************************************************************************/
 
 -----------------------------------------------------------------------
 -- 12.1 GRANT OBJECT PERMISSION
 -----------------------------------------------------------------------
-USE MarketDev;
+/*
+USE YourDatabaseName;
 GO
 
-GRANT SELECT ON OBJECT::Marketing.Salesperson TO HRApp;
+GRANT SELECT ON OBJECT::YourSchema.YourTable TO YourRoleName;
 GO
 
 -- Alternative syntax (same result)
-GRANT SELECT ON Marketing.Salesperson TO HRApp;
+GRANT SELECT ON YourSchema.YourTable TO YourRoleName;
 GO
+*/
 
 -----------------------------------------------------------------------
 -- 12.2 GRANT COLUMN-LEVEL PERMISSIONS
 -----------------------------------------------------------------------
-GRANT SELECT ON Marketing.Salesperson
-    (SalespersonID, EmailAlias)
-TO James;
+/*
+GRANT SELECT ON YourSchema.YourTable
+    (Column1, Column2)
+TO YourRoleName;
 GO
+*/
 
 -----------------------------------------------------------------------
 -- 12.3 GRANT WITH GRANT OPTION (USE WITH CAUTION!)
 --      Allows grantee to grant permissions to others
 --      Generally should be avoided
 -----------------------------------------------------------------------
-GRANT UPDATE ON Marketing.Salesperson
-TO James
+/*
+GRANT UPDATE ON YourSchema.YourTable
+TO YourRoleName
 WITH GRANT OPTION;
 GO
+*/
 
 -----------------------------------------------------------------------
 -- 12.4 REVOKE PERMISSIONS WITH CASCADE
 --      CASCADE also revokes permissions granted by the grantee
+--      Required when the original grant used WITH GRANT OPTION
 --      Can also apply to DENY
 -----------------------------------------------------------------------
-REVOKE UPDATE ON Marketing.Salesperson
-FROM James
+/*
+REVOKE UPDATE ON YourSchema.YourTable
+FROM YourRoleName
 CASCADE;
 GO
+*/
 
 -----------------------------------------------------------------------
 -- 12.5 GRANT PERMISSIONS AT SCHEMA LEVEL
+--      Schema-level grants cover objects created later, so they need
+--      far less maintenance than per-object grants.
 -----------------------------------------------------------------------
-GRANT EXECUTE 
-	ON SCHEMA::Marketing
-	TO Mod11User;
+/*
+GRANT EXECUTE
+	ON SCHEMA::YourSchema
+	TO YourRoleName;
 GO
 
 GRANT SELECT
-	ON SCHEMA::DirectMarketing
-	TO Mod11User;
+	ON SCHEMA::YourSchema
+	TO YourRoleName;
 GO
+*/
 
 -----------------------------------------------------------------------
 -- 12.6 DENY PERMISSIONS AT SCHEMA LEVEL
+--      DENY always beats GRANT, at every scope.
 -----------------------------------------------------------------------
-DENY SELECT ON SCHEMA::DirectMarketing TO [AdventureWorks\April.Reagan];
+/*
+DENY SELECT ON SCHEMA::YourSchema TO [DOMAIN\user.name];
 GO
+*/
 
 -----------------------------------------------------------------------
 -- 12.7 GRANT MULTIPLE PERMISSIONS AT SCHEMA LEVEL AND ON OBJECTS
 -----------------------------------------------------------------------
-
-GRANT EXECUTE ON SCHEMA::DirectMarketing TO SalesTeam;
+/*
+GRANT EXECUTE ON SCHEMA::YourSchema TO YourRoleName;
 GO
 
-GRANT SELECT, UPDATE ON Marketing.SalesPerson TO [AdventureWorks\HumanResources];
+GRANT SELECT, UPDATE ON YourSchema.YourTable TO [DOMAIN\YourGroupName];
 GO
+*/
 
 -----------------------------------------------------------------------
 -- 12.8 GRANT EXECUTE PERMISSION ON STORED PROCEDURE
+--      Ownership chaining means callers usually need only EXECUTE on
+--      the procedure, not direct rights on the underlying tables.
 -----------------------------------------------------------------------
-GRANT EXECUTE ON Marketing.MoveCampaignBalance TO SalesManagers;
+/*
+GRANT EXECUTE ON YourSchema.YourProcedure TO YourRoleName;
 GO
+*/
 
 
 /*********************************************************************************************
  * SECTION 13: APPLICATION ROLES
  * Managing application roles for application-specific permissions
+ * *** EVERY STATEMENT IN THIS SECTION IS DDL AND IS COMMENTED OUT BY DESIGN ***
  *********************************************************************************************/
 
 -----------------------------------------------------------------------
 -- 13.1 CREATE APPLICATION ROLE
 --      Application roles enable permissions only when running specific applications
---      NOTE: Application role permissions replace user permissions!
+--      NOTE: Activating an application role REPLACES the user's own
+--            permissions for the rest of the session - it does not add
+--            to them. The session also loses its server-level identity
+--            for permission checks in other databases.
 -----------------------------------------------------------------------
-USE MarketDev;
+/*
+USE YourDatabaseName;
 GO
 
-CREATE APPLICATION ROLE MarketingApp WITH PASSWORD = 'Pa$$w0rd';
+CREATE APPLICATION ROLE YourAppRole WITH PASSWORD = '<StrongPasswordHere>';
 GO
+*/
 
 -----------------------------------------------------------------------
 -- 13.2 ASSIGN PERMISSIONS TO APPLICATION ROLE
 -----------------------------------------------------------------------
-GRANT SELECT ON SCHEMA::Marketing TO MarketingApp;
+/*
+GRANT SELECT ON SCHEMA::YourSchema TO YourAppRole;
 GO
+*/
 
 -----------------------------------------------------------------------
 -- 13.3 ACTIVATE APPLICATION ROLE
---      Use sp_setapprole to activate
---      Use sp_unsetapprole to deactivate
+--      sp_setapprole activates, sp_unsetapprole deactivates.
+--      Pass @fCreateCookie/@cookie if you need to revert cleanly.
+--      *** CHANGES SESSION CONTEXT ***
 -----------------------------------------------------------------------
+/*
 -- View current user tokens
 SELECT * FROM sys.user_token;
 GO
 
--- Set the application role
-EXEC sp_setapprole MarketingApp, 'Pa$$w0rd';
-GO
+-- Set the application role, keeping a cookie so it can be unset
+DECLARE @cookie varbinary(8000);
+EXEC sp_setapprole 'YourAppRole', '<StrongPasswordHere>',
+     @fCreateCookie = true, @cookie = @cookie OUTPUT;
 
--- View updated user tokens (should show application role)
+-- View updated user tokens (should show the application role)
 SELECT * FROM sys.user_token;
+
+-- Revert back to the original security context
+EXEC sp_unsetapprole @cookie;
 GO
+*/
 
 
 /*********************************************************************************************
@@ -1092,11 +1511,17 @@ GO
 
 -----------------------------------------------------------------------
 -- 14.1 TEST USER TOKENS AND LOGIN CONTEXT
+--      *** CHANGES SESSION CONTEXT - UNCOMMENT AND RUN DELIBERATELY ***
+--      sys.login_token shows the server-level identities in effect,
+--      sys.user_token the database-level ones. Between them they
+--      explain why a principal does or does not have access.
+--      Always REVERT when finished. See also 5.4.
 -----------------------------------------------------------------------
-USE MarketDev;
+/*
+USE YourDatabaseName;
 GO
 
-EXECUTE AS LOGIN = 'AdventureWorks\Darren.Parker';
+EXECUTE AS LOGIN = 'DOMAIN\user.name';
 GO
 
 SELECT * FROM sys.login_token;
@@ -1106,6 +1531,15 @@ SELECT * FROM sys.user_token;
 GO
 
 REVERT;
+GO
+*/
+
+-- Confirm you are back in your own context
+SELECT
+    SUSER_SNAME()          AS EffectiveLogin,
+    ORIGINAL_LOGIN()       AS OriginalLogin,
+    USER_NAME()            AS EffectiveDatabaseUser,
+    DB_NAME()              AS CurrentDatabase;
 GO
 
 -----------------------------------------------------------------------

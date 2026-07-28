@@ -10,32 +10,160 @@
  *   6. BACKUP VERIFICATION & INTEGRITY CHECKS
  *   7. BACKUP PERFORMANCE & METRICS
  *   8. LOG BACKUP & TRANSACTION LOG MONITORING
- *   9. RESTORE OPERATIONS & VERIFICATION
+ *   9. RESTORE UTILITIES & BACKUP HISTORY MAINTENANCE
  *  10. SYSTEM DATABASE RESTORE PROCEDURES
- *  11. BACKUP & RESTORE ARCHITECTURE CONCEPTS AND RESTORE SCENARIO REFERENCE
+ *  11. RESTORE SCENARIO TEMPLATES
+ *  12. MANAGED BACKUP TO AZURE - DIAGNOSTICS & TROUBLESHOOTING
+ *
+ * Background theory (recovery models, backup types, restore phases, recovery states, RESTORE
+ * options, strategy best practices) is in the CONCEPTS REFERENCE block below.
  *****************************************************************************************************/
---trace flags for backup and restore monitoring, historical reporting, integrity checks, performance analysis, and restore operations. Each section contains multiple queries with comments explaining their purpose and usage. Use these queries as templates for managing SQL Server backups and restores effectively.
+/*****************************************************************************************************
+ * !! READ BEFORE RUNNING !!
+ * Do NOT execute this file end-to-end. Sections 1-8 are read-only diagnostic queries and are safe.
+ * Sections 9-12 contain TEMPLATES (BACKUP / RESTORE / ALTER DATABASE / history purge / trace flags)
+ * and are deliberately commented out. Copy the block you need, replace the placeholder database
+ * names and paths, and run it deliberately.
+ *****************************************************************************************************/
 
-DBCC TRACEON(3004,-1) -- Prints progress messages after key steps in restore
-go
-DBCC TRACEON(3014,-1) -- Prints progress messages after each major MTF data stream
-go
-DBCC TRACEON(3110,-1) -- Print log headers 
-go
-DBCC TRACEON(3214,-1) -- Display Sql Text
-go
-DBCC TRACEON(3605,-1) -- Send trace output to the errorlog
-go
- 
---Enable DUMPTRIGGER for error 3287 with filter dump  
-DBCC TRACEON(2551,-1) 
-GO 
-DBCC DUMPTRIGGER('set', 3287) 
-GO 
-DBCC DUMPTRIGGER('set', 3013) 
-GO 
---Disable trace flags after use
-DBCC TRACEOFF (3004,3014,3110,3214,3605,-1)
+/*=====================================================================================================
+  CONCEPTS REFERENCE
+=======================================================================================================
+
+C1. WRITE-AHEAD LOGGING (WAL) AND CHECKPOINTS
+---------------------------------------------------------------------------------------------------
+SQL Server guarantees transactional durability through Write-Ahead Logging: every data modification
+is written to the transaction log on disk BEFORE the modified data page is written to the data file.
+
+    Log Buffers : Log records are batched in memory before being flushed to disk.
+    Checkpoints : Periodically flush "dirty" (modified) pages from the buffer pool to the data
+                  files. This bounds crash-recovery time, since only transactions after the last
+                  checkpoint must be processed on restart.
+
+
+C2. RECOVERY MODELS
+---------------------------------------------------------------------------------------------------
+Controls how the transaction log is maintained and which restore options are available.
+
+    SIMPLE       Log is auto-truncated after each checkpoint. No point-in-time recovery - restore
+                 is only possible to the last full/differential backup. Lowest admin overhead.
+
+    FULL         Every operation is fully logged; the log is only truncated by a log backup.
+                 Supports point-in-time recovery to any moment covered by the log chain. Requires
+                 periodic log backups or the log grows unbounded (Section 8 monitors this).
+
+    BULK_LOGGED  Adjunct to FULL. Minimally logs bulk operations (BULK INSERT, SELECT INTO, index
+                 rebuilds) to reduce log volume. Point-in-time recovery is DISABLED for any log
+                 backup containing a minimally logged operation.
+                 Pattern: backup log -> switch to BULK_LOGGED -> run bulk op -> switch back to
+                 FULL -> backup log again, to keep the point-in-time gap as small as possible.
+
+
+C3. CORE BACKUP TYPES
+---------------------------------------------------------------------------------------------------
+    Full             Complete copy of all data files, plus enough log to reach a consistent state
+                     on restore. Foundation of every restore chain.
+    Differential     Only the data extents changed since the last full backup. Faster to restore
+                     than a long chain of log backups.
+    Transaction Log  All log activity since the last log backup. Under FULL/BULK_LOGGED this is the
+                     only operation that truncates the log.
+    Tail-Log         Final log backup taken at the moment of failure (WITH NO_TRUNCATE if the
+                     database is damaged) to capture not-yet-backed-up transactions - enables zero
+                     data loss.
+    Copy-Only        Out-of-band backup (WITH COPY_ONLY) that does NOT break the differential base
+                     or the log backup chain.
+
+
+C4. RESTORE PHASES
+---------------------------------------------------------------------------------------------------
+Every restore sequence (Full -> Differential -> Logs, applied in order) passes through:
+
+    1. Data Copy  Data, log, and index pages are copied from the backup media into the target
+                  database files.
+    2. Redo       Committed transactions are rolled forward to the desired recovery point.
+                  (Enterprise Edition Fast Recovery lets users connect once Redo completes, while
+                  Undo still runs in the background.)
+    3. Undo       Transactions still open at the recovery point are rolled back to guarantee
+                  consistency before the database comes online.
+
+
+C5. RECOVERY STATES
+---------------------------------------------------------------------------------------------------
+    WITH NORECOVERY  Leaves the database in RESTORING state so more backups can be applied. Use for
+                     every backup in the chain except the last.
+    WITH RECOVERY    Default. Completes Redo/Undo and brings the database online. Use only for the
+                     final backup in the chain.
+    WITH STANDBY     Completes Redo/Undo but keeps the database read-only between log restores
+                     (undo actions are saved to an undo file), so it can be queried while more log
+                     backups are still pending.
+
+
+C6. COMMON RESTORE OPTIONS
+---------------------------------------------------------------------------------------------------
+    REPLACE                      Overwrite an existing database of the same name, or restore a
+                                 backup onto a differently named existing database.
+    MOVE 'logical' TO 'path'     Relocate data/log files, e.g. restoring to a different server or
+                                 drive layout.
+    STANDBY = 'undo_file'        Read-only between log restores (see C5).
+    CHECKSUM                     Verify page checksums recorded in the backup.
+    FILE = n                     Select a specific backup set within a media set/device holding
+                                 multiple backups.
+    RESTRICTED_USER              Limit access to sysadmin/db_owner/dbcreator after restore, for
+                                 post-restore validation.
+    KEEP_REPLICATION             Preserve replication settings when restoring a published database
+                                 to a different instance.
+    RESTART                      Resume an interrupted restore from where it left off.
+    STATS = n                    Report progress every n percent.
+
+
+C7. BACKUP STRATEGY BEST PRACTICES
+---------------------------------------------------------------------------------------------------
+    - Layer Full + Differential + Log backups to fit your RPO/RTO. SIMPLE recovery is only
+      appropriate when data loss back to the last full/diff is acceptable.
+    - Verify every backup: RESTORE VERIFYONLY plus periodic full test restores (Section 6) are the
+      only way to know a backup is actually recoverable.
+    - Don't neglect system databases - back up master (and msdb) regularly, especially after logins,
+      linked servers, or instance-level configuration changes.
+    - Store backups on separate physical devices/storage from the data and log files, and keep an
+      off-site/geo-redundant copy for disaster recovery.
+    - Set PAGE_VERIFY = CHECKSUM on every database so I/O-subsystem corruption is caught as early as
+      possible (see database-integrity-checks.sql, Section 2.3, for the audit query and fix script).
+    - Encrypt backups (BACKUP DATABASE ... WITH ENCRYPTION) and store the certificate/key separately
+      from the backup files - see tde-and-encryption-status.sql for certificate expiry audits.
+    - If a backup is encrypted, the certificate/asymmetric key must already exist on the destination
+      instance before restoring, and the restoring login needs VIEW DEFINITION on that encryptor.
+
+=====================================================================================================*/
+
+/*-----------------------------------------------------------------------------------------------------
+ OPTIONAL DIAGNOSTIC TRACE FLAGS (backup/restore verbose logging)
+ WARNING: -1 makes these GLOBAL (instance-wide) and they write heavily to the ERRORLOG.
+          TF 2551 + DUMPTRIGGER cause SQL Server to generate MEMORY DUMPS, which stall the
+          instance while the dump is written. Enable only during a supported troubleshooting
+          exercise, and disable them again as soon as the repro is captured.
+ Uncomment to enable:
+
+DBCC TRACEON(3004,-1);  -- Progress messages after key steps in restore
+DBCC TRACEON(3014,-1);  -- Progress messages after each major MTF data stream
+DBCC TRACEON(3110,-1);  -- Print log headers
+DBCC TRACEON(3214,-1);  -- Display SQL text
+DBCC TRACEON(3605,-1);  -- Send trace output to the ERRORLOG
+
+-- Enable DUMPTRIGGER for errors 3287 / 3013 (filtered dump)
+DBCC TRACEON(2551,-1);
+DBCC DUMPTRIGGER('set', 3287);
+DBCC DUMPTRIGGER('set', 3013);
+
+-- Verify what is currently enabled
+DBCC TRACESTATUS(-1);
+
+-- Disable everything again after use (DUMPTRIGGER must be cleared separately -
+-- TRACEOFF alone does NOT remove the registered dump triggers)
+DBCC DUMPTRIGGER('clear', 3287);
+DBCC DUMPTRIGGER('clear', 3013);
+DBCC TRACEOFF(3004,3014,3110,3214,3605,2551,-1);
+
+-----------------------------------------------------------------------------------------------------*/
 
 /*****************************************************************************************************
  * SECTION 1: BACKUP PROGRESS MONITORING
@@ -65,8 +193,9 @@ SELECT
         estimated_completion_time / 1000,
         GETDATE())               AS estimated_completion_time
 FROM sys.dm_exec_requests r
-    CROSS APPLY sys.dm_exec_sql_text(r.sql_handle) a
-WHERE r.command IN ('BACKUP DATABASE', 'RESTORE DATABASE', 'BACKUP LOG', 'RESTORE LOG')
+    OUTER APPLY sys.dm_exec_sql_text(r.sql_handle) a   -- OUTER APPLY: sql_handle can be NULL
+WHERE r.command IN ('BACKUP DATABASE', 'RESTORE DATABASE', 'BACKUP LOG', 'RESTORE LOG',
+                    'DBCC TABLE CHECK', 'RESTORE HEADERONLY', 'RESTORE VERIFYONLY')
 ORDER BY start_time;
 GO
 
@@ -81,8 +210,8 @@ SELECT
     percent_complete, 
     DATEADD(second, estimated_completion_time/1000, GETDATE()) AS estimated_completion_time 
 FROM sys.dm_exec_requests r 
-CROSS APPLY sys.dm_exec_sql_text(r.sql_handle) a 
-WHERE r.command = 'BACKUP DATABASE'
+OUTER APPLY sys.dm_exec_sql_text(r.sql_handle) a 
+WHERE r.command IN ('BACKUP DATABASE', 'BACKUP LOG')
 ORDER BY start_time;
 GO
 
@@ -94,6 +223,10 @@ GO
 
 -- Query 2.1: Monitor Ongoing Restore Progress (Basic)
 -- Quick view of restore operations with database state
+-- CAVEAT: sys.dm_exec_requests.database_id reflects the SESSION context (usually master) during a
+--         restore, not the target database, so the database name is matched heuristically against
+--         the batch text. A database whose name is a substring of another name (e.g. 'Sales' vs
+--         'SalesArchive') can produce extra rows - cross-check against d.state_desc = 'RESTORING'.
 SELECT 
     r.session_id             AS SPID,
     r.percent_complete,
@@ -134,7 +267,9 @@ WHERE r.command = 'RESTORE DATABASE'
 -- Wait 10 seconds to measure actual progress
 WAITFOR DELAY '00:00:10';
 
-UPDATE @ProgressTable
+-- NOTE: the UPDATE target must be the ALIAS (p), not @ProgressTable, otherwise SQL Server raises
+--       "The objects ... in the FROM clause have the same exposed names."
+UPDATE p
 SET SecondProgress = t.SecondProgress
 FROM @ProgressTable p
 INNER JOIN (
@@ -220,10 +355,8 @@ GO
 -- Comprehensive backup metadata including LSNs, encryption, compression, device info
 -- Useful for forensics and detailed analysis
 SELECT TOP 5000
-    bcks.database_name,
+    bckS.database_name,
     bckMF.device_type,
-    BackD.type_desc                           AS device_type_desc,
-    BackD.physical_name                       AS backup_device_name,
     bckS.[type]                               AS backup_type_code,
     CASE bckS.[type]
         WHEN 'D' THEN 'Full'
@@ -237,11 +370,11 @@ SELECT TOP 5000
         8)                                    AS backup_duration_hms,
     CONVERT(DECIMAL(19,2),
         (bckS.backup_size * 1.0) / POWER(2,20))        AS backup_size_mb,
-    CAST(bcks.backup_size / 1073741824.0
+    CAST(bckS.backup_size / 1073741824.0
          AS DECIMAL(10, 2))                   AS backup_size_gb,
     CONVERT(DECIMAL(19,2),
         (bckS.compressed_backup_size * 1.0) / POWER(2,20)) AS compressed_backup_size_mb,
-    CAST(bcks.compressed_backup_size / 1073741824.0
+    CAST(bckS.compressed_backup_size / 1073741824.0
          AS DECIMAL(10, 2))                   AS compressed_backup_size_gb,
     software_name,
     is_compressed,
@@ -257,8 +390,9 @@ SELECT TOP 5000
 FROM msdb.dbo.backupset bckS
 INNER JOIN msdb.dbo.backupmediaset bckMS ON bckS.media_set_id = bckMS.media_set_id
 INNER JOIN msdb.dbo.backupmediafamily bckMF ON bckMS.media_set_id = bckMF.media_set_id
-LEFT JOIN sys.backup_devices BackD ON bckMF.device_type = BackD.[type]
--- WHERE bcks.database_name = 'YourDBName'  -- Uncomment to filter by database
+-- NOTE: striped backups have one backupmediafamily row per stripe, so a striped backup set
+--       legitimately returns multiple rows here (one per physical_device_name).
+-- WHERE bckS.database_name = 'YourDBName'  -- Uncomment to filter by database
 ORDER BY bckS.backup_start_date DESC;
 GO
 
@@ -304,9 +438,9 @@ SELECT
     END                      AS backup_type
 FROM master.sys.databases db
 LEFT JOIN msdb.dbo.backupset AS bs ON db.name = bs.database_name
-  AND bs.backup_finish_date BETWEEN DATEADD(dd, -1, DATEDIFF(dd, 0, GETDATE())) 
-                                AND DATEADD(dd, 0, DATEDIFF(dd, 0, GETDATE()))
+  AND bs.backup_finish_date >= DATEADD(HOUR, -24, GETDATE())
 WHERE db.name NOT IN ('msdb', 'model', 'master', 'distribution', 'tempdb') 
+  AND db.source_database_id IS NULL   -- exclude database snapshots
 ORDER BY bs.backup_finish_date DESC;
 GO
 
@@ -429,22 +563,33 @@ GO
 
 /*****************************************************************************************************
  * SECTION 6: BACKUP VERIFICATION & INTEGRITY CHECKS
- * Purpose: Verify backup files, check backup chain completeness
- * Safety:  RESTORE VERIFYONLY is read-only — it does NOT restore data
+ * Purpose: Inspect and verify backup media, and check backup chain completeness
+ * Safety:  Every command in Query 6.1 is READ-ONLY - none of them restore data
  *****************************************************************************************************/
 
--- Query 6.1: Manual RESTORE VERIFYONLY Template
--- Validates backup file readability without restoring
--- Does NOT restore — just validates header, checksums, and structure
+-- Query 6.1: Backup Media Inspection & Verification (Templates)
+-- All four commands read the backup file only; none of them modify or restore a database.
+--   VERIFYONLY   - validates readability, header, checksums, and backup set structure
+--   HEADERONLY   - backup set metadata: type, date, server, database version, encryption
+--   FILELISTONLY - logical/physical file names, types and sizes
+--                  (file types: 'D' = Data, 'L' = Log, 'S' = Filestream)
+--   LABELONLY    - media set / media family information
+/* TEMPLATE
+-- Single backup file
+RESTORE VERIFYONLY   FROM DISK = N'C:\Backups\YourDB_Full.bak' WITH CHECKSUM;
+RESTORE HEADERONLY   FROM DISK = N'C:\Backups\YourDB_Full.bak';
+RESTORE FILELISTONLY FROM DISK = N'C:\Backups\YourDB_Full.bak';
+RESTORE LABELONLY    FROM DISK = N'C:\Backups\YourDB_Full.bak';
 
--- Single backup file:
--- RESTORE VERIFYONLY FROM DISK = N'C:\Backups\YourDB_Full.bak' WITH CHECKSUM;
+-- Striped backup - list every stripe in the same statement
+RESTORE VERIFYONLY
+    FROM DISK = N'C:\Backups\YourDB_Stripe1.bak',
+         DISK = N'C:\Backups\YourDB_Stripe2.bak'
+    WITH CHECKSUM;
 
--- Multiple stripe files:
--- RESTORE VERIFYONLY
---     FROM DISK = N'C:\Backups\YourDB_Stripe1.bak',
---          DISK = N'C:\Backups\YourDB_Stripe2.bak'
---     WITH CHECKSUM;
+-- Specific backup set within a media set holding multiple backups
+RESTORE VERIFYONLY FROM DISK = N'C:\Backups\YourDB_All.bak' WITH FILE = 3, CHECKSUM;
+*/
 
 
 -- Query 6.2: Generate VERIFYONLY Commands for Recent Full Backups
@@ -522,13 +667,6 @@ ORDER BY bs.backup_finish_date DESC;
 GO
 
 
--- Query 6.5: Inspect Backup File Contents (Templates)
--- Use these commands to examine backup file headers and file lists
--- RESTORE HEADERONLY FROM DISK = N'C:\Backups\YourDB_Full.bak';
--- RESTORE FILELISTONLY FROM DISK = N'C:\Backups\YourDB_Full.bak';
-GO
-
-
 /*****************************************************************************************************
  * SECTION 7: BACKUP PERFORMANCE & METRICS
  * Purpose: Analyze backup size, duration, throughput, and compression
@@ -585,50 +723,58 @@ GO
 -- Query 8.2: Comprehensive Database Backup Status with Log Information
 -- Shows recovery model, log size, log usage, and last backup of each type
 -- Includes backup compression details and last good CheckDB time
+-- NOTE: bs.compression_algorithm requires SQL Server 2022 (16.x) / Azure SQL MI.
+--       Remove that column on SQL Server 2019 and earlier.
 SELECT 
-    ISNULL(d.[name], bs.[database_name]) AS database_name, 
+    d.[name]                             AS database_name, 
     d.recovery_model_desc                AS recovery_model, 
     d.log_reuse_wait_desc                AS log_reuse_wait_desc,
-    CONVERT(DECIMAL(18,2), ds.cntr_value/1024.0) AS total_data_file_size_mb,
-    CONVERT(DECIMAL(18,2), ls.cntr_value/1024.0) AS total_log_file_size_mb,
-    CAST(CAST(lu.cntr_value AS FLOAT) / CAST(ls.cntr_value AS FLOAT) AS DECIMAL(18,2)) * 100 
+    CONVERT(DECIMAL(18,2), ds.cntr_value / 1024.0) AS total_data_file_size_mb,
+    CONVERT(DECIMAL(18,2), ls.cntr_value / 1024.0) AS total_log_file_size_mb,
+    CONVERT(DECIMAL(18,2), (lu.cntr_value * 100.0) / NULLIF(ls.cntr_value, 0))
                                          AS log_used_percent,
-    MAX(CASE WHEN bs.[type] = 'D' THEN bs.backup_finish_date ELSE NULL END) 
+    MAX(CASE WHEN bs.[type] = 'D' THEN bs.backup_finish_date END) 
                                          AS last_full_backup,
-    MAX(CASE WHEN bs.[type] = 'D' THEN CONVERT(BIGINT, bs.compressed_backup_size / 1048576) ELSE NULL END) 
+    MAX(CASE WHEN bs.[type] = 'D' THEN CONVERT(BIGINT, bs.compressed_backup_size / 1048576) END) 
                                          AS last_full_compressed_size_mb,
-    MAX(CASE WHEN bs.[type] = 'D' THEN CONVERT(DECIMAL(18,2), bs.backup_size / bs.compressed_backup_size) ELSE NULL END) 
+    MAX(CASE WHEN bs.[type] = 'D' 
+             THEN CONVERT(DECIMAL(18,2), bs.backup_size / NULLIF(bs.compressed_backup_size, 0)) END) 
                                          AS backup_compression_ratio,
-    MAX(CASE WHEN bs.[type] = 'D' THEN bs.compression_algorithm ELSE NULL END) 
+    MAX(CASE WHEN bs.[type] = 'D' THEN bs.compression_algorithm END) 
                                          AS last_full_backup_compression_algorithm,
-    MAX(CASE WHEN bs.[type] = 'I' THEN bs.backup_finish_date ELSE NULL END) 
+    MAX(CASE WHEN bs.[type] = 'I' THEN bs.backup_finish_date END) 
                                          AS last_differential_backup,
-    MAX(CASE WHEN bs.[type] = 'L' THEN bs.backup_finish_date ELSE NULL END) 
+    MAX(CASE WHEN bs.[type] = 'L' THEN bs.backup_finish_date END) 
                                          AS last_log_backup,
-    MAX(CASE WHEN bs.[type] = 'L' THEN bs.last_valid_restore_time ELSE NULL END) 
+    MAX(CASE WHEN bs.[type] = 'L' THEN bs.last_valid_restore_time END) 
                                          AS last_valid_restore_time,
     DATABASEPROPERTYEX(d.[name], 'LastGoodCheckDbTime') 
                                          AS last_good_checkdb
-FROM sys.databases AS d WITH (NOLOCK)
-INNER JOIN sys.master_files AS mf WITH (NOLOCK) ON d.database_id = mf.database_id
-LEFT OUTER JOIN msdb.dbo.backupset AS bs WITH (NOLOCK) ON bs.[database_name] = d.[name]
-    AND bs.backup_finish_date > GETDATE() - 30
-LEFT OUTER JOIN sys.dm_os_performance_counters AS lu WITH (NOLOCK) ON d.name = lu.instance_name
-LEFT OUTER JOIN sys.dm_os_performance_counters AS ls WITH (NOLOCK) ON d.name = ls.instance_name
-INNER JOIN sys.dm_os_performance_counters AS ds WITH (NOLOCK) ON d.name = ds.instance_name
-WHERE d.name <> N'tempdb'
-  AND lu.counter_name LIKE N'Log File(s) Used Size (KB)%' 
-  AND ls.counter_name LIKE N'Log File(s) Size (KB)%'
-  AND ds.counter_name LIKE N'Data File(s) Size (KB)%'
-  AND ls.cntr_value > 0 
+FROM sys.databases AS d
+LEFT OUTER JOIN msdb.dbo.backupset AS bs 
+    ON bs.[database_name] = d.[name]
+   AND bs.backup_finish_date > DATEADD(DAY, -30, GETDATE())
+LEFT OUTER JOIN sys.dm_os_performance_counters AS lu 
+    ON lu.instance_name = d.[name]
+   AND lu.counter_name LIKE N'Log File(s) Used Size (KB)%'
+   AND lu.[object_name] LIKE N'%Databases%'
+LEFT OUTER JOIN sys.dm_os_performance_counters AS ls 
+    ON ls.instance_name = d.[name]
+   AND ls.counter_name LIKE N'Log File(s) Size (KB)%'
+   AND ls.[object_name] LIKE N'%Databases%'
+LEFT OUTER JOIN sys.dm_os_performance_counters AS ds 
+    ON ds.instance_name = d.[name]
+   AND ds.counter_name LIKE N'Data File(s) Size (KB)%'
+   AND ds.[object_name] LIKE N'%Databases%'
+WHERE d.[name] <> N'tempdb'
+  AND d.source_database_id IS NULL      -- exclude database snapshots
 GROUP BY 
-    ISNULL(d.[name], bs.[database_name]), 
+    d.[name], 
     d.recovery_model_desc, 
     d.log_reuse_wait_desc, 
-    d.[name],
-    CONVERT(DECIMAL(18,2), ds.cntr_value/1024.0),
-    CONVERT(DECIMAL(18,2), ls.cntr_value/1024.0), 
-    CAST(CAST(lu.cntr_value AS FLOAT) / CAST(ls.cntr_value AS FLOAT) AS DECIMAL(18,2)) * 100
+    ds.cntr_value,
+    ls.cntr_value,
+    lu.cntr_value
 ORDER BY database_name;
 GO
 
@@ -636,63 +782,17 @@ GO
 
 
 /*****************************************************************************************************
- * SECTION 9: RESTORE OPERATIONS & VERIFICATION
- * Purpose: Backup file inspection, database restore scenarios, and backup history management
+ * SECTION 9: RESTORE UTILITIES & BACKUP HISTORY MAINTENANCE
+ * Purpose: Restore helpers that fall outside the standard scenario templates - marked
+ *          transactions, STANDBY mode, forcing recovery, and msdb history cleanup.
+ * See also: Section 6.1 for backup media inspection (HEADERONLY / FILELISTONLY / VERIFYONLY)
+ *           Section 11  for the full set of restore scenario templates
  *****************************************************************************************************/
 
--- Query 9.1: Inspect Backup File Header Information
--- Retrieves backup set metadata from a backup file
--- Shows backup type, date, server name, database version, and encryption details
-RESTORE HEADERONLY 
-FROM DISK = 'D:\MSSQLServer\Adv.bak';
-GO
-
-
--- Query 9.2: List Files Contained in Backup
--- Shows logical and physical file names, file types, and sizes
--- File types: 'D' = Data, 'L' = Log, 'S' = Filestream
-RESTORE FILELISTONLY 
-FROM DISK = 'D:\MSSQLServer\Adv.bak';
-GO
-
-
--- Query 9.3: Verify Backup Integrity
--- Checks backup file validity without restoring it
--- Verifies readability, checksums, and backup set integrity
-RESTORE VERIFYONLY 
-FROM DISK = 'D:\MSSQLServer\Adv.bak';
-GO
-
-
--- Query 9.4: Single File Restore (Complete Sequence)
--- Used when only a specific data file needs to be restored
--- Step 1: Perform tail-log backup to capture recent transactions
-BACKUP LOG FTest
-    TO DISK = 'D:\MSSQLServer\FTest.trn'
-    WITH INIT, CONTINUE_AFTER_ERROR;
-GO
-
--- Step 2: Restore only the damaged/missing file
-RESTORE DATABASE FTest
-    FILE = 'FTest1'
-    FROM DISK = 'D:\MSSQLServer\FTest_full.bak'
-    WITH NORECOVERY;
-GO
-
--- Step 3: Restore the tail-log backup and bring database online
-RESTORE LOG FTest
-    FROM DISK = 'D:\MSSQLServer\FTest.trn'
-    WITH RECOVERY;
-GO
-
-
--- Query 9.5: Point-in-Time Restore Using Marked Transactions
--- Allows restoration to a specific transaction mark
-
--- Example: Mark a transaction for potential recovery point
--- BEGIN TRAN UpdPrc WITH MARK 'Start of nightly update process';
-
--- Query marked transactions to find recovery points
+-- Query 9.1: Marked Transactions (Recovery Points)
+-- Lists transaction marks available as restore targets.
+-- Marks are created by the application: BEGIN TRAN UpdPrc WITH MARK 'Nightly update start';
+-- To restore to (or just before) a mark, see Query 11.3.
 SELECT 
     database_name,
     mark_name,
@@ -705,96 +805,63 @@ ORDER BY mark_time DESC;
 GO
 
 
--- Query 9.6: Force Database Recovery
+-- Query 9.2: Force Database Recovery
 -- If the last restore was inadvertently performed WITH NORECOVERY,
 -- this command forces the database to complete recovery and come online
 -- RESTORE LOG [DatabaseName] WITH RECOVERY;
 GO
 
 
--- Query 9.7: Restore to Point Before Transaction Mark
--- Restores database to state immediately before the specified mark
--- Useful to exclude a problematic transaction
-RESTORE LOG RTest
-    FROM DISK = 'D:\MSSQLServer\RTest.trn'
-    WITH RECOVERY, STOPBEFOREMARK = 'PriorToInsert';
-GO
-
-
--- Query 9.8: Restore to Specific Transaction Mark
--- Restores database including the marked transaction
--- Useful to restore to a known good state
-RESTORE LOG RTest
-    FROM DISK = 'D:\MSSQLServer\RTest.trn'
-    WITH RECOVERY, STOPATMARK = 'PriorToInsert';
-GO
-
-
--- Query 9.9: Restore with STANDBY Mode (Complete Sequence)
--- STANDBY allows read-only access between log restores
--- Useful for reporting on near-current data during log shipping
-
--- Step 1: Set database to single-user mode
+-- Query 9.3: Restore with STANDBY Mode (Complete Sequence)
+-- STANDBY allows read-only access between log restores - useful for reporting on
+-- near-current data during log shipping. See C5 for how STANDBY differs from NORECOVERY.
+/* TEMPLATE
 ALTER DATABASE [MarketYields] 
 SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
-GO
 
--- Step 2: Restore full backup with file relocation
+-- Full backup, with file relocation
 RESTORE DATABASE [MarketYields] 
 FROM DISK = N'D:\MSSQLServer\MarketYields.bak' 
 WITH FILE = 2,  
     MOVE N'MarketYields' TO N'D:\MKTG\MarketYields.mdf',  
     MOVE N'MarketYields_log' TO N'L:\MKTG\MarketYields_log.ldf',  
-    NORECOVERY,  
-    NOUNLOAD,  
-    STATS = 5;
-GO
+    NORECOVERY, NOUNLOAD, STATS = 5;
 
--- Step 3: Restore differential backup
+-- Differential backup
 RESTORE DATABASE [MarketYields] 
 FROM DISK = N'D:\MSSQLServer\MarketYields.bak' 
-WITH FILE = 5,  
-    NORECOVERY,  
-    NOUNLOAD,  
-    STATS = 5;
-GO
+WITH FILE = 5, NORECOVERY, NOUNLOAD, STATS = 5;
 
--- Step 4: Restore transaction log (can repeat for additional logs)
+-- Transaction log (repeat for additional logs)
 RESTORE LOG [MarketYields] 
 FROM DISK = N'D:\MSSQLServer\MarketYields.bak' 
-WITH FILE = 6,  
-    NORECOVERY,  
-    NOUNLOAD,  
-    STATS = 5;
-GO
+WITH FILE = 6, NORECOVERY, NOUNLOAD, STATS = 5;
 
--- Step 5: Restore final log with STANDBY mode
--- Database will be readable but can accept additional log restores
+-- Final log with STANDBY - database becomes readable, further log restores still allowed
 RESTORE LOG [MarketYields] 
 FROM DISK = N'D:\MSSQLServer\MarketYields.bak' 
 WITH FILE = 7,  
     STANDBY = N'L:\Log_Standby.bak',  
-    NOUNLOAD,  
-    STATS = 5;
-GO
+    NOUNLOAD, STATS = 5;
 
--- Step 6: Set database back to multi-user mode
 ALTER DATABASE [MarketYields] 
 SET MULTI_USER;
+*/
 GO
 
 
--- Query 9.10: Delete Backup History
+-- Query 9.4: Delete Backup History
 -- Removes old backup history records from msdb to manage database size
-
+-- DESTRUCTIVE: this permanently deletes rows from msdb backup/restore history tables.
+/* TEMPLATE
 -- Delete all backup history prior to specified date
-EXEC sp_delete_backuphistory 
+EXEC msdb.dbo.sp_delete_backuphistory 
     @oldest_date = '20090101';
-GO
 
 -- Delete backup history for a specific database
-EXEC sp_delete_database_backuphistory 
+EXEC msdb.dbo.sp_delete_database_backuphistory 
     @database_name = 'Market';
+*/
 GO
 
 
@@ -888,290 +955,160 @@ Restore Procedure:
 
 
 /*****************************************************************************************************
- * SECTION 11: BACKUP & RESTORE ARCHITECTURE CONCEPTS AND RESTORE SCENARIO REFERENCE
- * Purpose: Conceptual reference covering the internal backup/restore architecture, recovery
- *          models, restore phases, and step-by-step T-SQL patterns for every restore scenario
- *          (complements the operational queries in Sections 6 and 9)
+ * SECTION 11: RESTORE SCENARIO TEMPLATES
+ * Purpose: Copy-and-edit T-SQL patterns for each restore scenario.
+ * Theory:  See CONCEPTS REFERENCE at the top of this file (C2 recovery models, C3 backup types,
+ *          C4 restore phases, C5 recovery states, C6 RESTORE options, C7 best practices).
+ * !! Every block below is a TEMPLATE and is commented out on purpose.
+ *    Replace [YourDatabase] and the D:\Backups\... paths before running.
  *****************************************************************************************************/
 
-/*
------------------------------------------------------------------------------------------
-11.1  INTERNAL MECHANICS: WRITE-AHEAD LOGGING (WAL) AND CHECKPOINTS
------------------------------------------------------------------------------------------
-SQL Server guarantees transactional durability through Write-Ahead Logging. Every data
-modification is written to the transaction log on disk BEFORE the modified data page is
-written to the physical data file.
-
-    - Log Buffers  : Log records are batched in memory (log buffers) before being
-                      flushed to disk.
-    - Checkpoints  : Periodically flush all "dirty" (modified) pages from the buffer pool
-                      to the data files. This bounds crash-recovery time, since only
-                      transactions after the last checkpoint must be processed on restart.
-
------------------------------------------------------------------------------------------
-11.2  RECOVERY MODELS
------------------------------------------------------------------------------------------
-The recovery model controls how the transaction log is maintained and which restore
-options are available.
-
-    SIMPLE
-        - Log is auto-truncated after each checkpoint.
-        - No point-in-time recovery; restore is only possible to the point of the last
-          full/differential backup.
-        - Lowest administrative overhead; relies solely on full and differential backups.
-
-    FULL
-        - Every operation is fully logged; the log is only truncated by a log backup.
-        - Supports point-in-time recovery to any moment covered by the log chain.
-        - Requires periodic transaction log backups, or the log will grow unbounded
-          (see Section 8 for log-backup monitoring queries).
-
-    BULK_LOGGED
-        - Adjunct to FULL; minimally logs bulk operations (BULK INSERT, SELECT INTO,
-          index rebuilds) to reduce log volume and improve throughput.
-        - Point-in-time recovery is DISABLED for any log backup that contains a
-          minimally logged operation.
-        - Recommended pattern: backup log -> switch to BULK_LOGGED -> run bulk operation
-          -> switch back to FULL -> backup log again, to keep the point-in-time gap as
-          small as possible.
-
------------------------------------------------------------------------------------------
-11.3  CORE BACKUP TYPES
------------------------------------------------------------------------------------------
-    Full            : Complete copy of all data files, plus enough of the log to bring
-                       the database to a consistent state on restore. Foundation of every
-                       restore chain.
-    Differential    : Captures only the data extents changed since the last full backup.
-                       Faster to restore than a long chain of log backups.
-    Transaction Log : Captures all log activity since the last log backup. In FULL/
-                       BULK_LOGGED models, this is the only operation that truncates the
-                       log.
-    Tail-Log        : A final log backup taken at the moment of failure (WITH NO_TRUNCATE
-                       if the database is damaged) to capture any not-yet-backed-up
-                       transactions, enabling zero data loss.
-    Copy-Only       : An out-of-band backup (WITH COPY_ONLY) that does NOT break the
-                       differential base or the log backup chain.
-
------------------------------------------------------------------------------------------
-11.4  RESTORE PHASES
------------------------------------------------------------------------------------------
-Every restore sequence (Full -> Differential -> Logs, applied in order) passes through
-three phases:
-
-    1. Data Copy Phase : Data, log, and index pages are copied from the backup media into
-                          the target database files.
-    2. Redo Phase      : Committed transactions from the transaction log(s) are rolled
-                          forward to bring the database to the desired recovery point.
-                          (Enterprise Edition Fast Recovery lets users connect once Redo
-                          completes, while Undo still runs in the background.)
-    3. Undo Phase      : Transactions that were still open (uncommitted) at the recovery
-                          point are rolled back to guarantee consistency before the
-                          database comes online.
-
------------------------------------------------------------------------------------------
-11.5  RECOVERY STATES
------------------------------------------------------------------------------------------
-    WITH NORECOVERY : Leaves the database in the RESTORING state so more backups can be
-                       applied. Use for every backup in the chain except the last.
-    WITH RECOVERY   : Default. Completes Redo/Undo and brings the database online.
-                       Use only for the final backup in the chain.
-    WITH STANDBY    : Completes Redo/Undo but keeps the database read-only between log
-                       restores (undo actions are saved to an undo file), so it can be
-                       queried while more log backups are pending.
-
------------------------------------------------------------------------------------------
-11.6  BACKUP STRATEGY BEST PRACTICES
------------------------------------------------------------------------------------------
-    - Layer Full + Differential + Log backups to fit your RPO/RTO; SIMPLE recovery is
-      only appropriate when some data loss (back to the last full/diff) is acceptable.
-    - Verify every backup: RESTORE VERIFYONLY plus periodic full test restores (Section 6)
-      are the only way to know a backup is actually recoverable.
-    - Don't neglect system databases - back up master (and msdb) regularly, especially
-      after logins, linked servers, or instance-level configuration changes.
-    - Store backups on separate physical devices/storage from the data and log files,
-      and keep an off-site/geo-redundant copy for disaster recovery.
-    - Set PAGE_VERIFY = CHECKSUM on every database so I/O-subsystem corruption is caught
-      as early as possible (see database-integrity-checks.sql, Section 2.3, for the audit
-      query and fix-it script).
-    - Encrypt backups (BACKUP DATABASE ... WITH ENCRYPTION) and store the certificate/key
-      used separately from the backup files themselves - see tde-and-encryption-status.sql
-      for certificate expiry and encryption-state audits.
------------------------------------------------------------------------------------------
-*/
-
-
--- Query 11.1: Essential Pre-Restore Preparations
--- Step 1: Isolate the database - required before a full restore, since SQL Server
--- effectively drops and re-creates the database, which cannot happen with active
--- connections in place
+-- Query 11.1: Pre-Restore Preparation - isolate, capture the tail, inspect the media
+-- Media inspection commands (HEADERONLY / FILELISTONLY / LABELONLY) are detailed in Query 6.1
+/* TEMPLATE
 ALTER DATABASE [YourDatabase] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
-GO
 
--- Step 2: Take a tail-log backup to capture any transactions not yet backed up
--- (WITH NO_TRUNCATE allows this even if the database is damaged or inaccessible)
 BACKUP LOG [YourDatabase]
     TO DISK = 'D:\Backups\YourDatabase_TailLog.trn'
     WITH NO_TRUNCATE, NORECOVERY;
-GO
 
--- Step 3: Inspect available backup sets before restoring (see also Section 9.1/9.2)
 RESTORE HEADERONLY   FROM DISK = 'D:\Backups\YourDatabase_Full.bak';
 RESTORE FILELISTONLY FROM DISK = 'D:\Backups\YourDatabase_Full.bak';
 RESTORE LABELONLY    FROM DISK = 'D:\Backups\YourDatabase_Full.bak';
-GO
-
--- Note: If the backup is encrypted, the certificate/asymmetric key used to encrypt it
--- must already exist on the destination instance, and the restoring login needs
--- VIEW DEFINITION permission on that encryptor.
+*/
 
 
--- Query 11.2: Complete (Full) Database Restore - Full -> Differential -> Logs -> Tail-Log
+-- Query 11.2: Complete Database Restore - Full -> Differential -> Logs -> Tail-Log
+/* TEMPLATE
 RESTORE DATABASE [YourDatabase]
     FROM DISK = 'D:\Backups\YourDatabase_Full.bak'
     WITH NORECOVERY;
-GO
 
 RESTORE DATABASE [YourDatabase]
     FROM DISK = 'D:\Backups\YourDatabase_Diff.bak'
     WITH NORECOVERY;
-GO
 
 RESTORE LOG [YourDatabase]
     FROM DISK = 'D:\Backups\YourDatabase_Log1.trn'
     WITH NORECOVERY;
-GO
 
 RESTORE LOG [YourDatabase]
     FROM DISK = 'D:\Backups\YourDatabase_TailLog.trn'
     WITH RECOVERY;
-GO
+*/
 
 
--- Query 11.3: Point-in-Time Restore Using STOPAT
--- Requires FULL or BULK_LOGGED recovery model. Restore a full backup taken before the
--- target time, then apply subsequent log backups, stopping log application at STOPAT.
--- (See also Section 9.5/9.7/9.8 for STOPATMARK / STOPBEFOREMARK named-transaction restores.)
+-- Query 11.3: Point-in-Time Restore - requires FULL or BULK_LOGGED
+-- Restore a full backup taken before the target point, apply logs, then stop at:
+--   STOPAT          = a datetime
+--   STOPATMARK      = a named transaction mark, INCLUDING the marked transaction
+--   STOPBEFOREMARK  = a named transaction mark, EXCLUDING the marked transaction
+-- Available marks are listed by Query 9.1.
+/* TEMPLATE
 RESTORE DATABASE [YourDatabase]
     FROM DISK = 'D:\Backups\YourDatabase_Full.bak'
     WITH NORECOVERY;
-GO
 
 RESTORE LOG [YourDatabase]
     FROM DISK = 'D:\Backups\YourDatabase_Log1.trn'
     WITH NORECOVERY, STOPAT = '2026-07-24T14:30:00';
-GO
 
 RESTORE LOG [YourDatabase]
     FROM DISK = 'D:\Backups\YourDatabase_TailLog.trn'
     WITH RECOVERY, STOPAT = '2026-07-24T14:30:00';
-GO
+
+-- Mark-based variants - substitute for the STOPAT clause above
+RESTORE LOG [YourDatabase]
+    FROM DISK = 'D:\Backups\YourDatabase_Log1.trn'
+    WITH RECOVERY, STOPATMARK = 'NightlyLoadStart';
+
+RESTORE LOG [YourDatabase]
+    FROM DISK = 'D:\Backups\YourDatabase_Log1.trn'
+    WITH RECOVERY, STOPBEFOREMARK = 'NightlyLoadStart';
+*/
 
 
--- Query 11.4: File/Filegroup Restore (read-write filegroup - requires FULL/BULK_LOGGED,
--- since transaction log backups must be applied afterward)
+-- Query 11.4: File / Filegroup Restore - requires FULL or BULK_LOGGED
+-- Covers restoring a single damaged data file as well as a whole read-write filegroup.
+-- Log backups must be applied afterward to roll the file forward to the rest of the database.
+/* TEMPLATE
 BACKUP LOG [YourDatabase]
     TO DISK = 'D:\Backups\YourDatabase_TailLog.trn'
     WITH NORECOVERY;
-GO
 
+-- Single file (use FILEGROUP = 'FG2' instead to restore an entire filegroup)
 RESTORE DATABASE [YourDatabase]
     FILE = 'YourDatabase_FG2_File1'
     FROM DISK = 'D:\Backups\YourDatabase_FileGroup.bak'
     WITH NORECOVERY;
-GO
 
 RESTORE LOG [YourDatabase]
     FROM DISK = 'D:\Backups\YourDatabase_Log1.trn'
     WITH NORECOVERY;
-GO
 
 RESTORE LOG [YourDatabase]
     FROM DISK = 'D:\Backups\YourDatabase_TailLog.trn'
     WITH RECOVERY;
-GO
+*/
 
 
--- Query 11.5: Page Restore (Enterprise Edition only; NOT supported under SIMPLE recovery;
--- system pages such as file headers cannot be restored this way)
--- Repairs specific corrupted 8KB pages without taking the whole database offline
+-- Query 11.5: Page Restore - repairs specific corrupt 8KB pages with the database online
+-- Enterprise Edition only. Not supported under SIMPLE. System pages (file headers) are excluded.
+/* TEMPLATE
 RESTORE DATABASE [YourDatabase]
     PAGE = '1:57, 1:58, 3:24'
     FROM DISK = 'D:\Backups\YourDatabase_Full.bak'
     WITH NORECOVERY;
-GO
 
 RESTORE LOG [YourDatabase]
     FROM DISK = 'D:\Backups\YourDatabase_Log1.trn'
     WITH NORECOVERY;
-GO
 
--- Take a fresh log backup to capture the restored page(s), then recover
-BACKUP LOG [YourDatabase] TO DISK = 'D:\Backups\YourDatabase_PostPageRestore.trn';
-GO
+BACKUP LOG [YourDatabase]
+    TO DISK = 'D:\Backups\YourDatabase_PostPageRestore.trn';
 
 RESTORE LOG [YourDatabase]
     FROM DISK = 'D:\Backups\YourDatabase_PostPageRestore.trn'
     WITH RECOVERY;
-GO
+*/
 
 
--- Query 11.6: Piecemeal Restore - bring the PRIMARY filegroup online first, then
--- restore remaining filegroups individually while the database is partially available
+-- Query 11.6: Piecemeal Restore - bring PRIMARY online first, then secondary filegroups
+/* TEMPLATE
 RESTORE DATABASE [YourDatabase]
     FILEGROUP = 'PRIMARY'
     FROM DISK = 'D:\Backups\YourDatabase_Full.bak'
     WITH PARTIAL, NORECOVERY;
-GO
 
 RESTORE LOG [YourDatabase]
     FROM DISK = 'D:\Backups\YourDatabase_Log1.trn'
     WITH NORECOVERY;
-GO
 
 RESTORE LOG [YourDatabase]
     FROM DISK = 'D:\Backups\YourDatabase_TailLog.trn'
     WITH RECOVERY;
-GO
 
--- Remaining (secondary) filegroups can be restored afterward, individually, while
--- PRIMARY is already online and serving queries
 RESTORE DATABASE [YourDatabase]
     FILEGROUP = 'SECONDARY'
     FROM DISK = 'D:\Backups\YourDatabase_FileGroup.bak'
     WITH NORECOVERY;
-GO
 
 RESTORE LOG [YourDatabase]
     FROM DISK = 'D:\Backups\YourDatabase_TailLog.trn'
     WITH RECOVERY;
-GO
+*/
 
 
 -- Query 11.7: Revert to a Database Snapshot
--- Fast way to return to a known-good state; breaks the log backup chain, so a new full
--- backup is required afterward to resume log backups. Drop other snapshots first if
--- reverting to a point before they were created.
+-- Breaks the log backup chain - take a new full backup afterward. Drop other snapshots first.
+/* TEMPLATE
 RESTORE DATABASE [YourDatabase]
     FROM DATABASE_SNAPSHOT = 'YourDatabase_Snapshot_20260724';
-GO
+*/
 
 
--- Query 11.8: Restore with File Relocation and Overwrite (General Options Reference)
--- WITH REPLACE                          : Overwrite an existing database of the same
---                                          name, or restore a backup onto a differently
---                                          named existing database
--- WITH MOVE 'logical' TO 'physical_path' : Relocate data/log files, e.g. when restoring
---                                          to a different server or drive layout
--- WITH STANDBY = 'undo_file'            : Read-only between log restores (see 11.5)
--- WITH CHECKSUM                         : Verify page checksums recorded in the backup
--- WITH FILE = n                         : Select a specific backup set within a media
---                                          set/device that holds multiple backups
--- WITH RESTRICTED_USER                  : Limit access to sysadmin/db_owner/dbcreator
---                                          after restore, for post-restore validation
--- WITH KEEP_REPLICATION                 : Preserve replication settings when restoring a
---                                          published database to a different instance
--- WITH RESTART                          : Resume an interrupted restore from where it
---                                          left off, skipping completed work
+-- Query 11.8: Restore with File Relocation and Overwrite (option reference in C6)
+/* TEMPLATE
 RESTORE DATABASE [YourDatabase]
     FROM DISK = 'D:\Backups\YourDatabase_Full.bak'
     WITH REPLACE,
@@ -1179,82 +1116,96 @@ RESTORE DATABASE [YourDatabase]
          MOVE 'YourDatabase_log' TO 'L:\Log\YourDatabase_log.ldf',
          RECOVERY,
          STATS = 10;
-GO
+*/
 
 
 -- Query 11.9: Post-Restore Checklist
--- 1. Integrity check on the recovered database
+--   1. Integrity check the recovered database (template below)
+--   2. Remap orphaned logins/users if moved to a new server - see logins-and-security.sql
+--   3. Periodically test the whole sequence end-to-end to prove RTO/RPO - see Section 5
+/* TEMPLATE
 DBCC CHECKDB ('YourDatabase') WITH NO_INFOMSGS;
+*/
 GO
 
--- 2. If the database was moved to a new server, remap orphaned logins/users so
---    applications can connect (see logins-and-security.sql for orphaned-user repair)
 
--- 3. Periodically test the full restore sequence end-to-end to validate that RTO/RPO
---    targets are actually met (see Section 5 for backup-recency/overdue alerts)
-
+/*****************************************************************************************************
+ * SECTION 12: MANAGED BACKUP TO AZURE - DIAGNOSTICS & TROUBLESHOOTING
+ * Purpose: Diagnose SQL Server Managed Backup to Microsoft Azure (a.k.a. "automated backups")
+ *          when scheduled backups stop running, fail, or fall behind their retention policy.
+ * Scope:   SQL Server 2014+ (on-premises / IaaS). The metadata lives in msdb.
+ *          Schema note: SQL Server 2014 uses msdb.smart_admin; 2016+ uses msdb.managed_backup.
+ *          NOT applicable to Azure SQL Managed Instance or Azure SQL Database, whose automated
+ *          backups are platform-managed (see sqlmi-specific-queries.sql).
+ * Order:   Run 12.4 - 12.9 first (all read-only). Only enable the verbose logging in
+ *          12.1 - 12.3 if the read-only checks are inconclusive, and revert with 12.11.
+ *****************************************************************************************************/
 
 /*
-Troubleshooting Steps for Managed / Automated Backups
+-----------------------------------------------------------------------------------------
+12.0  TRACE FLAG REFERENCE (used by 12.1)
+-----------------------------------------------------------------------------------------
+    3004 : Adds information about file preparation, bitmaps, and instant file initialization
+           (IFI avoids zeroing out files; relevant to restores, and only for data files).
+    3014 : Undocumented. Detailed information about file creation, padding, and related
+           activity while a backup is running.
+    3051 : Enables verbose logging of SQL Server Managed Backup to Azure to a dedicated
+           error log file. This is the key flag for Managed Backup troubleshooting.
+    3212 : Prints "Backup stats" to the SQL Server error log.
+    3605 : Sends a variety of diagnostic output to the SQL Server error log instead of to
+           the user console.
+-----------------------------------------------------------------------------------------
 */
 
--- 1. Enable trace flags
+
+-- Query 12.1: Enable Verbose Trace Flags (STATE CHANGE)
+-- WARNING: -1 makes these global. They write heavily to the ERRORLOG - enable only for the
+--          duration of a repro, then disable with Query 12.11.
+/* TEMPLATE
 DBCC TRACEON(3014, 3212, 3004, 3605, 3051, -1);
+DBCC TRACESTATUS(-1);   -- confirm what is enabled
+*/
 
 
---trace functionality:
-
---3004: Trace flag 3004 adds information to the output about file preparation, bitmaps, and instant file initialization (instant file initialization, which avoids the costly operation about zeroing out files, is only relevant for restore operations, and only for restoring data files).
-
---3014: This is one of the undocumented Trace flags in SQL Server, which basically gives a detailed information(Well, This might not be useful in most of the cases) regarding File Creation, Padding and much more related Info while you are taking a Backup of your Database
-
---3212: Prints “Backup stats” to the SQL log
-
---3213: Logs Output buffer info for backups to ERRORLOG
-
---3605: Sends a variety of types of information to the SQL Server error log instead of to the user consol
-
-
--- 2. Re-enable extended debug events
+-- Query 12.2: Enable Managed Backup Debug Extended Events (STATE CHANGE)
+-- Turns on the extra SmartAdmin XEvent streams collected in Query 12.10
+/* TEMPLATE
 EXEC msdb.managed_backup.sp_set_parameter
-    @parameter_name = 'SSMBackup2WADebugXevent',
+    @parameter_name  = 'SSMBackup2WADebugXevent',
     @parameter_value = 'true';
+*/
 
--- 3. Re-enable SQL Agent verbose logging
+
+-- Query 12.3: Enable SQL Agent Verbose Logging (STATE CHANGE)
+-- Level 7 = errors + warnings + information. Very noisy - revert to the default (3)
+-- once the repro is captured (see Query 12.11).
+/* TEMPLATE
 EXEC msdb.dbo.sp_set_sqlagent_properties
     @errorlogging_level = 7;
-
--- 4. Capture Managed Backup health status
-SELECT *
-FROM managed_backup.fn_get_health_status(NULL, NULL);
-
--- 5. Run Managed Backup diagnostics
-EXEC managed_backup.sp_get_backup_diagnostics;
-
--- 6. Take backup of msdb (execute separately, example below)
--- BACKUP DATABASE msdb TO DISK = 'C:\Backup\msdb.bak' WITH INIT;
-
-
-/*
-7. Data Collection for Troubleshooting
 */
 
--- Collect the following:
 
--- SQL Server Agent logs (especially if verbose logging is enabled)
+-- Query 12.4: Managed Backup Health Status
+-- Primary starting point: returns the errors Managed Backup has raised over a time window.
+-- Pass NULL, NULL for all history, or a start/end datetime to narrow the window.
+SELECT *
+FROM msdb.managed_backup.fn_get_health_status(NULL, NULL);
+GO
 
--- Default XEvent files:
---   SmartAdminEvents_Backup_*
---   SmartAdminEvents__*
 
--- Application logs
+-- Query 12.5: Managed Backup Diagnostics
+-- Reads and parses the SmartAdmin XEvent files. Can be slow or memory-heavy if those
+-- files are large - check their size before running on a busy instance.
+EXEC msdb.managed_backup.sp_get_backup_diagnostics;
+GO
+-- SQL Server 2014 equivalent:
+-- EXEC msdb.smart_admin.sp_get_backup_diagnostics;
 
--- System event logs
 
--- Managed Backup diagnostics (reads XEvent files; avoid if files are huge)
-EXEC msdb.smart_admin.sp_get_backup_diagnostics;
-
--- Managed database metadata
+-- Query 12.6: Managed Backup Configuration & Enrolled Databases
+-- autoadmin_managed_databases : which databases are enrolled, retention, storage URL, state
+-- autoadmin_system_flags      : instance-level Managed Backup feature flags
+-- autoadmin_task_agent_metadata : task agent state (shows if the agent is wedged/disabled)
 SELECT *
 FROM msdb.dbo.autoadmin_managed_databases;
 
@@ -1263,21 +1214,95 @@ FROM msdb.dbo.autoadmin_system_flags;
 
 SELECT *
 FROM msdb.dbo.autoadmin_task_agent_metadata;
+GO
 
--- SQL Agent job history
-SELECT *
-FROM msdb.dbo.sysjobhistory;
 
--- Ring buffer exceptions (ensure full text is not truncated)
-SELECT *
-FROM sys.dm_os_ring_buffers
-WHERE ring_buffer_type = 'RING_BUFFER_EXCEPTION';
+-- Query 12.7: SQL Agent Job History for Managed Backup Jobs
+-- Managed Backup drives its work through SQL Agent, so agent failures surface here first.
+-- run_date/run_time are integers (yyyymmdd / hhmmss); run_status: 0=Failed, 1=Succeeded,
+-- 2=Retry, 3=Cancelled, 4=In Progress.
+SELECT TOP 500
+    j.name                AS job_name,
+    h.step_id,
+    h.step_name,
+    h.run_status,
+    h.run_date,
+    h.run_time,
+    h.run_duration,
+    h.message
+FROM msdb.dbo.sysjobhistory h
+JOIN msdb.dbo.sysjobs j ON j.job_id = h.job_id
+-- WHERE h.run_status <> 1   -- Uncomment to show failures/retries only
+ORDER BY h.run_date DESC, h.run_time DESC;
+GO
 
--- Loaded modules (for stack alignment)
-SELECT *
-FROM sys.dm_os_loaded_modules;
-``
 
+-- Query 12.8: Ring Buffer Exceptions
+-- Surfaces exceptions thrown inside the engine around the time of the failure.
+-- Widen the results grid / use XML output so the record text is not truncated.
+SELECT
+    rb.timestamp,
+    CAST(rb.record AS XML) AS record_xml
+FROM sys.dm_os_ring_buffers rb
+WHERE rb.ring_buffer_type = 'RING_BUFFER_EXCEPTION'
+ORDER BY rb.timestamp DESC;
+GO
+
+
+-- Query 12.9: Loaded Modules
+-- Used to resolve/align call stacks when analysing a dump or a filter-driver conflict
+-- (antivirus, backup agents, and storage filters commonly interfere with backup I/O).
+SELECT
+    name,
+    company,
+    description,
+    file_version,
+    product_version
+FROM sys.dm_os_loaded_modules
+ORDER BY company, name;
+GO
+
+
+/*
+-----------------------------------------------------------------------------------------
+12.10  DATA COLLECTION CHECKLIST (for a support case)
+-----------------------------------------------------------------------------------------
+Collect the following alongside the output of Queries 12.4 - 12.9:
+
+    - SQL Server ERRORLOG files covering the failure window
+    - SQL Server Agent logs (especially with verbose logging from Query 12.3 enabled)
+    - Default Managed Backup XEvent files from the instance LOG folder:
+          SmartAdminEvents_Backup_*
+          SmartAdminEvents__*
+    - Application event log
+    - System event log
+    - A backup of msdb, since all Managed Backup configuration and history lives there:
+          BACKUP DATABASE msdb TO DISK = 'C:\Backup\msdb.bak' WITH INIT;
+    - Storage account / container details and the credential used by Managed Backup
+      (name only - never share the SAS token or account key)
+
+Common root causes worth ruling out first:
+    - Expired or rotated SAS token / credential on the storage container
+    - SQL Server Agent stopped, or the Managed Backup task agent disabled (Query 12.6)
+    - Network or proxy blocking outbound HTTPS to the storage endpoint
+    - Retention policy misconfiguration leaving no valid base full backup
+    - msdb corruption or a full msdb transaction log stalling history writes
+-----------------------------------------------------------------------------------------
+*/
+
+
+-- Query 12.11: Revert All Diagnostic Settings (run after the repro is captured)
+/* TEMPLATE
+DBCC TRACEOFF(3014, 3212, 3004, 3605, 3051, -1);
+
+EXEC msdb.managed_backup.sp_set_parameter
+    @parameter_name  = 'SSMBackup2WADebugXevent',
+    @parameter_value = 'false';
+
+EXEC msdb.dbo.sp_set_sqlagent_properties
+    @errorlogging_level = 3;   -- default: errors + warnings
+*/
+GO
 
 
 /*****************************************************************************************************

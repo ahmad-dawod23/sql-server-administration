@@ -6,7 +6,9 @@
 --          workload settings most commonly responsible for high CPU.
 -- Safety: All queries are read-only except the commented-out example in
 --         Section 8.2, which is disabled by default.
--- Applies to: On-prem / Azure SQL MI / Both
+-- Applies to: On-prem and Azure SQL MI. Sections carry their own note
+--             where platform support differs; anything not tagged runs
+--             on both. Requires VIEW SERVER STATE.
 -----------------------------------------------------------------------
 
 SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
@@ -38,12 +40,14 @@ GO
 --     virtualized environments a "noisy neighbor" VM / host overcommitment.
 --
 -- Diagnostic approach (see the numbered sections below for the queries):
---   1. Wait stats       - Section 6 (signal vs resource waits, CPU waits)
---   2. Perf counters     - Section 3.2 (compiles/recompiles), Section 4
---   3. Expensive queries  - Section 1 (real-time), Section 2 (historical)
---   4. CPU history        - Section 4.1 (ring buffer)
---   5. Scheduler pressure - Section 3.1 (runnable/pending task counts)
---   6. Config/mitigation  - Section 8 (parallelism & ad hoc settings)
+--   1. Confirm the basics - Section 3.3 (are all cores actually online?)
+--   2. Wait stats        - Section 6 (signal vs resource waits, CPU waits)
+--   3. Perf counters     - Section 3.2 (compiles/recompiles), Section 4
+--   4. Expensive queries - Section 1 (real-time), Section 2 (historical)
+--   5. CPU history       - Section 4.1 (ring buffer)
+--   6. Scheduler pressure - Section 3.1 (runnable/pending task counts)
+--   7. Thread-level      - Section 7 (when no query looks expensive)
+--   8. Config/mitigation - Section 8 (parallelism & ad hoc settings)
 --
 -- Rule-of-thumb thresholds:
 --   * Processor: % Processor Time sustained > 80-90% = bottleneck.
@@ -95,6 +99,7 @@ SELECT TOP 10
     1, 512) AS statement_text   
 FROM sys.dm_exec_requests AS req   
     CROSS APPLY sys.dm_exec_sql_text(req.sql_handle) AS st 
+WHERE req.session_id <> @@SPID
 ORDER BY cpu_time DESC;
 GO 
 
@@ -171,6 +176,8 @@ GO
 -- 2.1 TOP 15 CPU CONSUMING QUERIES FROM QUERY STORE (RECENT)
 --     Top 15 CPU consuming queries by query hash from last 2 hours.
 --     Note: A query hash can have many query IDs if not parameterized properly.
+--     Query Store views are DATABASE-scoped - switch to the target database
+--     (USE [YourDb]) before running, and ensure Query Store is enabled.
 -----------------------------------------------------------------------
 WITH AggregatedCPU AS (
     SELECT 
@@ -178,7 +185,7 @@ WITH AggregatedCPU AS (
         SUM(count_executions * avg_cpu_time / 1000.0) AS total_cpu_millisec, 
         SUM(count_executions * avg_cpu_time / 1000.0) /SUM(count_executions) AS avg_cpu_millisec, 
         MAX(rs.max_cpu_time/1000.00) AS max_cpu_millisec, 
-        MAX(max_logical_io_reads) max_logical_reads, 
+        MAX(max_logical_io_reads) AS max_logical_reads, 
         COUNT(DISTINCT p.plan_id) AS number_of_distinct_plans, 
         COUNT(DISTINCT p.query_id) AS number_of_distinct_query_ids, 
         SUM(CASE WHEN rs.execution_type_desc='Aborted' THEN count_executions ELSE 0 END) AS Aborted_Execution_Count, 
@@ -224,6 +231,10 @@ GO
 --     Uses sys.dm_exec_query_stats so it works even when Query Store
 --     is not enabled. Plans age out of cache, so this only reflects
 --     activity since the last plan eviction/restart.
+--     The last_execution_time filter restricts this to plans still active
+--     recently (pairing with 2.1) - widen or comment it out for an
+--     all-time view. Note the totals themselves remain cumulative for the
+--     life of the plan, not just the filtered window.
 -----------------------------------------------------------------------
 SELECT TOP 15
     qs.query_hash,
@@ -246,6 +257,7 @@ SELECT TOP 15
     1, 256) AS statement_text
 FROM sys.dm_exec_query_stats AS qs
     CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle) AS t
+WHERE qs.last_execution_time >= DATEADD(HOUR, -2, GETDATE())
 ORDER BY qs.total_worker_time DESC;
 GO
 
@@ -264,7 +276,7 @@ SELECT
     AVG(runnable_tasks_count) AS [Avg_Runnable_Task_Count],
     AVG(pending_disk_io_count) AS [Avg_Pending_DiskIO_Count],
     GETDATE() AS [System_Time]
-FROM sys.dm_os_schedulers WITH (NOLOCK)
+FROM sys.dm_os_schedulers
 WHERE scheduler_id < 255  -- Exclude hidden schedulers
 OPTION (RECOMPILE);
 GO
@@ -292,6 +304,41 @@ ORDER BY counter_name;
 GO
 
 -----------------------------------------------------------------------
+-- 3.3 CPU / SCHEDULER CONFIGURATION SANITY CHECK
+--     Run this FIRST when investigating high CPU. Confirms SQL Server is
+--     actually scheduling on every core the OS reports. Schedulers stuck
+--     in VISIBLE OFFLINE mean cores are being ignored - usually an edition
+--     core limit (Standard caps at the lesser of 4 sockets / 24 cores), an
+--     ALTER SERVER CONFIGURATION SET PROCESS AFFINITY setting, or a
+--     licensing mismatch. Tuning queries is pointless if the instance is
+--     only using half the box.
+--     Note: softnuma_configuration_desc requires SQL Server 2016+.
+-----------------------------------------------------------------------
+SELECT
+    cpu_count AS logical_cpu_count,
+    scheduler_count,
+    hyperthread_ratio AS logical_cores_per_socket,
+    cpu_count / NULLIF(hyperthread_ratio, 0) AS physical_socket_count,
+    max_workers_count,
+    affinity_type_desc,
+    softnuma_configuration_desc,
+    virtual_machine_type_desc,
+    sqlserver_start_time
+FROM sys.dm_os_sys_info;
+GO
+
+-- Scheduler states: any VISIBLE OFFLINE rows mean cores are not being used.
+SELECT
+    [status],
+    COUNT(*) AS scheduler_count,
+    SUM(current_tasks_count) AS current_tasks,
+    SUM(runnable_tasks_count) AS runnable_tasks
+FROM sys.dm_os_schedulers
+GROUP BY [status]
+ORDER BY [status];
+GO
+
+-----------------------------------------------------------------------
 -- SECTION 4: SQL SERVER INSTANCE CPU UTILIZATION
 -----------------------------------------------------------------------
 
@@ -299,6 +346,9 @@ GO
 -- 4.1 SQL SERVER INSTANCE CPU UTILIZATION HISTORY
 --     Shows SQL Server vs Other process CPU utilization over time.
 --     Adjust @lastNmin to change time window.
+--     Applies to: On-prem and Azure SQL MI (sys.dm_os_ring_buffers is not
+--     available in Azure SQL Database). The ring buffer holds roughly the
+--     last 256 one-minute samples, so it cannot look back further.
 -----------------------------------------------------------------------
 DECLARE @ts BIGINT;
 DECLARE @lastNmin TINYINT;
@@ -321,7 +371,7 @@ FROM (
         SELECT [timestamp], CONVERT(XML, record) AS [record]             
         FROM sys.dm_os_ring_buffers             
         WHERE ring_buffer_type = N'RING_BUFFER_SCHEDULER_MONITOR' 
-            AND record LIKE '%%'
+            AND record LIKE '%<SystemHealth>%'
     ) AS x 
 ) AS y 
 ORDER BY record_id DESC;
@@ -334,10 +384,16 @@ GO
 --     itself. If Percent_Kernel_Time is consistently > 30%, suspect
 --     memory pressure (heavy paging), a slow/overloaded I/O subsystem,
 --     or outdated device drivers rather than the SQL workload itself.
+--     Note: this covers SQL Server's own threads only (not the whole host),
+--     and the totals are cumulative since each thread started. The raw
+--     kernel/usermode columns are counter units - only the percentages
+--     below are meaningful, since the units cancel out.
+--     Applies to: On-prem primarily; sys.dm_os_threads may be restricted
+--     on Azure SQL MI depending on permissions.
 -----------------------------------------------------------------------
 SELECT 
-    SUM(kernel_time) AS total_kernel_time_ms,
-    SUM(usermode_time) AS total_usermode_time_ms,
+    SUM(kernel_time) AS total_kernel_time_raw,
+    SUM(usermode_time) AS total_usermode_time_raw,
     CAST(100.0 * SUM(kernel_time) / NULLIF(SUM(kernel_time) + SUM(usermode_time), 0) AS DECIMAL(5,2)) AS percent_kernel_time,
     CAST(100.0 * SUM(usermode_time) / NULLIF(SUM(kernel_time) + SUM(usermode_time), 0) AS DECIMAL(5,2)) AS percent_usermode_time
 FROM sys.dm_os_threads;
@@ -351,6 +407,9 @@ GO
 -- 5.1 DATABASE CPU CONSUMPTION SNAPSHOT AND DELTA
 --     Shows CPU consumption by database with delta analysis.
 --     Takes two snapshots 10 seconds apart to show CPU rate.
+--     Caveats: attribution is per cached plan, so ad hoc/dynamic SQL may be
+--     credited to the connection's database rather than the object's, and
+--     plans evicted between the two snapshots can skew (even negate) deltas.
 -----------------------------------------------------------------------
 -- First snapshot
 IF OBJECT_ID('tempdb.dbo.#tbl', 'U') IS NOT NULL
@@ -360,7 +419,7 @@ WITH DB_CPU AS (
     SELECT 
         DatabaseID, 
         DB_Name(DatabaseID) AS [DatabaseName], 
-        SUM(total_worker_time) AS [CPU_Time_Ms] 
+        SUM(total_worker_time) AS [CPU_Time_Microsec] 
     FROM sys.dm_exec_query_stats AS qs 
         CROSS APPLY (
             SELECT CONVERT(INT, value) AS [DatabaseID]  
@@ -371,10 +430,10 @@ WITH DB_CPU AS (
 ) 
 SELECT 
     GETDATE() AS reportedtime,
-    ROW_NUMBER() OVER(ORDER BY [CPU_Time_Ms] DESC) AS [SNO], 
+    ROW_NUMBER() OVER(ORDER BY [CPU_Time_Microsec] DESC) AS [SNO], 
     DatabaseName AS [DBName], 
-    [CPU_Time_Ms], 
-    CAST([CPU_Time_Ms] * 1.0 / SUM([CPU_Time_Ms]) OVER() * 100.0 AS DECIMAL(5, 2)) AS [CPUPercent] 
+    [CPU_Time_Microsec], 
+    CAST([CPU_Time_Microsec] * 1.0 / SUM([CPU_Time_Microsec]) OVER() * 100.0 AS DECIMAL(5, 2)) AS [CPUPercent] 
 INTO #tbl
 FROM DB_CPU 
 WHERE DatabaseID > 4  -- Exclude system databases 
@@ -390,7 +449,7 @@ WITH DB_CPU AS (
     SELECT 
         DatabaseID, 
         DB_Name(DatabaseID) AS [DatabaseName], 
-        SUM(total_worker_time) AS [CPU_Time_Ms] 
+        SUM(total_worker_time) AS [CPU_Time_Microsec] 
     FROM sys.dm_exec_query_stats AS qs 
         CROSS APPLY (
             SELECT CONVERT(INT, value) AS [DatabaseID]  
@@ -401,12 +460,13 @@ WITH DB_CPU AS (
 ) 
 SELECT 
     a.DatabaseName AS [DBName], 
-    CAST((a.[CPU_Time_Ms] - b.[CPU_Time_Ms]) * 1.0 / SUM((a.[CPU_Time_Ms] - b.[CPU_Time_Ms])) OVER() * 100.0 AS DECIMAL(5, 2)) AS [CPUPercent_Last10Sec] 
+    a.[CPU_Time_Microsec] - b.[CPU_Time_Microsec] AS [CPU_Time_Delta_Microsec],
+    CAST((a.[CPU_Time_Microsec] - b.[CPU_Time_Microsec]) * 1.0 / NULLIF(SUM((a.[CPU_Time_Microsec] - b.[CPU_Time_Microsec])) OVER(), 0) * 100.0 AS DECIMAL(5, 2)) AS [CPUPercent_Last10Sec] 
 FROM DB_CPU a 
     INNER JOIN #tbl b ON a.[DatabaseName] = b.[DBName]
 WHERE DatabaseID > 4  -- Exclude system databases 
     AND DatabaseID <> 32767  -- Exclude ResourceDB 
-ORDER BY a.[CPU_Time_Ms] - b.[CPU_Time_Ms] DESC 
+ORDER BY a.[CPU_Time_Microsec] - b.[CPU_Time_Microsec] DESC 
 OPTION(RECOMPILE);
 
 -- Cleanup
@@ -421,17 +481,54 @@ GO
 -- 6.1 CPU PRESSURE ANALYSIS VIA WAIT STATISTICS
 --     Shows signal waits vs resource waits ratio.
 --     High signal waits (>25%) indicate CPU pressure.
---     Note: This clears wait stats - use with caution.
+--     Note: values are cumulative since the last service restart (or since
+--     wait stats were last cleared), so they describe the whole uptime
+--     window, not "right now".
 -----------------------------------------------------------------------
--- Clear wait statistics (optional - comment out if not desired)
+-- OPTIONAL/DESTRUCTIVE: resets all wait stats instance-wide so the next
+-- sample reflects only recent activity. Leave commented out unless you are
+-- sure nothing else depends on the existing baseline.
 -- DBCC SQLPERF('sys.dm_os_wait_stats', CLEAR);
 -- GO
 
 -- Analyze signal vs resource waits
+-- Benign/idle wait types are excluded so background threads parked on
+-- SLEEP_*/BROKER_*/XE_* waits do not deflate the signal wait percentage.
 SELECT 
-    CAST(100.0 * SUM(signal_wait_time_ms) / SUM(wait_time_ms) AS NUMERIC(20,2)) AS [Percent_Signal_CPU_Waits],
-    CAST(100.0 * SUM(wait_time_ms - signal_wait_time_ms) / SUM(wait_time_ms) AS NUMERIC(20,2)) AS [Percent_Resource_Waits]
-FROM sys.dm_os_wait_stats;
+    CAST(100.0 * SUM(signal_wait_time_ms) / NULLIF(SUM(wait_time_ms), 0) AS NUMERIC(20,2)) AS [Percent_Signal_CPU_Waits],
+    CAST(100.0 * SUM(wait_time_ms - signal_wait_time_ms) / NULLIF(SUM(wait_time_ms), 0) AS NUMERIC(20,2)) AS [Percent_Resource_Waits]
+FROM sys.dm_os_wait_stats
+WHERE wait_type NOT IN (
+    N'BROKER_EVENTHANDLER', N'BROKER_RECEIVE_WAITFOR', N'BROKER_TASK_STOP',
+    N'BROKER_TO_FLUSH', N'BROKER_TRANSMITTER', N'CHECKPOINT_QUEUE',
+    N'CHKPT', N'CLR_AUTO_EVENT', N'CLR_MANUAL_EVENT', N'CLR_SEMAPHORE',
+    N'DBMIRROR_DBM_EVENT', N'DBMIRROR_EVENTS_QUEUE', N'DBMIRROR_WORKER_QUEUE',
+    N'DBMIRRORING_CMD', N'DIRTY_PAGE_POLL', N'DISPATCHER_QUEUE_SEMAPHORE',
+    N'EXECSYNC', N'FSAGENT', N'FT_IFTS_SCHEDULER_IDLE_WAIT', N'FT_IFTSHC_MUTEX',
+    N'HADR_CLUSAPI_CALL', N'HADR_FILESTREAM_IOMGR_IOCOMPLETION',
+    N'HADR_LOGCAPTURE_WAIT', N'HADR_NOTIFICATION_DEQUEUE',
+    N'HADR_TIMER_TASK', N'HADR_WORK_QUEUE', N'KSOURCE_WAKEUP',
+    N'LAZYWRITER_SLEEP', N'LOGMGR_QUEUE', N'MEMORY_ALLOCATION_EXT',
+    N'ONDEMAND_TASK_QUEUE', N'PARALLEL_REDO_DRAIN_WORKER',
+    N'PARALLEL_REDO_LOG_CACHE', N'PARALLEL_REDO_TRAN_LIST',
+    N'PARALLEL_REDO_WORKER_SYNC', N'PARALLEL_REDO_WORKER_WAIT_WORK',
+    N'PREEMPTIVE_OS_FLUSHFILEBUFFERS', N'PREEMPTIVE_XE_GETTARGETSTATE',
+    N'PWAIT_ALL_COMPONENTS_INITIALIZED', N'PWAIT_DIRECTLOGCONSUMER_GETNEXT',
+    N'QDS_PERSIST_TASK_MAIN_LOOP_SLEEP', N'QDS_ASYNC_QUEUE',
+    N'QDS_CLEANUP_STALE_QUERIES_TASK_MAIN_LOOP_SLEEP', N'QDS_SHUTDOWN_QUEUE',
+    N'REDO_THREAD_PENDING_WORK', N'REQUEST_FOR_DEADLOCK_SEARCH',
+    N'RESOURCE_QUEUE', N'SERVER_IDLE_CHECK', N'SLEEP_BPOOL_FLUSH',
+    N'SLEEP_DBSTARTUP', N'SLEEP_DCOMSTARTUP', N'SLEEP_MASTERDBREADY',
+    N'SLEEP_MASTERMDREADY', N'SLEEP_MASTERUPGRADED', N'SLEEP_MSDBSTARTUP',
+    N'SLEEP_SYSTEMTASK', N'SLEEP_TASK', N'SLEEP_TEMPDBSTARTUP',
+    N'SNI_HTTP_ACCEPT', N'SOS_WORK_DISPATCHER', N'SP_SERVER_DIAGNOSTICS_SLEEP',
+    N'SQLTRACE_BUFFER_FLUSH', N'SQLTRACE_INCREMENTAL_FLUSH_SLEEP',
+    N'SQLTRACE_WAIT_ENTRIES', N'STARTUP_DEPENDENCY_MANAGER',
+    N'WAIT_FOR_RESULTS', N'WAIT_XTP_RECOVERY', N'WAIT_XTP_HOST_WAIT',
+    N'WAIT_XTP_OFFLINE_CKPT_NEW_LOG', N'WAIT_XTP_CKPT_CLOSE',
+    N'WAITFOR', N'WAITFOR_TASKSHUTDOWN', N'XE_DISPATCHER_JOIN',
+    N'XE_DISPATCHER_WAIT', N'XE_LIVE_TARGET_TVF', N'XE_TIMER_EVENT'
+);
 GO
 
 -----------------------------------------------------------------------
@@ -461,12 +558,17 @@ GO
 
 -----------------------------------------------------------------------
 -- SECTION 7: PERFMON/THREAD-LEVEL TROUBLESHOOTING
+-- Applies to: On-prem (Windows). Perfmon steps do not apply to Azure SQL MI;
+--             query 7.2 works anywhere sys.dm_os_threads is exposed.
 -----------------------------------------------------------------------
 
 /*
 -----------------------------------------------------------------------
 -- 7.1 PERFMON APPROACH FOR THREAD-LEVEL ANALYSIS
---     Manual steps to correlate high CPU threads to SQL queries.
+--     Manual steps to identify the OS thread burning CPU. Use this when
+--     CPU is high but Sections 1-2 show no obviously expensive query -
+--     it can expose background/system threads (log writer, ghost cleanup,
+--     lazy writer, external CLR) rather than user workload.
 -----------------------------------------------------------------------
 
 STEP 1: Launch Perfmon
@@ -486,32 +588,55 @@ STEP 3: Identify Problem Thread
     - Note the "ID Thread" and "% Processor Time" values
     - Find the thread with highest CPU usage
 
-STEP 4: Correlate Thread ID (KPID) to SPID
+STEP 4: Feed that "ID Thread" value into query 7.2 below, which maps the
+        OS thread all the way through to the session and query text.
 */
 
--- Run this query to correlate Thread ID to SQL Server SPID:
--- SELECT spid, kpid, dbid, cpu, memusage 
--- FROM sys.sysprocesses 
--- WHERE kpid = {ID_Thread_From_Perfmon};
--- GO
-
-/*
-STEP 5: Get Thread and Transaction Details
-*/
-
--- Run this query to see thread details:
--- SELECT spid, kpid, status, cpu, memusage, open_tran, dbid 
--- FROM sys.sysprocesses 
--- WHERE spid = {SPID_From_Step4};
--- GO
-
-/*
-STEP 6: Get Exact Query Text
-*/
-
--- Run DBCC INPUTBUFFER to see the query:
--- DBCC INPUTBUFFER({SPID_From_Step4});
--- GO
+-----------------------------------------------------------------------
+-- 7.2 MAP OS THREADS TO WORKERS, SESSIONS AND QUERY TEXT
+--     Modern replacement for the deprecated sys.sysprocesses spid/kpid
+--     correlation. os_thread_id is the same value Perfmon reports as
+--     "ID Thread" (step 3 above).
+--     Note: kernel_time/usermode_time are cumulative since the thread
+--     started, so they identify a persistently hot thread rather than
+--     instantaneous CPU. A thread with no session attached is a
+--     background/system task.
+--     To target one specific thread, uncomment the WHERE clause.
+-----------------------------------------------------------------------
+SELECT TOP 20
+    t.os_thread_id,
+    t.kernel_time,
+    t.usermode_time,
+    t.kernel_time + t.usermode_time AS total_thread_time,
+    w.[state] AS worker_state,
+    tk.task_state,
+    tk.session_id,
+    r.status AS request_status,
+    r.command,
+    r.cpu_time AS request_cpu_time_ms,
+    r.wait_type,
+    r.open_transaction_count,
+    DB_NAME(r.database_id) AS database_name,
+    s.login_name,
+    s.host_name,
+    s.program_name,
+    SUBSTRING(
+        REPLACE(REPLACE(st.text, CHAR(10), ' '), CHAR(13), ' '),
+    1, 256) AS batch_text
+FROM sys.dm_os_threads AS t
+    LEFT JOIN sys.dm_os_workers AS w
+        ON t.worker_address = w.worker_address
+    LEFT JOIN sys.dm_os_tasks AS tk
+        ON w.task_address = tk.task_address
+    LEFT JOIN sys.dm_exec_requests AS r
+        ON tk.session_id = r.session_id
+    LEFT JOIN sys.dm_exec_sessions AS s
+        ON tk.session_id = s.session_id
+    OUTER APPLY sys.dm_exec_sql_text(r.sql_handle) AS st
+-- WHERE t.os_thread_id = {ID_Thread_From_Perfmon}
+ORDER BY t.kernel_time + t.usermode_time DESC
+OPTION (RECOMPILE);
+GO
 
 -----------------------------------------------------------------------
 -- SECTION 8: PARALLELISM & AD HOC WORKLOAD CONFIGURATION CHECKS
@@ -546,6 +671,9 @@ GO
 -- 8.2 EXAMPLE: APPLY RECOMMENDED PARALLELISM / AD HOC SETTINGS
 --     Uncomment and adjust values for your workload before running.
 --     Requires sysadmin and RECONFIGURE to take effect.
+--     Change one setting at a time and measure - these are instance-wide.
+--     MAXDOP can also be set per database (ALTER DATABASE SCOPED
+--     CONFIGURATION SET MAXDOP) or per query (OPTION (MAXDOP n)).
 -----------------------------------------------------------------------
 /*
 EXEC sp_configure 'show advanced options', 1;

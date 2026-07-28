@@ -58,6 +58,28 @@ WHERE name IN
 )
 ORDER BY name;
 
+-- Service state and startup type. A Disabled or Manual start mode explains a
+-- service that never came back after a reboot; last_startup_time tells you
+-- whether the instance restarted recently (an unplanned restart resets the
+-- wait stats and plan cache read below, so check this before trusting them).
+BEGIN TRY
+    SELECT
+        servicename,
+        startup_type_desc,
+        status_desc,
+        last_startup_time,
+        service_account,
+        is_clustered,
+        cluster_nodename
+    FROM sys.dm_server_services;
+END TRY
+BEGIN CATCH
+    -- Not available on Azure SQL Managed Instance / Azure SQL Database.
+    SELECT
+        ERROR_NUMBER() AS error_number,
+        ERROR_MESSAGE() AS error_message;
+END CATCH;
+
 --------------------------------------------------------------------------------
 -- 2) Database posture (state, recovery, log reuse wait, checksum)
 --------------------------------------------------------------------------------
@@ -70,6 +92,7 @@ SELECT
     d.compatibility_level,
     d.page_verify_option_desc,
     d.is_read_only,
+    d.is_in_standby,
     d.is_auto_close_on,
     d.is_auto_shrink_on,
     d.is_auto_create_stats_on,
@@ -188,6 +211,18 @@ SELECT TOP (20)
 FROM waits AS w
 CROSS JOIN totals AS t
 ORDER BY w.wait_time_ms DESC;
+
+-- Explicit THREADPOOL check. Worker thread exhaustion makes a running
+-- instance refuse new connections, which looks exactly like the service
+-- being down. It will not always reach the top 20 above, so check it by
+-- name. Non-zero and growing means use the dedicated admin connection.
+SELECT
+    wait_type,
+    waiting_tasks_count,
+    wait_time_ms,
+    signal_wait_time_ms
+FROM sys.dm_os_wait_stats
+WHERE wait_type = N'THREADPOOL';
 
 --------------------------------------------------------------------------------
 -- 6) Top cached queries (plan cache) by CPU and reads
@@ -311,7 +346,7 @@ BEGIN
 END;
 
 --------------------------------------------------------------------------------
--- 9) File I/O stalls (per database file)
+-- 9) File I/O stalls (per database file) and volume free space
 --------------------------------------------------------------------------------
 SELECT TOP (@Top)
     DB_NAME(mf.database_id) AS database_name,
@@ -331,6 +366,20 @@ JOIN sys.master_files AS mf
     ON mf.database_id = vfs.database_id
    AND mf.file_id = vfs.file_id
 ORDER BY (vfs.io_stall_read_ms + vfs.io_stall_write_ms) DESC;
+
+-- Volume free space. A full volume (OS error 112) stops autogrowth, can
+-- halt recovery, and can leave a database SUSPECT.
+-- available_bytes is sampled per file, so DISTINCT would emit the same
+-- volume more than once; aggregate instead.
+SELECT
+    vs.volume_mount_point,
+    MIN(vs.total_bytes) / 1024 / 1024 / 1024 AS total_gb,
+    MIN(vs.available_bytes) / 1024 / 1024 / 1024 AS free_gb,
+    CAST(100.0 * MIN(vs.available_bytes) / NULLIF(MIN(vs.total_bytes), 0) AS decimal(5,2)) AS free_pct
+FROM sys.master_files AS mf
+CROSS APPLY sys.dm_os_volume_stats(mf.database_id, mf.file_id) AS vs
+GROUP BY vs.volume_mount_point
+ORDER BY free_gb;
 
 --------------------------------------------------------------------------------
 -- 10) Backup posture (msdb) - last full/diff/log and age
@@ -399,8 +448,25 @@ BEGIN CATCH
 END CATCH;
 
 --------------------------------------------------------------------------------
--- 11) AG health (if enabled)
+-- 11) AG health (if enabled) and WSFC cluster state
 --------------------------------------------------------------------------------
+-- WSFC node and cluster state. Applies to Failover Cluster Instances and to
+-- Always On, which depends on the cluster; both return no rows on a
+-- standalone instance. A node reported down here explains a failed startup
+-- or a failover that will not complete.
+BEGIN TRY
+    SELECT *
+    FROM sys.dm_os_cluster_nodes;
+
+    SELECT *
+    FROM sys.dm_hadr_cluster;
+END TRY
+BEGIN CATCH
+    SELECT
+        ERROR_NUMBER() AS error_number,
+        ERROR_MESSAGE() AS error_message;
+END CATCH;
+
 IF CAST(SERVERPROPERTY('IsHadrEnabled') AS int) = 1
 BEGIN
     SELECT

@@ -2,8 +2,19 @@
 -- BLOCKING & LOCK CONTENTION ANALYSIS
 -- Purpose : Identify head blockers, blocking chains, lock waits,
 --           and open transactions causing contention.
--- Safety  : All queries are read-only (except Section 6).
--- Applies to : On-prem / Azure SQL MI / Both
+-- Safety  : All queries are read-only (except Section 7).
+-- Applies to : On-prem / Azure SQL MI (Both)
+--              Azure SQL DB: queries are scoped to the current database
+--              only and cross-database columns will be limited.
+-- Layout  : 1. Head blocker detection
+--           2. Blocking chain analysis
+--           3. Lock contention analysis
+--           4. Open transactions / idle blockers
+--           5. Session details for the head blocker
+--           6. System-wide contributing factors
+--           7. Troubleshooting actions (state changing)
+-- Notes   : READ UNCOMMITTED is set once below, so individual queries do
+--           not repeat WITH (NOLOCK) hints.
 -----------------------------------------------------------------------
 
 SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
@@ -21,55 +32,65 @@ GO
 --     Use this for complete analysis with all relevant metrics.
 -----------------------------------------------------------------------
 SELECT
-    [HeadBlocker] = 
-        CASE 
-            -- Session has an active request, is blocked, but is blocking others
-            -- or session is idle but has an open transaction and is blocking others 
-            WHEN r2.session_id IS NOT NULL AND (r.blocking_session_id = 0 OR r.session_id IS NULL) THEN '1' 
-            -- Session is either not blocking someone, or is blocking someone but is blocked by another party 
-            ELSE '' 
-        END, 
-    [SessionID] = s.session_id, 
-    [Login] = s.login_name,   
-    [Database] = DB_NAME(p.dbid), 
-    [BlockedBy] = w.blocking_session_id, 
-    [OpenTransactions] = r.open_transaction_count, 
-    [Status] = s.status, 
-    [WaitType] = w.wait_type, 
-    [WaitTime_ms] = w.wait_duration_ms, 
-    [WaitResource] = r.wait_resource, 
-    [WaitResourceDesc] = w.resource_description, 
-    [Command] = r.command, 
-    [Application] = s.program_name, 
-    [TotalCPU_ms] = s.cpu_time, 
-    [TotalPhysicalIO_MB] = (s.reads + s.writes) * 8 / 1024, 
-    [MemoryUse_KB] = s.memory_usage * 8192 / 1024, 
-    [LoginTime] = s.login_time, 
-    [LastRequestStartTime] = s.last_request_start_time, 
+    [HeadBlocker] =
+        -- '1' = session is blocking at least one other session and is not
+        --       itself blocked. This covers both an active blocking request
+        --       and an idle session sitting on an open transaction.
+        CASE
+            WHEN blk.blocked_count > 0 AND ISNULL(r.blocking_session_id, 0) = 0 THEN '1'
+            ELSE ''
+        END,
+    [SessionID] = s.session_id,
+    [Login] = s.login_name,
+    [Database] = DB_NAME(COALESCE(r.database_id, s.database_id)),
+    [BlockedBy] = ISNULL(r.blocking_session_id, 0),
+    [BlockedSessionCount] = blk.blocked_count,
+    -- dm_exec_requests is NULL for idle sessions, so fall back to the session
+    [OpenTransactions] = COALESCE(r.open_transaction_count, s.open_transaction_count),
+    [Status] = s.status,
+    [WaitType] = w.wait_type,
+    [WaitTime_ms] = w.wait_duration_ms,
+    [WaitResource] = r.wait_resource,
+    [WaitResourceDesc] = w.resource_description,
+    [Command] = r.command,
+    [Application] = s.program_name,
+    [TotalCPU_ms] = s.cpu_time,
+    -- reads/writes are I/O operation counts, not pages - do not convert to MB
+    [TotalPhysicalIOs] = s.reads + s.writes,
+    [MemoryUse_KB] = s.memory_usage * 8,
+    [LoginTime] = s.login_time,
+    [LastRequestStartTime] = s.last_request_start_time,
     [HostName] = s.host_name,
-    [QueryHash] = r.query_hash, 
+    [QueryHash] = r.query_hash,
     [BlockerQuery_or_MostRecentQuery] = txt.text
-FROM sys.dm_exec_sessions s 
-    LEFT OUTER JOIN sys.dm_exec_connections c 
-        ON s.session_id = c.session_id
-    LEFT OUTER JOIN sys.dm_exec_requests r 
+FROM sys.dm_exec_sessions AS s
+    LEFT OUTER JOIN sys.dm_exec_requests AS r
         ON s.session_id = r.session_id
-    LEFT OUTER JOIN sys.dm_os_tasks t 
-        ON r.session_id = t.session_id AND r.request_id = t.request_id
-    LEFT OUTER JOIN ( 
-        SELECT *, 
-               ROW_NUMBER() OVER (PARTITION BY waiting_task_address ORDER BY wait_duration_ms DESC) AS row_num 
-        FROM sys.dm_os_waiting_tasks 
-    ) w 
-        ON t.task_address = w.waiting_task_address AND w.row_num = 1
-    LEFT OUTER JOIN sys.dm_exec_requests r2 
-        ON s.session_id = r2.blocking_session_id
-    LEFT OUTER JOIN sys.sysprocesses p 
-        ON s.session_id = p.spid
-    OUTER APPLY sys.dm_exec_sql_text(ISNULL(r.[sql_handle], c.most_recent_sql_handle)) AS txt
-WHERE s.is_user_process = 1 
-    AND ((r2.session_id IS NOT NULL AND (r.blocking_session_id = 0 OR r.session_id IS NULL)) OR p.blocked > 0)
-ORDER BY [HeadBlocker] DESC, s.session_id;
+    -- TOP (1) guards against MARS sessions having multiple connections
+    OUTER APPLY (
+        SELECT TOP (1) conn_inner.most_recent_sql_handle
+        FROM sys.dm_exec_connections AS conn_inner
+        WHERE conn_inner.session_id = s.session_id
+        ORDER BY conn_inner.connect_time DESC
+    ) AS c
+    -- TOP (1) collapses the many waiting tasks of a parallel request to one row
+    OUTER APPLY (
+        SELECT TOP (1) wt.wait_type, wt.wait_duration_ms, wt.resource_description
+        FROM sys.dm_os_waiting_tasks AS wt
+        WHERE wt.session_id = s.session_id
+        ORDER BY wt.wait_duration_ms DESC
+    ) AS w
+    -- Counted rather than joined, so one blocker blocking N sessions stays one row
+    CROSS APPLY (
+        SELECT COUNT(*) AS blocked_count
+        FROM sys.dm_exec_requests AS r2
+        WHERE r2.blocking_session_id = s.session_id
+    ) AS blk
+    OUTER APPLY sys.dm_exec_sql_text(COALESCE(r.[sql_handle], c.most_recent_sql_handle)) AS txt
+WHERE s.is_user_process = 1
+    AND (blk.blocked_count > 0 OR ISNULL(r.blocking_session_id, 0) > 0)
+ORDER BY [HeadBlocker] DESC, s.session_id
+OPTION (RECOMPILE);
 GO
 
 -----------------------------------------------------------------------
@@ -105,6 +126,7 @@ SELECT
     r.status,
     r.command, 
     r.database_id,
+    DB_NAME(r.database_id) AS database_name,
     r.user_id, 
     r.wait_type,
     r.wait_time,
@@ -112,22 +134,21 @@ SELECT
     r.wait_resource, 
     r.total_elapsed_time,
     r.cpu_time, 
+    r.open_transaction_count,
     r.transaction_isolation_level,
     r.row_count,
     st.text 
 FROM sys.dm_exec_requests r 
-    CROSS APPLY sys.dm_exec_sql_text(r.sql_handle) AS st  
+    -- OUTER APPLY: CROSS APPLY silently drops requests with a NULL sql_handle
+    OUTER APPLY sys.dm_exec_sql_text(r.sql_handle) AS st  
 WHERE r.blocking_session_id = 0 
     AND r.session_id IN (
-        SELECT DISTINCT blocking_session_id 
+        SELECT blocking_session_id 
         FROM sys.dm_exec_requests
+        WHERE blocking_session_id > 0
     ) 
-GROUP BY 
-    r.session_id, r.plan_handle, r.sql_handle, r.request_id, r.start_time, r.status,
-    r.command, r.database_id, r.user_id, r.wait_type, r.wait_time, r.last_wait_type,
-    r.wait_resource, r.total_elapsed_time, r.cpu_time, r.transaction_isolation_level,
-    r.row_count, st.text  
-ORDER BY r.total_elapsed_time DESC;
+ORDER BY r.total_elapsed_time DESC
+OPTION (RECOMPILE);
 GO
 
 -----------------------------------------------------------------------
@@ -142,24 +163,40 @@ GO
 --     Use this for quick view of blocker-blocked pairs with query text.
 -----------------------------------------------------------------------
 SELECT
-    blocking_session.session_id AS blocking_session_id,
+    blocked_session.blocking_session_id AS blocking_session_id,
     blocked_session.session_id AS blocked_session_id,
     blocking_sql.text AS blocking_sql_text,
     blocked_sql.text AS blocked_sql_text,
     wait_info.wait_type,
-    wait_info.wait_duration_ms
+    wait_info.wait_duration_ms,
+    wait_info.resource_description
 FROM sys.dm_exec_requests AS blocked_session
-INNER JOIN sys.dm_exec_connections AS blocked_connection
-    ON blocked_session.session_id = blocked_connection.session_id
-CROSS APPLY sys.dm_exec_sql_text(blocked_connection.most_recent_sql_handle) AS blocked_sql
-INNER JOIN sys.dm_exec_requests AS blocking_session
-    ON blocked_session.blocking_session_id = blocking_session.session_id
-INNER JOIN sys.dm_exec_connections AS blocking_connection
-    ON blocking_session.session_id = blocking_connection.session_id
-CROSS APPLY sys.dm_exec_sql_text(blocking_connection.most_recent_sql_handle) AS blocking_sql
-INNER JOIN sys.dm_os_waiting_tasks AS wait_info
-    ON blocked_session.session_id = wait_info.session_id
-WHERE blocked_session.blocking_session_id <> 0;
+    OUTER APPLY sys.dm_exec_sql_text(blocked_session.[sql_handle]) AS blocked_sql
+    -- TOP (1): a parallel request has one waiting task per worker, which would
+    -- otherwise multiply the result set
+    OUTER APPLY (
+        SELECT TOP (1) wt.wait_type, wt.wait_duration_ms, wt.resource_description
+        FROM sys.dm_os_waiting_tasks AS wt
+        WHERE wt.session_id = blocked_session.session_id
+        ORDER BY wt.wait_duration_ms DESC
+    ) AS wait_info
+    -- The blocker may be idle, so resolve it from sessions and fall back to
+    -- its most recent batch when there is no active request
+    OUTER APPLY (
+        SELECT TOP (1) c.most_recent_sql_handle
+        FROM sys.dm_exec_connections AS c
+        WHERE c.session_id = blocked_session.blocking_session_id
+        ORDER BY c.connect_time DESC
+    ) AS blocking_connection
+    OUTER APPLY (
+        SELECT TOP (1) br.[sql_handle]
+        FROM sys.dm_exec_requests AS br
+        WHERE br.session_id = blocked_session.blocking_session_id
+    ) AS blocking_request
+    OUTER APPLY sys.dm_exec_sql_text(
+        COALESCE(blocking_request.[sql_handle], blocking_connection.most_recent_sql_handle)) AS blocking_sql
+WHERE blocked_session.blocking_session_id <> 0
+OPTION (RECOMPILE);
 GO
 
 -----------------------------------------------------------------------
@@ -211,8 +248,15 @@ AS (
     FROM sys.dm_exec_sessions AS sess
         LEFT OUTER JOIN sys.dm_exec_requests AS req 
             ON sess.session_id = req.session_id
-        LEFT OUTER JOIN sys.dm_exec_connections AS conn 
-            ON conn.session_id = sess.session_id 
+        -- TOP (1): joining dm_exec_connections directly duplicates rows for MARS
+        -- sessions, which then inflates the recursive hierarchy below
+        OUTER APPLY (
+            SELECT TOP (1) conn_inner.most_recent_sql_handle
+            FROM sys.dm_exec_connections AS conn_inner
+            WHERE conn_inner.session_id = sess.session_id
+            ORDER BY conn_inner.connect_time DESC
+        ) AS conn
+    WHERE sess.is_user_process = 1
 ),
 cteBlockingHierarchy (head_blocker_session_id, session_id, blocking_session_id, 
     wait_type, wait_duration_ms, wait_resource, statement_start_offset, 
@@ -278,10 +322,14 @@ SELECT
     r.command, 
     r.wait_type, 
     r.wait_time,
+    r.open_transaction_count,
+    DB_NAME(r.database_id) AS database_name,
     t.text
 FROM sys.dm_exec_requests AS r
-    CROSS APPLY sys.dm_exec_sql_text(r.sql_handle) AS t 
-WHERE r.blocking_session_id > 0;
+    -- OUTER APPLY: CROSS APPLY silently drops requests with a NULL sql_handle
+    OUTER APPLY sys.dm_exec_sql_text(r.sql_handle) AS t 
+WHERE r.blocking_session_id > 0
+OPTION (RECOMPILE);
 GO
 
 -----------------------------------------------------------------------
@@ -320,36 +368,173 @@ SELECT
     t1.request_mode AS [lock_requested], 
     t1.request_session_id AS [waiter_session_id], 
     t2.wait_duration_ms AS [wait_time_ms],
-    (SELECT [text] 
-     FROM sys.dm_exec_requests AS r WITH (NOLOCK)
-         CROSS APPLY sys.dm_exec_sql_text(r.[sql_handle]) 
-     WHERE r.session_id = t1.request_session_id) AS [waiter_batch],
-    (SELECT SUBSTRING(qt.[text], r.statement_start_offset/2, 
-        (CASE WHEN r.statement_end_offset = -1 
-         THEN LEN(CONVERT(NVARCHAR(MAX), qt.[text])) * 2 
-         ELSE r.statement_end_offset END - r.statement_start_offset)/2) 
-     FROM sys.dm_exec_requests AS r WITH (NOLOCK)
-         CROSS APPLY sys.dm_exec_sql_text(r.[sql_handle]) AS qt
-     WHERE r.session_id = t1.request_session_id) AS [waiter_statement],
+    waiter.batch_text AS [waiter_batch],
+    waiter.statement_text AS [waiter_statement],
     t2.blocking_session_id AS [blocker_session_id],
-    (SELECT [text] 
-     FROM sys.sysprocesses AS p
-         CROSS APPLY sys.dm_exec_sql_text(p.[sql_handle]) 
-     WHERE p.spid = t2.blocking_session_id) AS [blocker_batch]
-FROM sys.dm_tran_locks AS t1 WITH (NOLOCK)
-    INNER JOIN sys.dm_os_waiting_tasks AS t2 WITH (NOLOCK)
+    blocker.batch_text AS [blocker_batch]
+FROM sys.dm_tran_locks AS t1
+    INNER JOIN sys.dm_os_waiting_tasks AS t2
         ON t1.lock_owner_address = t2.resource_address 
+    -- TOP (1): a session can expose more than one request under MARS, which
+    -- would make a scalar subquery fail with "returned more than 1 value"
+    OUTER APPLY (
+        SELECT TOP (1)
+            qt.[text] AS batch_text,
+            -- Offsets are byte based, hence /2, and are zero based, hence +1
+            SUBSTRING(
+                qt.[text],
+                (r.statement_start_offset / 2) + 1,
+                ((CASE r.statement_end_offset
+                      WHEN -1 THEN DATALENGTH(qt.[text])
+                      ELSE r.statement_end_offset
+                  END - r.statement_start_offset) / 2) + 1) AS statement_text
+        FROM sys.dm_exec_requests AS r
+            OUTER APPLY sys.dm_exec_sql_text(r.[sql_handle]) AS qt
+        WHERE r.session_id = t1.request_session_id
+    ) AS waiter
+    OUTER APPLY (
+        -- The blocker is often idle, so read its most recent batch from the
+        -- connection rather than from dm_exec_requests
+        SELECT TOP (1) qt.[text] AS batch_text
+        FROM sys.dm_exec_connections AS c
+            OUTER APPLY sys.dm_exec_sql_text(
+                COALESCE(
+                    (SELECT TOP (1) br.[sql_handle]
+                     FROM sys.dm_exec_requests AS br
+                     WHERE br.session_id = c.session_id),
+                    c.most_recent_sql_handle)) AS qt
+        WHERE c.session_id = t2.blocking_session_id
+        ORDER BY c.connect_time DESC
+    ) AS blocker
 OPTION (RECOMPILE);
 GO
 
 -----------------------------------------------------------------------
--- SECTION 4: SESSION DETAILS FOR HEAD BLOCKER
+-- SECTION 4: OPEN TRANSACTIONS AND IDLE BLOCKERS
+-- Purpose: Find transactions left open by an application, which is the
+--          most common cause of sustained blocking. These sessions are
+--          idle ("sleeping" / "AWAITING COMMAND") so they do NOT appear
+--          in the active-request queries in Section 6.
+-----------------------------------------------------------------------
+
+-----------------------------------------------------------------------
+-- 4.1 IDLE SESSIONS WITH AN OPEN TRANSACTION
+--     Sessions that have no active request but still hold a transaction.
+--     Sort by idle time: the longest idle sessions are the usual culprits.
+-----------------------------------------------------------------------
+SELECT
+    [SessionID] = s.session_id,
+    [Login] = s.login_name,
+    [HostName] = s.host_name,
+    [Application] = s.program_name,
+    [Status] = s.status,
+    [OpenTransactions] = s.open_transaction_count,
+    [SecondsIdle] = DATEDIFF(SECOND, s.last_request_end_time, SYSDATETIME()),
+    [LastRequestStartTime] = s.last_request_start_time,
+    [LastRequestEndTime] = s.last_request_end_time,
+    [BlockedSessionCount] = blk.blocked_count,
+    [Database] = DB_NAME(s.database_id),
+    [LastQuery] = txt.text
+FROM sys.dm_exec_sessions AS s
+    OUTER APPLY (
+        SELECT TOP (1) conn_inner.most_recent_sql_handle
+        FROM sys.dm_exec_connections AS conn_inner
+        WHERE conn_inner.session_id = s.session_id
+        ORDER BY conn_inner.connect_time DESC
+    ) AS c
+    CROSS APPLY (
+        SELECT COUNT(*) AS blocked_count
+        FROM sys.dm_exec_requests AS r2
+        WHERE r2.blocking_session_id = s.session_id
+    ) AS blk
+    OUTER APPLY sys.dm_exec_sql_text(c.most_recent_sql_handle) AS txt
+WHERE s.is_user_process = 1
+    AND s.open_transaction_count > 0
+    AND NOT EXISTS (
+        SELECT 1
+        FROM sys.dm_exec_requests AS r
+        WHERE r.session_id = s.session_id
+    )
+ORDER BY [SecondsIdle] DESC
+OPTION (RECOMPILE);
+GO
+
+-----------------------------------------------------------------------
+-- 4.2 OLDEST ACTIVE TRANSACTIONS (With Log Usage)
+--     Shows every active transaction, its age, state and how much log it
+--     has generated. Long-running write transactions both block others
+--     and prevent log truncation.
+--     Note: a transaction spanning several databases returns one row per
+--     database.
+-----------------------------------------------------------------------
+SELECT
+    [SessionID] = st.session_id,
+    [TransactionID] = at.transaction_id,
+    [TransactionName] = at.[name],
+    [BeganAt] = at.transaction_begin_time,
+    [DurationSeconds] = DATEDIFF(SECOND, at.transaction_begin_time, SYSDATETIME()),
+    [TransactionType] =
+        CASE at.transaction_type
+            WHEN 1 THEN 'Read/write'
+            WHEN 2 THEN 'Read-only'
+            WHEN 3 THEN 'System'
+            WHEN 4 THEN 'Distributed'
+            ELSE 'Unknown'
+        END,
+    [TransactionState] =
+        CASE at.transaction_state
+            WHEN 0 THEN 'Not fully initialized'
+            WHEN 1 THEN 'Initialized, not started'
+            WHEN 2 THEN 'Active'
+            WHEN 3 THEN 'Ended (read-only)'
+            WHEN 4 THEN 'Commit initiated (distributed)'
+            WHEN 5 THEN 'Prepared, awaiting resolution'
+            WHEN 6 THEN 'Committed'
+            WHEN 7 THEN 'Rolling back'
+            WHEN 8 THEN 'Rolled back'
+            ELSE 'Unknown'
+        END,
+    [Database] = DB_NAME(dt.database_id),
+    [LogRecords] = dt.database_transaction_log_record_count,
+    [LogBytesUsed_KB] = dt.database_transaction_log_bytes_used / 1024,
+    [IsUserTransaction] = st.is_user_transaction,
+    [Login] = s.login_name,
+    [HostName] = s.host_name,
+    [Application] = s.program_name,
+    [SessionStatus] = s.[status],
+    [CurrentOrLastQuery] = txt.text
+FROM sys.dm_tran_active_transactions AS at
+    INNER JOIN sys.dm_tran_session_transactions AS st
+        ON at.transaction_id = st.transaction_id
+    LEFT OUTER JOIN sys.dm_tran_database_transactions AS dt
+        ON at.transaction_id = dt.transaction_id
+    LEFT OUTER JOIN sys.dm_exec_sessions AS s
+        ON st.session_id = s.session_id
+    OUTER APPLY (
+        SELECT TOP (1) conn_inner.most_recent_sql_handle
+        FROM sys.dm_exec_connections AS conn_inner
+        WHERE conn_inner.session_id = st.session_id
+        ORDER BY conn_inner.connect_time DESC
+    ) AS c
+    OUTER APPLY (
+        SELECT TOP (1) r.[sql_handle]
+        FROM sys.dm_exec_requests AS r
+        WHERE r.session_id = st.session_id
+    ) AS req
+    OUTER APPLY sys.dm_exec_sql_text(
+        COALESCE(req.[sql_handle], c.most_recent_sql_handle)) AS txt
+ORDER BY at.transaction_begin_time
+OPTION (RECOMPILE);
+GO
+
+-----------------------------------------------------------------------
+-- SECTION 5: SESSION DETAILS FOR HEAD BLOCKER
 -- Purpose: Detailed analysis of head blocker session
 -- Note: Use queries from Section 1 to identify the head blocker session ID first
 -----------------------------------------------------------------------
 
 -----------------------------------------------------------------------
--- 4.1 HEAD BLOCKER SESSION DETAILS
+-- 5.1 HEAD BLOCKER SESSION DETAILS
 --     Analyze session information for head blocker.
 --     Replace @SessionID with actual session ID from Section 1 queries.
 -----------------------------------------------------------------------
@@ -362,6 +547,7 @@ SELECT
     [program_name],
     login_name,
     [status],
+    open_transaction_count,
     last_request_start_time,
     last_request_end_time
 FROM sys.dm_exec_sessions
@@ -369,7 +555,7 @@ WHERE session_id = @SessionID;
 GO
 
 -----------------------------------------------------------------------
--- 4.2 HEAD BLOCKER CONNECTION DETAILS
+-- 5.2 HEAD BLOCKER CONNECTION DETAILS
 --     Analyze connection information for head blocker.
 --     Replace @SessionID with actual session ID from Section 1 queries.
 -----------------------------------------------------------------------
@@ -386,57 +572,70 @@ WHERE session_id = @SessionID;
 GO
 
 -----------------------------------------------------------------------
--- 4.3 HEAD BLOCKER QUERY TEXT
+-- 5.3 HEAD BLOCKER QUERY TEXT
 --     Get the SQL text being executed by head blocker.
+--     Uses sys.dm_exec_input_buffer, the modern and joinable replacement
+--     for DBCC INPUTBUFFER, alongside the most recent batch text.
 --     Replace @SessionID with actual session ID from Section 1 queries.
 -----------------------------------------------------------------------
 DECLARE @SessionID INT = NULL; -- Replace NULL with actual session_id from Section 1
 
 SELECT 
     c.session_id,
-    t.text AS [query_text]
+    t.text AS [most_recent_batch],
+    ib.event_info AS [input_buffer]
 FROM sys.dm_exec_connections AS c
-    CROSS APPLY sys.dm_exec_sql_text(c.most_recent_sql_handle) AS t 
+    -- OUTER APPLY: CROSS APPLY silently drops rows with a NULL handle
+    OUTER APPLY sys.dm_exec_sql_text(c.most_recent_sql_handle) AS t 
+    OUTER APPLY sys.dm_exec_input_buffer(c.session_id, NULL) AS ib
 WHERE c.session_id = @SessionID;
 GO
 
 -----------------------------------------------------------------------
--- SECTION 5: SYSTEM-WIDE PERFORMANCE ANALYSIS
+-- SECTION 6: SYSTEM-WIDE PERFORMANCE ANALYSIS
 -- Purpose: Identify system-wide issues that may contribute to blocking
 -----------------------------------------------------------------------
 
 -----------------------------------------------------------------------
--- 5.1 LONG RUNNING PROCESSES
---     Identify long-running active sessions that may be causing issues.
---     Sessions with long batch duration may hold locks for extended periods.
+-- 6.1 LONG RUNNING REQUESTS
+--     Identify long-running active requests that may be causing issues.
+--     Requests running for a long time may hold locks for extended periods.
+--     Note: idle sessions holding a transaction are NOT active requests -
+--     use Section 4 for those.
 -----------------------------------------------------------------------
+DECLARE @MinElapsedMs INT = 5000; -- Only show requests running longer than this
+
 SELECT
-    p.spid,
-    RIGHT(CONVERT(VARCHAR, 
-        DATEADD(ms, DATEDIFF(ms, p.last_batch, GETDATE()), '1900-01-01'), 
-        121), 12) AS batch_duration,
-    p.program_name,
-    p.hostname,
-    p.loginame,
-    p.status,
-    p.cmd,
-    p.blocked,
-    p.open_tran
-FROM master.dbo.sysprocesses p
-WHERE p.spid > 50
-    AND p.status NOT IN ('background', 'sleeping')
-    AND p.cmd NOT IN (
-        'AWAITING COMMAND',
-        'MIRROR HANDLER',
-        'LAZY WRITER',
-        'CHECKPOINT SLEEP',
-        'RA MANAGER'
-    )
-ORDER BY batch_duration DESC;
+    [SessionID] = r.session_id,
+    [ElapsedSeconds] = r.total_elapsed_time / 1000,
+    [Status] = r.[status],
+    [Command] = r.command,
+    [BlockedBy] = r.blocking_session_id,
+    [OpenTransactions] = r.open_transaction_count,
+    [WaitType] = r.wait_type,
+    [WaitTime_ms] = r.wait_time,
+    [LastWaitType] = r.last_wait_type,
+    [CPU_ms] = r.cpu_time,
+    [LogicalReads] = r.logical_reads,
+    [PercentComplete] = CONVERT(DECIMAL(5, 2), r.percent_complete),
+    [Database] = DB_NAME(r.database_id),
+    [Login] = s.login_name,
+    [HostName] = s.host_name,
+    [Application] = s.program_name,
+    [Query] = txt.text
+FROM sys.dm_exec_requests AS r
+    INNER JOIN sys.dm_exec_sessions AS s
+        ON r.session_id = s.session_id
+    OUTER APPLY sys.dm_exec_sql_text(r.[sql_handle]) AS txt
+WHERE s.is_user_process = 1
+    AND r.session_id <> @@SPID
+    AND r.total_elapsed_time > @MinElapsedMs
+ORDER BY r.total_elapsed_time DESC
+OPTION (RECOMPILE);
 GO
 
 -----------------------------------------------------------------------
--- 5.2 THREADPOOL WAITS
+-- 6.2 THREADPOOL WAITS
 --     Analyze all requests currently waiting for a free worker thread.
 --     High numbers indicate thread starvation which can cause blocking.
 -----------------------------------------------------------------------
@@ -452,34 +651,61 @@ ORDER BY wait_duration_ms DESC;
 GO
 
 -----------------------------------------------------------------------
--- SECTION 6: TROUBLESHOOTING ACTIONS
+-- SECTION 7: TROUBLESHOOTING ACTIONS
 -- Purpose: Manual intervention commands for resolving blocking
 -- WARNING: These commands modify system state - use with caution
 -----------------------------------------------------------------------
 
 -----------------------------------------------------------------------
--- 6.1 MANUAL BLOCKING ANALYSIS AND SESSION KILLING
---     Step-by-step process to identify and kill blocking sessions.
---     CAUTION: Killing sessions will roll back their transactions.
---     Only kill sessions after verifying they are safe to terminate.
+-- 7.1 MANUAL BLOCKING ANALYSIS AND SESSION KILLING
+--     Step-by-step process to identify and kill a blocking session.
+--     CAUTION: KILL rolls back the session's entire open transaction.
+--     Rollback is single-threaded and can take AS LONG AS, or longer
+--     than, the work already done. Killing a large writer can therefore
+--     extend the outage rather than end it, and the locks are held for
+--     the whole rollback.
 -----------------------------------------------------------------------
 /*
--- Step 1: Check for blocking
-USE master;
-SELECT DISTINCT blocked 
-FROM sysprocesses 
-WHERE blocked <> 0;
+-- Step 1: Find the head blocker (see Section 1 for richer versions)
+SELECT DISTINCT r.blocking_session_id
+FROM sys.dm_exec_requests AS r
+WHERE r.blocking_session_id > 0
+    AND NOT EXISTS (
+        SELECT 1
+        FROM sys.dm_exec_requests AS r2
+        WHERE r2.session_id = r.blocking_session_id
+            AND r2.blocking_session_id > 0
+    );
 
--- Step 2: Check if the blocker is also blocked (find the head blocker)
-SELECT blocked 
-FROM sysprocesses 
-WHERE spid = <replace_with_blocker_spid>;
+-- Step 2: Inspect what the blocker last submitted
+--         sys.dm_exec_input_buffer is the modern replacement for
+--         DBCC INPUTBUFFER(<spid>) and can be joined to other DMVs.
+SELECT * FROM sys.dm_exec_input_buffer(<replace_with_blocker_spid>, NULL);
 
--- Step 3: Check the command being executed by the blocker
-DBCC INPUTBUFFER(<replace_with_blocker_spid>);
+-- Step 3: Assess the cost of killing it BEFORE killing it.
+--         Do NOT judge safety by the statement currently visible: a session
+--         showing a SELECT may already have performed large modifications
+--         earlier in the same transaction. What matters is the transaction.
+SELECT
+    st.session_id,
+    at.transaction_begin_time,
+    DATEDIFF(SECOND, at.transaction_begin_time, SYSDATETIME()) AS duration_seconds,
+    dt.database_transaction_log_record_count AS log_records,
+    dt.database_transaction_log_bytes_used / 1024 AS log_bytes_used_kb
+FROM sys.dm_tran_session_transactions AS st
+    INNER JOIN sys.dm_tran_active_transactions AS at
+        ON st.transaction_id = at.transaction_id
+    LEFT OUTER JOIN sys.dm_tran_database_transactions AS dt
+        ON at.transaction_id = dt.transaction_id
+WHERE st.session_id = <replace_with_blocker_spid>;
 
--- Step 4: If the blocker is executing a SELECT statement (read-only),
---         the session can typically be safely killed
--- CAUTION: This will roll back any open transaction
+--         A high log_record count means an expensive rollback. Prefer having
+--         the application commit or roll back cleanly where that is possible.
+
+-- Step 4: Kill only after the above has been reviewed.
 KILL <replace_with_blocker_spid>;
+
+-- Step 5: Monitor the rollback. If it is slow, DO NOT restart the instance:
+--         recovery would simply continue the same rollback at startup.
+KILL <replace_with_blocker_spid> WITH STATUSONLY;
 */
