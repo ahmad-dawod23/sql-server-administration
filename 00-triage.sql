@@ -16,6 +16,21 @@ SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
 
 DECLARE @Top int = 25;
 
+-- Set a section to 0 to exclude it from the triage run.
+DECLARE @RunInstanceInfo bit = 1;
+DECLARE @RunDatabasePosture bit = 1;
+DECLARE @RunRunningRequests bit = 1;
+DECLARE @RunBlocking bit = 1;
+DECLARE @RunWaitStats bit = 1;
+DECLARE @RunTopCachedQueries bit = 1;
+DECLARE @RunMemoryPressure bit = 1;
+DECLARE @RunTempdb bit = 1;
+DECLARE @RunFileIo bit = 1;
+DECLARE @RunBackupPosture bit = 1;
+DECLARE @RunAgHealth bit = 1;
+DECLARE @RunAgentJobFailures bit = 1;
+DECLARE @RunErrorLogSearch bit = 0;
+
 PRINT '=== 00 - TRIAGE START ===';
 PRINT CONCAT('UTC now: ', CONVERT(varchar(19), GETUTCDATE(), 120));
 PRINT CONCAT('Local now: ', CONVERT(varchar(19), GETDATE(), 120));
@@ -23,17 +38,8 @@ PRINT CONCAT('Local now: ', CONVERT(varchar(19), GETDATE(), 120));
 --------------------------------------------------------------------------------
 -- 1) Instance info and key configuration
 --------------------------------------------------------------------------------
-SELECT
-    @@SERVERNAME AS server_name,
-    CAST(SERVERPROPERTY('ServerName') AS sysname) AS serverproperty_servername,
-    CAST(SERVERPROPERTY('MachineName') AS sysname) AS machine_name,
-    CAST(SERVERPROPERTY('InstanceName') AS sysname) AS instance_name,
-    CAST(SERVERPROPERTY('ProductVersion') AS nvarchar(128)) AS product_version,
-    CAST(SERVERPROPERTY('ProductLevel') AS nvarchar(128)) AS product_level,
-    CAST(SERVERPROPERTY('Edition') AS nvarchar(128)) AS edition,
-    CAST(SERVERPROPERTY('EngineEdition') AS int) AS engine_edition,
-    CAST(SERVERPROPERTY('IsHadrEnabled') AS int) AS is_hadr_enabled,
-    CAST(SERVERPROPERTY('IsClustered') AS int) AS is_clustered;
+IF @RunInstanceInfo = 1
+BEGIN
 
 SELECT
     sqlserver_start_time,
@@ -79,10 +85,13 @@ BEGIN CATCH
         ERROR_NUMBER() AS error_number,
         ERROR_MESSAGE() AS error_message;
 END CATCH;
+    END;
 
 --------------------------------------------------------------------------------
 -- 2) Database posture (state, recovery, log reuse wait, checksum)
 --------------------------------------------------------------------------------
+    IF @RunDatabasePosture = 1
+    BEGIN
 SELECT
     d.name,
     d.state_desc,
@@ -100,10 +109,13 @@ SELECT
     d.is_auto_update_stats_async_on
 FROM sys.databases AS d
 ORDER BY d.name;
+END;
 
 --------------------------------------------------------------------------------
 -- 3) Running requests (what is burning time right now?)
 --------------------------------------------------------------------------------
+IF @RunRunningRequests = 1
+BEGIN
 SELECT TOP (@Top)
     r.session_id,
     s.login_name,
@@ -134,10 +146,13 @@ JOIN sys.dm_exec_sessions AS s
 OUTER APPLY sys.dm_exec_sql_text(r.sql_handle) AS txt
 WHERE s.is_user_process = 1
 ORDER BY r.cpu_time DESC, r.total_elapsed_time DESC;
+END;
 
 --------------------------------------------------------------------------------
 -- 4) Blocking (quick head blocker view)
 --------------------------------------------------------------------------------
+IF @RunBlocking = 1
+BEGIN
 ;WITH waiting AS
 (
     SELECT
@@ -180,10 +195,13 @@ LEFT JOIN sys.dm_exec_requests AS r
     ON r.session_id = hb.session_id
 OUTER APPLY sys.dm_exec_sql_text(COALESCE(r.sql_handle, c.most_recent_sql_handle)) AS txt
 ORDER BY r.total_elapsed_time DESC;
+END;
 
 --------------------------------------------------------------------------------
 -- 5) Wait stats (server-level)
 --------------------------------------------------------------------------------
+IF @RunWaitStats = 1
+BEGIN
 ;WITH waits AS
 (
     SELECT
@@ -223,10 +241,13 @@ SELECT
     signal_wait_time_ms
 FROM sys.dm_os_wait_stats
 WHERE wait_type = N'THREADPOOL';
+END;
 
 --------------------------------------------------------------------------------
 -- 6) Top cached queries (plan cache) by CPU and reads
 --------------------------------------------------------------------------------
+IF @RunTopCachedQueries = 1
+BEGIN
 ;WITH top_cpu AS
 (
     SELECT TOP (@Top)
@@ -282,10 +303,13 @@ SELECT
 FROM top_reads AS tr
 CROSS APPLY sys.dm_exec_sql_text(tr.sql_handle) AS txt
 ORDER BY tr.total_logical_reads DESC;
+END;
 
 --------------------------------------------------------------------------------
 -- 7) Memory pressure indicators
 --------------------------------------------------------------------------------
+IF @RunMemoryPressure = 1
+BEGIN
 SELECT
     total_physical_memory_kb / 1024 AS total_physical_memory_mb,
     available_physical_memory_kb / 1024 AS available_physical_memory_mb,
@@ -315,12 +339,15 @@ SELECT
 FROM sys.dm_os_performance_counters
 WHERE object_name LIKE '%Memory Manager%'
   AND counter_name IN ('Memory Grants Pending','Memory Grants Outstanding');
+END;
 
 --------------------------------------------------------------------------------
 -- 8) tempdb quick view
 --------------------------------------------------------------------------------
-IF DB_ID('tempdb') IS NOT NULL
+IF @RunTempdb = 1
 BEGIN
+        IF DB_ID('tempdb') IS NOT NULL
+        BEGIN
     SELECT
         SUM(user_object_reserved_page_count) * 8 AS user_objects_kb,
         SUM(internal_object_reserved_page_count) * 8 AS internal_objects_kb,
@@ -343,11 +370,14 @@ BEGIN
         ON s.session_id = tsu.session_id
     WHERE tsu.session_id > 50
     ORDER BY net_kb DESC;
+    END;
 END;
 
 --------------------------------------------------------------------------------
 -- 9) File I/O stalls (per database file) and volume free space
 --------------------------------------------------------------------------------
+IF @RunFileIo = 1
+BEGIN
 SELECT TOP (@Top)
     DB_NAME(mf.database_id) AS database_name,
     mf.type_desc,
@@ -380,10 +410,13 @@ FROM sys.master_files AS mf
 CROSS APPLY sys.dm_os_volume_stats(mf.database_id, mf.file_id) AS vs
 GROUP BY vs.volume_mount_point
 ORDER BY free_gb;
+END;
 
 --------------------------------------------------------------------------------
 -- 10) Backup posture (msdb) - last full/diff/log and age
 --------------------------------------------------------------------------------
+IF @RunBackupPosture = 1
+BEGIN
 BEGIN TRY
     IF DB_ID('msdb') IS NOT NULL
     BEGIN
@@ -446,10 +479,13 @@ BEGIN CATCH
         ERROR_NUMBER() AS error_number,
         ERROR_MESSAGE() AS error_message;
 END CATCH;
+    END;
 
 --------------------------------------------------------------------------------
 -- 11) AG health (if enabled) and WSFC cluster state
 --------------------------------------------------------------------------------
+    IF @RunAgHealth = 1
+    BEGIN
 -- WSFC node and cluster state. Applies to Failover Cluster Instances and to
 -- Always On, which depends on the cluster; both return no rows on a
 -- standalone instance. A node reported down here explains a failed startup
@@ -500,10 +536,13 @@ BEGIN
         ON ag.group_id = drs.group_id
     ORDER BY drs.log_send_queue_size DESC, drs.redo_queue_size DESC;
 END;
+END;
 
 --------------------------------------------------------------------------------
 -- 12) Agent job failures (msdb) - last 24 hours
 --------------------------------------------------------------------------------
+IF @RunAgentJobFailures = 1
+BEGIN
 BEGIN TRY
     IF OBJECT_ID('msdb.dbo.sysjobs') IS NOT NULL
     BEGIN
@@ -538,11 +577,15 @@ BEGIN CATCH
         ERROR_NUMBER() AS error_number,
         ERROR_MESSAGE() AS error_message;
 END CATCH;
+END;
 
 --------------------------------------------------------------------------------
--- 13) Optional: error log search (uncomment when you need it)
+-- 13) Optional: error log search
 --------------------------------------------------------------------------------
--- EXEC xp_readerrorlog 0, 1, N'Error', NULL, NULL, NULL, N'desc';
--- EXEC xp_readerrorlog 0, 1, N'failed', NULL, NULL, NULL, N'desc';
+IF @RunErrorLogSearch = 1
+BEGIN
+    EXEC xp_readerrorlog 0, 1, N'Error', NULL, NULL, NULL, N'desc';
+    EXEC xp_readerrorlog 0, 1, N'failed', NULL, NULL, NULL, N'desc';
+END;
 
 PRINT '=== 00 - TRIAGE END ===';
