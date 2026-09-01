@@ -190,3 +190,15 @@ FROM msdb.dbo.backupset bs
     LEFT JOIN master.sys.certificates c
         ON bs.encryptor_thumbprint = c.thumbprint
 ORDER BY bs.backup_finish_date DESC;
+
+
+
+-----------------------------------------------------------------------
+-- 9. Disable TDE
+-----------------------------------------------------------------------
+
+
+USE [YourDatabaseName];
+GO
+DROP DATABASE ENCRYPTION KEY;
+GO

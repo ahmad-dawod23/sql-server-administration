@@ -1,4 +1,4 @@
-﻿/*
+/*
 00 - Triage.sql
 SQL Server / Azure SQL Managed Instance - Incident Triage (read-mostly)
 
@@ -17,7 +17,7 @@ SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
 DECLARE @Top int = 25;
 
 -- Set a section to 0 to exclude it from the triage run.
-DECLARE @RunInstanceInfo bit = 1;
+DECLARE @RunInstanceInfo bit = 0;
 DECLARE @RunDatabasePosture bit = 1;
 DECLARE @RunRunningRequests bit = 1;
 DECLARE @RunBlocking bit = 1;

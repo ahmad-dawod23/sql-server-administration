@@ -42,16 +42,6 @@ GO
  * activity, failures, errors, and whether agents are currently connected.
  ******************************************************************************/
 
-USE [msdb];
-GO
-
--- 1.1 Get Agent Job History for a Specific Job
--- Replace job_id with the value returned by query 2.1.
-EXEC msdb.dbo.sp_help_jobhistory
-    @job_id = 'D55F576C-91B7-48D4-9F77-0C4F11105AD6',  -- <replace job_id>
-    @mode   = 'FULL';
-GO
-
 -- 1.2 Recent Replication Agent Job Activity
 SELECT
     j.name,
@@ -126,38 +116,6 @@ WHERE time > DATEADD(HOUR, -24, GETDATE())
 ORDER BY start_time DESC, time DESC;
 GO
 
--- 1.7 Log Reader Agent History Filtered by Agent ID
-SELECT TOP (500)
-    runstatus, start_time, time, duration, delivery_latency,
-    delivered_transactions, delivered_commands, error_id, comments, xact_seqno
-FROM dbo.MSlogreader_history
-WHERE agent_id = 1                                    -- <replace agent_id from 2.2>
-ORDER BY start_time DESC, time DESC;
-GO
-
--- 1.8 Snapshot Agent History Filtered by Agent ID
-SELECT TOP (500)
-    runstatus, start_time, time, duration,
-    delivered_transactions, delivered_commands, error_id, comments
-FROM dbo.MSsnapshot_history
-WHERE agent_id = 1                                    -- <replace agent_id from 2.3>
-ORDER BY start_time DESC, time DESC;
-GO
-
--- 1.9 Distribution Agent History Filtered by Agent ID
-SELECT TOP (500)
-    runstatus, start_time, time, duration, delivery_latency,
-    delivered_transactions, delivered_commands,
-    current_delivery_rate, current_delivery_latency,
-    error_id, comments, xact_seqno
-FROM dbo.MSdistribution_history
-WHERE agent_id = 3                                    -- <replace agent_id from 2.4>
-ORDER BY start_time DESC, time DESC;
-GO
-
--- runstatus reference:
---   1 = Start, 2 = Succeed, 3 = In Progress, 4 = Idle,
---   5 = Retry, 6 = Fail
 
 -- 1.10 Recent Replication Errors
 SELECT TOP (1000)
@@ -167,6 +125,7 @@ FROM dbo.MSrepl_errors
 WHERE time > DATEADD(DAY, -7, GETDATE())
 ORDER BY time DESC;
 GO
+
 
 -- 1.11 Investigate a Specific Transaction Error
 -- Use the transaction sequence number from the error message
@@ -220,8 +179,50 @@ FROM msdb.dbo.sysjobsteps sjs
 WHERE subsystem IN ('Distribution', 'LogReader', 'Snapshot');
 GO
 
+-- 1.1 Get Agent Job History for a Specific Job
+-- Replace job_id with the value returned by query 2.1.
+EXEC msdb.dbo.sp_help_jobhistory
+    @job_id = 'D55F576C-91B7-48D4-9F77-0C4F11105AD6',  -- <replace job_id>
+    @mode   = 'FULL';
+GO
+
+
 USE [distribution];
 GO
+
+-- 1.7 Log Reader Agent History Filtered by Agent ID
+SELECT TOP (500)
+    runstatus, start_time, time, duration, delivery_latency,
+    delivered_transactions, delivered_commands, error_id, comments, xact_seqno
+FROM dbo.MSlogreader_history
+WHERE agent_id = 1                                    -- <replace agent_id from 2.2>
+ORDER BY start_time DESC, time DESC;
+GO
+
+-- 1.8 Snapshot Agent History Filtered by Agent ID
+SELECT TOP (500)
+    runstatus, start_time, time, duration,
+    delivered_transactions, delivered_commands, error_id, comments
+FROM dbo.MSsnapshot_history
+WHERE agent_id = 1                                    -- <replace agent_id from 2.3>
+ORDER BY start_time DESC, time DESC;
+GO
+
+-- 1.9 Distribution Agent History Filtered by Agent ID
+SELECT TOP (500)
+    runstatus, start_time, time, duration, delivery_latency,
+    delivered_transactions, delivered_commands,
+    current_delivery_rate, current_delivery_latency,
+    error_id, comments, xact_seqno
+FROM dbo.MSdistribution_history
+WHERE agent_id = 3                                    -- <replace agent_id from 2.4>
+ORDER BY start_time DESC, time DESC;
+GO
+
+-- runstatus reference:
+--   1 = Start, 2 = Succeed, 3 = In Progress, 4 = Idle,
+--   5 = Retry, 6 = Fail
+
 
 -- 2.2 Check Configured Log Reader Agents
 SELECT id, name, publisher_id, publisher_db, publisher_security_mode,
