@@ -1,4 +1,4 @@
-﻿# SQL Server Administration Scripts
+# SQL Server Administration Scripts
 
 This repository contains SQL Server and Azure SQL Managed Instance administration scripts for triage, performance, replication, security, maintenance, and troubleshooting.
 
@@ -11,7 +11,7 @@ It also includes standalone browser utilities for analyzing deadlocks, network t
 ```
 Start here
   │
-  ├─► Run 00-triage.sql (other scripts/)
+  ├─► Run 00-triage.sql
   │     Quick snapshot: instance info, running requests, blocking, waits, disk
   │
   ├─► Check top waits
