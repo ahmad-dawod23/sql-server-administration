@@ -1,4 +1,4 @@
-﻿<#
+<#
 Azure PowerShell - SQL MI + SQL on Azure VM essentials
 
 Safety:
@@ -8,6 +8,13 @@ Safety:
 Modules:
 - Az.Accounts, Az.Resources, Az.Sql, Az.SqlVirtualMachine, Az.Monitor
 #>
+
+# -----------------------------------------------------------------------------
+# Network trace
+# -----------------------------------------------------------------------------
+
+netsh trace start capture=yes scenario=netconnection tracefile=c:\temp\%computername%.etl filemode=circular maxSize=2048MB
+netsh trace stop
 
 # -----------------------------------------------------------------------------
 # Authentication / context

@@ -198,7 +198,11 @@ ORDER BY bs.backup_finish_date DESC;
 -----------------------------------------------------------------------
 
 
-USE [YourDatabaseName];
+USE master;
+GO
+ALTER DATABASE YourRestoredDatabaseName SET ENCRYPTION OFF;
+GO
+USE [YourRestoredDatabaseName];
 GO
 DROP DATABASE ENCRYPTION KEY;
 GO

@@ -332,8 +332,9 @@ SQL Agent job on the problem MI server, follow the below steps:
 1. Create a job
 2. Create a step with step name 'Test Connection'
 3. Add the below PowerShell script:
-
-   tnc [faultyendpointhere] -port [portnumberhere] | select ComputerName, RemoteAddress, TcpTestSucceeded | Format-List
+	
+tnc [faultyendpointhere] -port [portnumberhere]
+tnc [faultyendpointhere] -port [portnumberhere] | select ComputerName, RemoteAddress, TcpTestSucceeded | Format-List
 
    # DNS resolution test
    nslookup faultyendpoint.com
