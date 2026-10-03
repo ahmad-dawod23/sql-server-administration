@@ -1304,6 +1304,19 @@ EXEC msdb.dbo.sp_set_sqlagent_properties
 */
 GO
 
+-------copy only backup
+
+BACKUP DATABASE [YourDatabase]
+TO URL = 'https://test123.blob.core.windows.net/folder/YourDatabase_COPYONLY.bak'
+WITH COPY_ONLY,
+COMPRESSION,
+CHECKSUM,
+STATS = 10;
+
+
+
+
+
 
 /*****************************************************************************************************
  * END OF FILE
